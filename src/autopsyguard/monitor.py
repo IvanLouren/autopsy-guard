@@ -49,3 +49,74 @@ high_cpu_start = None
 cpu_flagged = False
 mem_flagged = False
 disk_flagged = False
+
+
+def check_jvm_crash(install_dir: Path | None) -> None:
+    """Detect new JVM crash logs (hs_err_pid*.log)."""
+    global known_hs, hs_ready
+
+    found: set[Path] = set()
+    for directory in get_hs_err_search_dirs(install_dir):
+        if directory.is_dir():
+            found.update(p.resolve() for p in directory.glob("hs_err_pid*.log"))
+
+    if not hs_ready:
+        known_hs = found
+        hs_ready = True
+        return
+
+    for crash_file in found - known_hs:
+        logging.critical("[JVM_CRASH] New crash file: %s", crash_file)
+
+    known_hs = found
+
+def check_process(case_dir: Path, last_state: bool | None) -> bool:
+    """Log when Autopsy starts/stops. Return current running state."""
+    pid = find_autopsy_process()
+    running = pid is not None
+
+    if running != last_state:
+        if running:
+            logging.info("Autopsy started (PID %s)", pid)
+        else:
+            logging.warning("Autopsy stopped or not running")
+            if get_case_lock_file(case_dir).exists():
+                logging.warning("Lock file still present — possible crash")
+
+    return running
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="AutopsyGuard — Simple Monitor")
+    parser.add_argument("case_dir", type=Path)
+    parser.add_argument("--install-dir", type=Path, default=None)
+    parser.add_argument("--poll-interval", type=float, default=POLL_INTERVAL)
+    args = parser.parse_args()
+
+    if not validate_case_dir(args.case_dir):
+        print(f"Error: '{args.case_dir}' doesn't look like an Autopsy case directory.")
+        sys.exit(1)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    print(f"AutopsyGuard monitoring: {args.case_dir}")
+    print(f"Poll every {args.poll_interval}s — Ctrl+C to stop\n")
+
+    last_state: bool | None = None
+    try:
+        while True:
+            last_state = check_process(args.case_dir, last_state)
+            check_jvm_crash(args.install_dir)
+            time.sleep(args.poll_interval)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+
+
+if __name__ == "__main__":
+    main()
+monitor.py
