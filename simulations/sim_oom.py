@@ -1,28 +1,37 @@
-"""Simulate a REAL OutOfMemoryError by limiting Autopsy's JVM heap.
+r"""Simulate a REAL OutOfMemoryError by limiting Autopsy's JVM heap.
 
-This modifies autopsy.conf to set -Xmx64m (tiny heap), so when you open
-a case and run ingest, Autopsy will genuinely run out of memory and log
-a real java.lang.OutOfMemoryError.
+This modifies BOTH system and user autopsy.conf to set -Xmx256m (limited heap),
+so when you open a case and run ingest, Autopsy will genuinely run out of
+memory and log a real java.lang.OutOfMemoryError.
 
 Usage:
     1. Make sure Autopsy is CLOSED
-    2. Run:  python sim_real_oom.py prepare --install-dir "C:\Program Files\Autopsy-4.22.1"
+    2. Run:  python sim_oom.py prepare --install-dir "C:\Program Files\Autopsy-4.22.1"
     3. Open Autopsy, open a case, start ingest → wait for OOM
     4. Run the monitor in another terminal to catch it
-    5. When done: python sim_real_oom.py restore --install-dir "C:\Program Files\Autopsy-4.22.1"
+    5. When done: python sim_oom.py restore --install-dir "C:\Program Files\Autopsy-4.22.1"
 
 What this does:
-    - Backs up autopsy.conf → autopsy.conf.bak
-    - Adds -J-Xmx64m to default_options (limits heap to 64 MB)
+    - Backs up autopsy.conf (system AND user) → autopsy.conf.bak
+    - Sets -J-Xmx64m (limits heap to 64 MB)
     - With only 64 MB of heap, Autopsy will crash with OutOfMemoryError
       as soon as it tries to do anything heavy (ingest, open large files)
 """
 
 import argparse
+import os
 import re
 import shutil
 import sys
 from pathlib import Path
+
+
+def get_user_conf():
+    """Get the user-level autopsy.conf path."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        return Path(appdata) / "autopsy" / "etc" / "autopsy.conf"
+    return Path.home() / ".autopsy" / "etc" / "autopsy.conf"
 
 
 def find_conf(install_dir):
@@ -34,36 +43,56 @@ def find_conf(install_dir):
     return conf
 
 
-def prepare(install_dir):
-    conf = find_conf(install_dir)
+def modify_conf(conf):
+    """Modify a single conf file with 64MB heap limit."""
     backup = conf.with_suffix(".conf.bak")
 
-    # backup
     if backup.exists():
-        print(f"Backup already exists: {backup}")
+        print(f"  Backup already exists: {backup}")
+        return False
+
+    shutil.copy2(conf, backup)
+    print(f"  Backed up: {conf.name} → {backup.name}")
+
+    text = conf.read_text(encoding="utf-8")
+
+    # Replace or add -Xmx512m (enough to start and open case, crashes during ingest)
+    if "-J-Xmx" in text:
+        text = re.sub(r"-J-Xmx\S+", "-J-Xmx512m", text)
+    else:
+        text = text.replace("-J-Xms24m", "-J-Xms24m -J-Xmx512m")
+
+    conf.write_text(text, encoding="utf-8")
+    return True
+
+
+def restore_conf(conf):
+    """Restore a single conf file from backup."""
+    backup = conf.with_suffix(".conf.bak")
+
+    if not backup.exists():
+        return False
+
+    shutil.copy2(backup, conf)
+    backup.unlink()
+    print(f"  Restored: {conf}")
+    return True
+
+
+def prepare(install_dir):
+    print("Modifying system autopsy.conf...")
+    system_conf = find_conf(install_dir)
+    if not modify_conf(system_conf):
         print("Run 'restore' first if you want to start fresh.")
         sys.exit(1)
 
-    shutil.copy2(conf, backup)
-    print(f"Backed up: {conf} → {backup}")
-
-    # read and modify
-    text = conf.read_text(encoding="utf-8")
-
-    # add -J-Xmx64m to default_options
-    if "-J-Xmx" in text:
-        # replace existing -Xmx
-        text = re.sub(r"-J-Xmx\S+", "-J-Xmx64m", text)
-        print("Replaced existing -Xmx with -Xmx64m")
-    else:
-        # add it after -Xms
-        text = text.replace("-J-Xms24m", "-J-Xms24m -J-Xmx64m")
-        print("Added -J-Xmx64m (64 MB max heap)")
-
-    conf.write_text(text, encoding="utf-8")
+    user_conf = get_user_conf()
+    if user_conf.is_file():
+        print("Modifying user autopsy.conf...")
+        modify_conf(user_conf)
 
     print()
-    print("autopsy.conf modified. Autopsy will now run with only 64 MB heap.")
+    print("autopsy.conf modified. Autopsy will now run with only 256 MB heap.")
     print()
     print("Next steps:")
     print("  1. Open Autopsy")
@@ -75,16 +104,20 @@ def prepare(install_dir):
 
 
 def restore(install_dir):
-    conf = find_conf(install_dir)
-    backup = conf.with_suffix(".conf.bak")
+    print("Restoring configs...")
+    system_conf = find_conf(install_dir)
+    restored_system = restore_conf(system_conf)
 
-    if not backup.exists():
-        print(f"No backup found at {backup} — nothing to restore.")
+    user_conf = get_user_conf()
+    restored_user = False
+    if user_conf.is_file():
+        restored_user = restore_conf(user_conf)
+
+    if not restored_system and not restored_user:
+        print("No backups found — nothing to restore.")
         sys.exit(1)
 
-    shutil.copy2(backup, conf)
-    backup.unlink()
-    print(f"Restored original autopsy.conf and deleted backup.")
+    print("Restored original autopsy.conf(s).")
     print("Autopsy will run with normal settings again.")
 
 
