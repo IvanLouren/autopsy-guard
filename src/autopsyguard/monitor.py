@@ -161,7 +161,7 @@ def _check_children():
     children = now
 
 
-# ── Type 2 — JVM crash (hs_err_pid files) ──────────────────────────────────
+# ── Type 2 — JVM crash (hs_err_pid files + OOM marker) ─────────────────────
 
 def check_jvm_crash(install_dir):
     global known_hs, hs_ready
@@ -171,13 +171,26 @@ def check_jvm_crash(install_dir):
         if d.is_dir():
             found.update(f.resolve() for f in d.glob("hs_err_pid*.log"))
 
+    # Also check for OOM crash marker file (created by -XX:OnOutOfMemoryError)
+    oom_marker = Path.home() / "oom_crash_marker.txt"
+    if oom_marker.exists():
+        found.add(oom_marker.resolve())
+
     if not hs_ready:
         known_hs = found
         hs_ready = True
         return
 
     for f in found - known_hs:
-        logging.critical("[JVM_CRASH] New crash file: %s", f)
+        if "oom_crash_marker" in f.name:
+            logging.critical("[JVM_CRASH] OOM crash marker detected: %s", f)
+            # Clean up marker file after detection
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        else:
+            logging.critical("[JVM_CRASH] New crash file: %s", f)
     known_hs = found
 
 
