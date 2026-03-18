@@ -56,11 +56,11 @@ def modify_conf(conf):
 
     text = conf.read_text(encoding="utf-8")
 
-    # Replace or add -Xmx512m (enough to start and open case, crashes during ingest)
+    # Replace or add -Xmx1536m (enough to open case, crashes during heavy ingest)
     if "-J-Xmx" in text:
-        text = re.sub(r"-J-Xmx\S+", "-J-Xmx512m", text)
+        text = re.sub(r"-J-Xmx\S+", "-J-Xmx1536m", text)
     else:
-        text = text.replace("-J-Xms24m", "-J-Xms24m -J-Xmx512m")
+        text = text.replace("-J-Xms24m", "-J-Xms24m -J-Xmx1536m")
 
     conf.write_text(text, encoding="utf-8")
     return True
