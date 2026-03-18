@@ -33,6 +33,7 @@ CPU_HIGH = 95.0          # sustained CPU above this = warning
 CPU_HIGH_DURATION = 300  # how long high CPU must last
 MEM_HIGH = 90.0          # % of system RAM
 DISK_MIN_GB = 1.0        # minimum free disk space in GB
+LOG_ERROR_SNIPPET_LEN = 300  # max chars from a matching log line
 
 # ── State (globals to keep things simple) ───────────────────────────────────
 pid = None               # tracked Autopsy PID
@@ -244,7 +245,11 @@ def _scan_log(path):
         elif "FATAL" in line:
             logging.critical("[LOG_ERROR] FATAL in %s", path.name)
         elif "SEVERE" in line:
-            logging.warning("[LOG_ERROR] SEVERE in %s: %.100s", path.name, line.strip())
+            logging.warning(
+                "[LOG_ERROR] SEVERE in %s: %s",
+                path.name,
+                line.strip()[:LOG_ERROR_SNIPPET_LEN],
+            )
 
 
 # ── Type 4 — Hang / Freeze ─────────────────────────────────────────────────
