@@ -16,6 +16,7 @@ class CrashType(enum.Enum):
     HANG = "hang"
     SOLR_CRASH = "solr_crash"
     HIGH_RESOURCE_USAGE = "high_resource_usage"
+    ABNORMAL_EXIT = "abnormal_exit"
     LOG_ERROR = "log_error"
 
 
