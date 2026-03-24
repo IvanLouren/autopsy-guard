@@ -21,6 +21,7 @@ from autopsyguard.detectors.jvm_crash_detector import JvmCrashDetector
 from autopsyguard.detectors.log_detector import LogDetector
 from autopsyguard.detectors.process_detector import ProcessDetector
 from autopsyguard.detectors.resource_detector import ResourceDetector
+from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.models import CrashEvent
 from autopsyguard.platform_utils import (
     find_autopsy_process,
@@ -51,6 +52,7 @@ class Monitor:
             LogDetector(config),
             HangDetector(config),
             ResourceDetector(config),
+            SolrDetector(config),
         ]
         self._running = False
         self._state = MonitorState.WAITING
