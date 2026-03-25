@@ -15,18 +15,9 @@ import sys
 from pathlib import Path
 
 from autopsyguard.config import MonitorConfig
+from autopsyguard.logger import setup_logging
 from autopsyguard.monitor import Monitor
 from autopsyguard.platform_utils import validate_case_dir
-
-
-def setup_logging(verbose: bool = False) -> None:
-    """Configure logging for the application."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,7 +72,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Main entry point."""
     args = parse_args()
-    setup_logging(args.verbose)
+    
+    level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logging(level=level)
     
     logger = logging.getLogger("autopsyguard")
     
