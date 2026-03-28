@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,10 +13,24 @@ import pytest
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.solr_detector import (
     SolrDetector,
+    SolrMetrics,
     SOLR_SLOW_THRESHOLD_SECONDS,
     SOLR_SLOW_COUNT_THRESHOLD,
+    SOLR_HEAP_USAGE_WARNING,
+    SOLR_HEAP_USAGE_CRITICAL,
+    SOLR_CPU_WARNING,
 )
 from autopsyguard.models import CrashType, Severity
+
+
+def _patch_extra_checks(detector: SolrDetector) -> None:
+    """Patch the metrics, cores, and logs checks to return empty lists.
+
+    Used in tests that focus on the basic health/hang detection.
+    """
+    detector._check_metrics = lambda: []
+    detector._check_cores = lambda: []
+    detector._check_logs = lambda: []
 
 
 class TestSolrHealthCheck:
@@ -23,6 +39,7 @@ class TestSolrHealthCheck:
     def test_solr_healthy_no_event(self, config: MonitorConfig) -> None:
         """When Solr responds quickly with 200 OK, no event should be generated."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -40,6 +57,7 @@ class TestSolrHealthCheck:
     def test_solr_down_triggers_critical_event(self, config: MonitorConfig) -> None:
         """When Solr is unreachable, a CRITICAL event should be generated."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
@@ -55,6 +73,7 @@ class TestSolrHealthCheck:
     def test_solr_down_only_reported_once(self, config: MonitorConfig) -> None:
         """Repeated failures should not generate duplicate events."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
@@ -71,6 +90,7 @@ class TestSolrHealthCheck:
     def test_solr_recovery_resets_flag(self, config: MonitorConfig) -> None:
         """When Solr recovers, the reported flag should reset."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -94,6 +114,7 @@ class TestSolrHealthCheck:
     def test_solr_down_after_recovery_reports_again(self, config: MonitorConfig) -> None:
         """If Solr goes down again after recovering, a new event should be generated."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -121,6 +142,7 @@ class TestSolrHealthCheck:
     def test_connection_error_triggers_event(self, config: MonitorConfig) -> None:
         """ConnectionError should also trigger a CRITICAL event."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = ConnectionError("Connection failed")
@@ -143,6 +165,7 @@ class TestSolrHangDetection:
     def test_slow_responses_trigger_hang_warning(self, config: MonitorConfig) -> None:
         """Multiple consecutive slow responses should trigger a HANG event."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -153,7 +176,7 @@ class TestSolrHangDetection:
                 # Simulate slow responses (2.5s each)
                 slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
                 all_events = []
-                
+
                 for i in range(SOLR_SLOW_COUNT_THRESHOLD):
                     mock_time.side_effect = [0.0, slow_time]
                     events = detector.check()
@@ -168,6 +191,7 @@ class TestSolrHangDetection:
     def test_fast_response_resets_slow_counter(self, config: MonitorConfig) -> None:
         """A fast response should reset the consecutive slow counter."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -181,7 +205,7 @@ class TestSolrHangDetection:
                 detector.check()
                 mock_time.side_effect = [0.0, slow_time]
                 detector.check()
-                
+
                 assert detector._consecutive_slow_responses == 2
 
                 # One fast response
@@ -193,6 +217,7 @@ class TestSolrHangDetection:
     def test_timeout_triggers_critical_hang(self, config: MonitorConfig) -> None:
         """A request timeout should trigger a CRITICAL hang event."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -211,6 +236,7 @@ class TestSolrHangDetection:
     def test_hang_not_reported_twice(self, config: MonitorConfig) -> None:
         """Once a hang is reported, don't report again until recovery."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -219,7 +245,7 @@ class TestSolrHangDetection:
                 mock_urlopen.return_value = mock_response
 
                 slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
-                
+
                 # Generate hang event
                 for _ in range(SOLR_SLOW_COUNT_THRESHOLD):
                     mock_time.side_effect = [0.0, slow_time]
@@ -236,6 +262,7 @@ class TestSolrHangDetection:
     def test_hang_recovery_allows_new_report(self, config: MonitorConfig) -> None:
         """After hang recovery, a new hang should be reported."""
         detector = SolrDetector(config)
+        _patch_extra_checks(detector)
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
@@ -244,7 +271,7 @@ class TestSolrHangDetection:
                 mock_urlopen.return_value = mock_response
 
                 slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
-                
+
                 # Generate first hang
                 for _ in range(SOLR_SLOW_COUNT_THRESHOLD):
                     mock_time.side_effect = [0.0, slow_time]
@@ -253,7 +280,7 @@ class TestSolrHangDetection:
                 # Fast response = recovery
                 mock_time.side_effect = [0.0, 0.1]
                 detector.check()
-                
+
                 assert detector._solr_hang_reported is False
                 assert detector._consecutive_slow_responses == 0
 
@@ -266,3 +293,412 @@ class TestSolrHangDetection:
 
                 hang_events = [e for e in all_events if e.crash_type == CrashType.HANG]
                 assert len(hang_events) == 1
+
+
+class TestSolrMetrics:
+    """Tests for Solr metrics monitoring via admin API."""
+
+    def _make_metrics_response(
+        self,
+        heap_used: int = 500 * 1024 * 1024,
+        heap_max: int = 1024 * 1024 * 1024,
+        cpu_load: float = 0.25,
+        thread_count: int = 50,
+    ) -> bytes:
+        """Create a mock Solr metrics API response."""
+        data = {
+            "metrics": {
+                "solr.jvm": {
+                    "memory.heap.used": heap_used,
+                    "memory.heap.max": heap_max,
+                    "os.processCpuLoad": cpu_load,
+                    "threads.count": thread_count,
+                    "gc.G1-Young-Generation.count": 10,
+                    "gc.G1-Young-Generation.time": 500,
+                }
+            }
+        }
+        return json.dumps(data).encode("utf-8")
+
+    def test_metrics_normal_no_event(self, config: MonitorConfig) -> None:
+        """Normal metrics should not generate any events."""
+        detector = SolrDetector(config)
+        detector._check_cores = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                # Health check response
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # Metrics response (50% heap, 25% CPU)
+                metrics_response = MagicMock()
+                metrics_response.read.return_value = self._make_metrics_response()
+
+                mock_urlopen.side_effect = [health_response, metrics_response]
+
+                events = detector.check()
+
+        # No events for normal metrics
+        resource_events = [e for e in events if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]
+        assert len(resource_events) == 0
+
+    def test_high_heap_usage_warning(self, config: MonitorConfig) -> None:
+        """High heap usage should trigger a WARNING event."""
+        detector = SolrDetector(config)
+        detector._check_cores = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # 90% heap usage (above warning threshold)
+                metrics_response = MagicMock()
+                metrics_response.read.return_value = self._make_metrics_response(
+                    heap_used=900 * 1024 * 1024,
+                    heap_max=1024 * 1024 * 1024,
+                )
+
+                mock_urlopen.side_effect = [health_response, metrics_response]
+
+                events = detector.check()
+
+        resource_events = [e for e in events if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]
+        assert len(resource_events) == 1
+        assert resource_events[0].severity == Severity.WARNING
+        assert "heap" in resource_events[0].message.lower()
+
+    def test_critical_heap_usage(self, config: MonitorConfig) -> None:
+        """Critical heap usage should trigger a CRITICAL event."""
+        detector = SolrDetector(config)
+        detector._check_cores = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # 97% heap usage (above critical threshold)
+                metrics_response = MagicMock()
+                metrics_response.read.return_value = self._make_metrics_response(
+                    heap_used=970 * 1024 * 1024,
+                    heap_max=1000 * 1024 * 1024,
+                )
+
+                mock_urlopen.side_effect = [health_response, metrics_response]
+
+                events = detector.check()
+
+        resource_events = [e for e in events if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]
+        assert len(resource_events) == 1
+        assert resource_events[0].severity == Severity.CRITICAL
+
+    def test_high_cpu_warning(self, config: MonitorConfig) -> None:
+        """High CPU usage should trigger a WARNING event."""
+        detector = SolrDetector(config)
+        detector._check_cores = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # 95% CPU usage
+                metrics_response = MagicMock()
+                metrics_response.read.return_value = self._make_metrics_response(
+                    cpu_load=0.95,
+                )
+
+                mock_urlopen.side_effect = [health_response, metrics_response]
+
+                events = detector.check()
+
+        cpu_events = [
+            e for e in events
+            if e.crash_type == CrashType.HIGH_RESOURCE_USAGE and "cpu" in e.message.lower()
+        ]
+        assert len(cpu_events) == 1
+        assert cpu_events[0].severity == Severity.WARNING
+
+    def test_metrics_not_reported_twice(self, config: MonitorConfig) -> None:
+        """Resource warnings should not be reported repeatedly."""
+        detector = SolrDetector(config)
+        detector._check_cores = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # 90% heap usage
+                metrics_response = MagicMock()
+                metrics_response.read.return_value = self._make_metrics_response(
+                    heap_used=900 * 1024 * 1024,
+                    heap_max=1024 * 1024 * 1024,
+                )
+
+                # First check
+                mock_time.side_effect = [0.0, 0.1]
+                mock_urlopen.side_effect = [health_response, metrics_response]
+                events1 = detector.check()
+
+                # Second check with same high heap
+                mock_time.side_effect = [0.0, 0.1]
+                mock_urlopen.side_effect = [health_response, metrics_response]
+                events2 = detector.check()
+
+        # First check should report, second should not
+        assert len([e for e in events1 if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]) == 1
+        assert len([e for e in events2 if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]) == 0
+
+    def test_parse_metrics_handles_value_objects(self, config: MonitorConfig) -> None:
+        """Metrics parser should handle both direct values and value objects."""
+        detector = SolrDetector(config)
+
+        # Solr can return metrics as {"value": X} or just X
+        data = {
+            "metrics": {
+                "solr.jvm": {
+                    "memory.heap.used": {"value": 500 * 1024 * 1024},
+                    "memory.heap.max": {"value": 1024 * 1024 * 1024},
+                    "os.processCpuLoad": {"value": 0.5},
+                    "threads.count": {"value": 100},
+                }
+            }
+        }
+
+        metrics = detector._parse_metrics(data)
+
+        assert metrics.heap_used_mb == pytest.approx(500, rel=0.01)
+        assert metrics.heap_max_mb == pytest.approx(1024, rel=0.01)
+        assert metrics.heap_usage_percent == pytest.approx(48.8, rel=0.1)
+        assert metrics.cpu_percent == pytest.approx(50, rel=0.01)
+        assert metrics.thread_count == 100
+
+
+class TestSolrCoreStatus:
+    """Tests for Solr core status monitoring."""
+
+    def test_core_init_failure_triggers_event(self, config: MonitorConfig) -> None:
+        """Core initialization failure should trigger a CRITICAL event."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # Cores response with init failure
+                cores_data = {
+                    "status": {
+                        "textsearch": {
+                            "index": {"numDocs": 1000, "sizeInBytes": 1024000}
+                        }
+                    },
+                    "initFailures": {
+                        "textsearch": "org.apache.solr.common.SolrException: Index locked"
+                    }
+                }
+                cores_response = MagicMock()
+                cores_response.read.return_value = json.dumps(cores_data).encode("utf-8")
+
+                mock_urlopen.side_effect = [health_response, cores_response]
+
+                events = detector.check()
+
+        solr_events = [e for e in events if e.crash_type == CrashType.SOLR_CRASH]
+        assert len(solr_events) == 1
+        assert solr_events[0].severity == Severity.CRITICAL
+        assert "textsearch" in solr_events[0].message
+
+    def test_healthy_cores_no_event(self, config: MonitorConfig) -> None:
+        """Healthy cores should not generate any events."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_logs = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
+                mock_time.side_effect = [0.0, 0.1]
+
+                health_response = MagicMock()
+                health_response.status = 200
+
+                # Healthy cores response
+                cores_data = {
+                    "status": {
+                        "textsearch": {
+                            "index": {
+                                "numDocs": 1000,
+                                "sizeInBytes": 1024000,
+                                "hasDeletions": False
+                            }
+                        }
+                    },
+                    "initFailures": {}
+                }
+                cores_response = MagicMock()
+                cores_response.read.return_value = json.dumps(cores_data).encode("utf-8")
+
+                mock_urlopen.side_effect = [health_response, cores_response]
+
+                events = detector.check()
+
+        solr_events = [e for e in events if e.crash_type == CrashType.SOLR_CRASH]
+        assert len(solr_events) == 0
+
+
+class TestSolrLogMonitoring:
+    """Tests for Solr log file monitoring."""
+
+    def test_error_in_log_triggers_event(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """ERROR entry in Solr log should trigger a CRITICAL event."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        # Create fake log directory and file
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "solr.log"
+        log_file.write_text("2024-01-01 ERROR SolrCore Something bad happened\n")
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = log_dir
+
+            # Need to bypass the health check since we're testing logs directly
+            with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+                events = detector.check()
+
+        log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
+        assert len(log_events) == 1
+        assert log_events[0].severity == Severity.CRITICAL
+        assert "solr.log" in log_events[0].message
+
+    def test_oom_in_log_triggers_critical(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """OutOfMemoryError in logs should trigger a CRITICAL event."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "solr.log"
+        log_file.write_text("2024-01-01 java.lang.OutOfMemoryError: Java heap space\n")
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = log_dir
+
+            with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+                events = detector.check()
+
+        log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
+        assert len(log_events) == 1
+        assert log_events[0].severity == Severity.CRITICAL
+
+    def test_log_incremental_reading(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """Log reader should only read new content, not re-read old errors."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "solr.log"
+        log_file.write_text("2024-01-01 ERROR First error\n")
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = log_dir
+
+            with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.URLError("x")
+
+                # First check
+                events1 = detector.check()
+
+                # Add new error
+                with open(log_file, "a") as f:
+                    f.write("2024-01-01 ERROR Second error\n")
+
+                # Second check should only see new error
+                events2 = detector.check()
+
+        assert len([e for e in events1 if e.crash_type == CrashType.LOG_ERROR]) == 1
+        assert len([e for e in events2 if e.crash_type == CrashType.LOG_ERROR]) == 1
+
+    def test_missing_log_dir_no_error(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """Missing log directory should not cause errors."""
+        detector = SolrDetector(config)
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        non_existent = tmp_path / "does_not_exist"
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = non_existent
+
+            with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = urllib.error.URLError("x")
+
+                # Should not raise
+                events = detector.check()
+
+        log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
+        assert len(log_events) == 0
+
+
+class TestSolrMetricsDataclass:
+    """Tests for SolrMetrics dataclass."""
+
+    def test_default_values(self) -> None:
+        """SolrMetrics should have sensible defaults."""
+        metrics = SolrMetrics()
+        assert metrics.heap_used_mb == 0.0
+        assert metrics.heap_max_mb == 0.0
+        assert metrics.heap_usage_percent == 0.0
+        assert metrics.cpu_percent == 0.0
+        assert metrics.thread_count == 0
+        assert metrics.gc_count == 0
+        assert metrics.gc_time_ms == 0
+
+    def test_custom_values(self) -> None:
+        """SolrMetrics should accept custom values."""
+        metrics = SolrMetrics(
+            heap_used_mb=512.0,
+            heap_max_mb=1024.0,
+            heap_usage_percent=50.0,
+            cpu_percent=25.0,
+            thread_count=100,
+            gc_count=50,
+            gc_time_ms=1000,
+        )
+        assert metrics.heap_used_mb == 512.0
+        assert metrics.heap_max_mb == 1024.0
+        assert metrics.heap_usage_percent == 50.0
+        assert metrics.cpu_percent == 25.0
+        assert metrics.thread_count == 100
+        assert metrics.gc_count == 50
+        assert metrics.gc_time_ms == 1000
+
