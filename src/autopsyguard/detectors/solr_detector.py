@@ -26,20 +26,6 @@ from autopsyguard.platform_utils import get_autopsy_user_dir
 
 logger = logging.getLogger(__name__)
 
-# Solr port used by Autopsy's embedded instance
-SOLR_PORT = 23232
-SOLR_BASE_URL = f"http://localhost:{SOLR_PORT}"
-
-# Thresholds for hang detection
-SOLR_TIMEOUT_SECONDS = 5.0  # Request timeout
-SOLR_SLOW_THRESHOLD_SECONDS = 2.0  # Responses slower than this are "slow"
-SOLR_SLOW_COUNT_THRESHOLD = 3  # Consecutive slow responses = hang
-
-# Resource thresholds
-SOLR_HEAP_USAGE_WARNING = 85.0  # Percent heap usage warning
-SOLR_HEAP_USAGE_CRITICAL = 95.0  # Percent heap usage critical
-SOLR_CPU_WARNING = 90.0  # Percent CPU warning
-
 
 @dataclass
 class SolrMetrics:
@@ -90,17 +76,20 @@ class SolrDetector(BaseDetector):
         events: list[CrashEvent] = []
 
         # Health check endpoint
-        solr_url = f"{SOLR_BASE_URL}/solr/admin/info/system"
+        solr_url = f"{self._solr_base_url}/solr/admin/info/system"
 
         start_time = time.time()
         try:
-            response = urllib.request.urlopen(solr_url, timeout=SOLR_TIMEOUT_SECONDS)
+            response = urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds)
             elapsed = time.time() - start_time
 
             if response.status == 200:
                 # Solr is alive — check if it was previously down
                 if self._solr_down_reported:
-                    logger.info("Solr service has recovered and is responding on port %d.", SOLR_PORT)
+                    logger.info(
+                        "Solr service has recovered and is responding on port %d.",
+                        self.config.solr_port,
+                    )
                 self._solr_down_reported = False
 
                 # Check for slow response (potential hang)
@@ -130,26 +119,26 @@ class SolrDetector(BaseDetector):
         """Detect Solr hang via consistently slow responses."""
         events: list[CrashEvent] = []
         
-        if elapsed >= SOLR_SLOW_THRESHOLD_SECONDS:
+        if elapsed >= self.config.solr_slow_threshold_seconds:
             self._consecutive_slow_responses += 1
             logger.debug(
                 "Solr slow response: %.2fs (consecutive: %d)",
                 elapsed, self._consecutive_slow_responses
             )
             
-            if (self._consecutive_slow_responses >= SOLR_SLOW_COUNT_THRESHOLD
+            if (self._consecutive_slow_responses >= self.config.solr_slow_count_threshold
                     and not self._solr_hang_reported):
                 events.append(CrashEvent(
                     crash_type=CrashType.HANG,
                     severity=Severity.WARNING,
                     message=(
                         f"Solr appears hung — {self._consecutive_slow_responses} consecutive "
-                        f"slow responses (>{SOLR_SLOW_THRESHOLD_SECONDS}s each)"
+                        f"slow responses (>{self.config.solr_slow_threshold_seconds}s each)"
                     ),
                     details={
                         "last_response_time": elapsed,
                         "consecutive_slow_count": self._consecutive_slow_responses,
-                        "threshold_seconds": SOLR_SLOW_THRESHOLD_SECONDS,
+                        "threshold_seconds": self.config.solr_slow_threshold_seconds,
                     },
                 ))
                 self._solr_hang_reported = True
@@ -176,7 +165,7 @@ class SolrDetector(BaseDetector):
                     f"service may be frozen"
                 ),
                 details={
-                    "timeout_seconds": SOLR_TIMEOUT_SECONDS,
+                    "timeout_seconds": self.config.solr_timeout_seconds,
                     "elapsed": elapsed,
                 },
             ))
@@ -192,7 +181,7 @@ class SolrDetector(BaseDetector):
             events.append(CrashEvent(
                 crash_type=CrashType.SOLR_CRASH,
                 severity=Severity.CRITICAL,
-                message=f"Solr service not responding on port {SOLR_PORT}",
+                message=f"Solr service not responding on port {self.config.solr_port}",
                 details={"error": str(error), "url": url},
             ))
             self._solr_down_reported = True
@@ -223,7 +212,7 @@ class SolrDetector(BaseDetector):
             return events
 
         # Check heap usage
-        if metrics.heap_usage_percent >= SOLR_HEAP_USAGE_CRITICAL:
+        if metrics.heap_usage_percent >= self.config.solr_heap_usage_critical:
             if not self._heap_warning_reported:
                 events.append(CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
@@ -243,7 +232,7 @@ class SolrDetector(BaseDetector):
                     },
                 ))
                 self._heap_warning_reported = True
-        elif metrics.heap_usage_percent >= SOLR_HEAP_USAGE_WARNING:
+        elif metrics.heap_usage_percent >= self.config.solr_heap_usage_warning:
             if not self._heap_warning_reported:
                 events.append(CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
@@ -267,7 +256,7 @@ class SolrDetector(BaseDetector):
             self._heap_warning_reported = False
 
         # Check CPU usage
-        if metrics.cpu_percent >= SOLR_CPU_WARNING:
+        if metrics.cpu_percent >= self.config.solr_cpu_warning:
             if not self._cpu_warning_reported:
                 events.append(CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
@@ -299,9 +288,9 @@ class SolrDetector(BaseDetector):
 
         Uses /solr/admin/metrics to get JVM memory, CPU, threads, and GC stats.
         """
-        metrics_url = f"{SOLR_BASE_URL}/solr/admin/metrics?group=jvm&wt=json"
+        metrics_url = f"{self._solr_base_url}/solr/admin/metrics?group=jvm&wt=json"
         try:
-            response = urllib.request.urlopen(metrics_url, timeout=SOLR_TIMEOUT_SECONDS)
+            response = urllib.request.urlopen(metrics_url, timeout=self.config.solr_timeout_seconds)
             data = json.loads(response.read().decode("utf-8"))
             return self._parse_metrics(data)
         except (urllib.error.URLError, json.JSONDecodeError, KeyError) as e:
@@ -362,10 +351,10 @@ class SolrDetector(BaseDetector):
     def _check_cores(self) -> list[CrashEvent]:
         """Check Solr core status for errors or issues."""
         events: list[CrashEvent] = []
-        cores_url = f"{SOLR_BASE_URL}/solr/admin/cores?action=STATUS&wt=json"
+        cores_url = f"{self._solr_base_url}/solr/admin/cores?action=STATUS&wt=json"
 
         try:
-            response = urllib.request.urlopen(cores_url, timeout=SOLR_TIMEOUT_SECONDS)
+            response = urllib.request.urlopen(cores_url, timeout=self.config.solr_timeout_seconds)
             data = json.loads(response.read().decode("utf-8"))
             status = data.get("status", {})
 
@@ -486,4 +475,8 @@ class SolrDetector(BaseDetector):
         Useful for reporting/dashboard purposes.
         """
         return self._fetch_metrics()
+
+    @property
+    def _solr_base_url(self) -> str:
+        return f"http://localhost:{self.config.solr_port}"
 

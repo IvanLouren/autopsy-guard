@@ -14,11 +14,6 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.solr_detector import (
     SolrDetector,
     SolrMetrics,
-    SOLR_SLOW_THRESHOLD_SECONDS,
-    SOLR_SLOW_COUNT_THRESHOLD,
-    SOLR_HEAP_USAGE_WARNING,
-    SOLR_HEAP_USAGE_CRITICAL,
-    SOLR_CPU_WARNING,
 )
 from autopsyguard.models import CrashType, Severity
 
@@ -174,10 +169,10 @@ class TestSolrHangDetection:
                 mock_urlopen.return_value = mock_response
 
                 # Simulate slow responses (2.5s each)
-                slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
+                slow_time = config.solr_slow_threshold_seconds + 0.5
                 all_events = []
 
-                for i in range(SOLR_SLOW_COUNT_THRESHOLD):
+                for _ in range(config.solr_slow_count_threshold):
                     mock_time.side_effect = [0.0, slow_time]
                     events = detector.check()
                     all_events.extend(events)
@@ -200,7 +195,7 @@ class TestSolrHangDetection:
                 mock_urlopen.return_value = mock_response
 
                 # Two slow responses
-                slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
+                slow_time = config.solr_slow_threshold_seconds + 0.5
                 mock_time.side_effect = [0.0, slow_time]
                 detector.check()
                 mock_time.side_effect = [0.0, slow_time]
@@ -244,10 +239,10 @@ class TestSolrHangDetection:
                 mock_response.status = 200
                 mock_urlopen.return_value = mock_response
 
-                slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
+                slow_time = config.solr_slow_threshold_seconds + 0.5
 
                 # Generate hang event
-                for _ in range(SOLR_SLOW_COUNT_THRESHOLD):
+                for _ in range(config.solr_slow_count_threshold):
                     mock_time.side_effect = [0.0, slow_time]
                     detector.check()
 
@@ -270,10 +265,10 @@ class TestSolrHangDetection:
                 mock_response.status = 200
                 mock_urlopen.return_value = mock_response
 
-                slow_time = SOLR_SLOW_THRESHOLD_SECONDS + 0.5
+                slow_time = config.solr_slow_threshold_seconds + 0.5
 
                 # Generate first hang
-                for _ in range(SOLR_SLOW_COUNT_THRESHOLD):
+                for _ in range(config.solr_slow_count_threshold):
                     mock_time.side_effect = [0.0, slow_time]
                     detector.check()
 
@@ -286,7 +281,7 @@ class TestSolrHangDetection:
 
                 # New hang should be reported
                 all_events = []
-                for _ in range(SOLR_SLOW_COUNT_THRESHOLD):
+                for _ in range(config.solr_slow_count_threshold):
                     mock_time.side_effect = [0.0, slow_time]
                     events = detector.check()
                     all_events.extend(events)
