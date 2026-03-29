@@ -7,6 +7,7 @@ Covers crash types:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import urllib.request
@@ -49,12 +50,13 @@ class SolrDetector(BaseDetector):
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
 
-        # Health check endpoint
-        solr_url = f"{SOLR_BASE_URL}/solr/admin/info/system"
+        # Health check endpoint (JSON format)
+        solr_url = f"{SOLR_BASE_URL}/solr/admin/info/system?wt=json"
         
         start_time = time.time()
         try:
             response = urllib.request.urlopen(solr_url, timeout=SOLR_TIMEOUT_SECONDS)
+            body = response.read().decode('utf-8')
             elapsed = time.time() - start_time
             
             if response.status == 200:
@@ -65,6 +67,13 @@ class SolrDetector(BaseDetector):
                 
                 # Check for slow response (potential hang)
                 events.extend(self._check_slow_response(elapsed))
+                
+                # Parse Hardware Metrics
+                try:
+                    data = json.loads(body)
+                    events.extend(self._check_hardware_metrics(data))
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse JSON from Solr APIs")
                 
         except urllib.error.URLError as e:
             # Timeout is a URLError with a socket.timeout reason
@@ -77,6 +86,36 @@ class SolrDetector(BaseDetector):
         except ConnectionError as e:
             events.extend(self._handle_connection_error(e, solr_url))
 
+        return events
+
+    def _check_hardware_metrics(self, data: dict) -> list[CrashEvent]:
+        """Extract CPU and RAM usage from the Solr JSON payload."""
+        events: list[CrashEvent] = []
+        try:
+            # systemCpuLoad is 0.0 to 1.0
+            cpu_percent = data.get("system", {}).get("systemCpuLoad", 0.0) * 100.0
+            
+            # JVM RAM used percent
+            ram_percent = data.get("jvm", {}).get("memory", {}).get("raw", {}).get("used%", 0.0)
+            
+            if cpu_percent > self.config.cpu_warning_percent:
+                events.append(CrashEvent(
+                    crash_type=CrashType.HIGH_RESOURCE_USAGE,
+                    severity=Severity.WARNING,
+                    message=f"Solr is using excessive CPU: {cpu_percent:.1f}%",
+                    details={"cpu_percent": cpu_percent}
+                ))
+                
+            if ram_percent > self.config.memory_warning_percent:
+                events.append(CrashEvent(
+                    crash_type=CrashType.HIGH_RESOURCE_USAGE,
+                    severity=Severity.WARNING,
+                    message=f"Solr JVM Heap is dangerously full: {ram_percent:.1f}%",
+                    details={"ram_percent": ram_percent}
+                ))
+        except Exception as e:
+            logger.debug("Failed to extract specific metrics from Solr JSON: %s", e)
+            
         return events
 
     def _check_slow_response(self, elapsed: float) -> list[CrashEvent]:
