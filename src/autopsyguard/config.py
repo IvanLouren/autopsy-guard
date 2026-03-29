@@ -50,6 +50,17 @@ class MonitorConfig:
     solr_heap_usage_critical: float = 95.0
     solr_cpu_warning: float = 90.0
 
+    # --- Email / Notifications ---
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    email_sender: str = "autopsyguard@example.com"
+    email_recipient: str = ""
+
+    # --- Periodic Reporting ---
+    report_interval_hours: float = 12.0
+
     # --- Log error patterns ---
     error_patterns: list[str] = field(default_factory=lambda: [
         "java.lang.OutOfMemoryError",
@@ -130,6 +141,13 @@ _SUPPORTED_CONFIG_KEYS = {
     "solr_heap_usage_critical",
     "solr_cpu_warning",
     "error_patterns",
+    "smtp_host",
+    "smtp_port",
+    "smtp_user",
+    "smtp_password",
+    "email_sender",
+    "email_recipient",
+    "report_interval_hours",
 }
 
 _PATH_KEYS = {"case_dir", "autopsy_install_dir"}
