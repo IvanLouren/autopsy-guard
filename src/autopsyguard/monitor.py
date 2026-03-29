@@ -22,7 +22,8 @@ from autopsyguard.detectors.log_detector import LogDetector
 from autopsyguard.detectors.process_detector import ProcessDetector
 from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
-from autopsyguard.models import CrashEvent
+from autopsyguard.models import CrashEvent, Severity
+from autopsyguard.notifier import EmailNotifier
 from autopsyguard.platform_utils import (
     find_autopsy_process,
     get_case_lock_file,
@@ -54,8 +55,11 @@ class Monitor:
             ResourceDetector(config),
             SolrDetector(config),
         ]
+        self.notifier = EmailNotifier(config)
         self._running = False
         self._state = MonitorState.WAITING
+        self._last_report_time = time.time()
+        self._events_since_last_report = 0
 
     def _is_case_active(self) -> bool:
         """Check if Autopsy is running and the case is open."""
@@ -128,8 +132,27 @@ class Monitor:
     def _handle_active(self) -> None:
         """Run detectors while the case is being processed."""
         events = self.run_once()
-        for event in events:
-            self._handle_event(event)
+        
+        if events:
+            # Send immediate alert for critical/warning events
+            alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
+            if alert_events:
+                self.notifier.send_alert(alert_events)
+                
+            for event in events:
+                self._handle_event(event)
+                self._events_since_last_report += 1
+
+        # Check periodic reporting (Heartbeat)
+        now = time.time()
+        elapsed_hours = (now - self._last_report_time) / 3600.0
+        if elapsed_hours >= self.config.report_interval_hours:
+            self.notifier.send_report(
+                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                events_last_period=self._events_since_last_report
+            )
+            self._last_report_time = now
+            self._events_since_last_report = 0
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         pid = find_autopsy_process()
