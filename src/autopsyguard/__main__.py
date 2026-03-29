@@ -1,7 +1,7 @@
 """CLI entry point for AutopsyGuard.
 
 Usage:
-    python -m autopsyguard <case_dir> [options]
+    python -m autopsyguard [case_dir] [options]
 
 Example:
     python -m autopsyguard "C:/Cases/MyCase" --poll-interval 10
@@ -30,27 +30,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "case_dir",
         type=Path,
+        nargs="?",
+        default=None,
         help="Path to the Autopsy case directory to monitor",
+    )
+
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to YAML config file (default: ./config.yml when present)",
     )
     
     parser.add_argument(
         "--autopsy-dir",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS,
         help="Path to Autopsy installation directory (for JVM crash detection)",
     )
     
     parser.add_argument(
         "--poll-interval",
         type=float,
-        default=10.0,
+        default=argparse.SUPPRESS,
         help="Polling interval in seconds (default: 10)",
     )
     
     parser.add_argument(
         "--hang-timeout",
         type=float,
-        default=300.0,
+        default=argparse.SUPPRESS,
         help="Seconds of inactivity before declaring a hang (default: 300)",
     )
     
@@ -79,7 +88,33 @@ def main() -> int:
     logger = logging.getLogger("autopsyguard")
     
     # Validate case directory
-    case_dir = args.case_dir.resolve()
+    config_path = args.config
+    if config_path is None:
+        default_config = Path.cwd() / "config.yml"
+        config_path = default_config if default_config.is_file() else None
+    else:
+        config_path = config_path.resolve()
+
+    try:
+        overrides = {
+            "case_dir": args.case_dir.resolve() if args.case_dir is not None else None,
+        }
+        if hasattr(args, "autopsy_dir"):
+            overrides["autopsy_install_dir"] = args.autopsy_dir.resolve()
+        if hasattr(args, "poll_interval"):
+            overrides["poll_interval"] = args.poll_interval
+        if hasattr(args, "hang_timeout"):
+            overrides["hang_timeout"] = args.hang_timeout
+
+        config = MonitorConfig.from_sources(
+            yaml_path=config_path,
+            overrides=overrides,
+        )
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+
+    case_dir = config.case_dir.resolve()
     if not args.skip_validation:
         if not case_dir.exists():
             logger.error("Case directory does not exist: %s", case_dir)
@@ -91,14 +126,6 @@ def main() -> int:
                 case_dir,
             )
             return 1
-    
-    # Build configuration
-    config = MonitorConfig(
-        case_dir=case_dir,
-        autopsy_install_dir=args.autopsy_dir,
-        poll_interval=args.poll_interval,
-        hang_timeout=args.hang_timeout,
-    )
     
     logger.info("=" * 60)
     logger.info("AutopsyGuard - Forensic Software Monitor")
