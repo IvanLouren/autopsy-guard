@@ -74,8 +74,8 @@ class Monitor:
             try:
                 new_events = detector.check()
                 events.extend(new_events)
-            except Exception:
-                logger.exception("Error in detector %s", detector.name)
+            except Exception as e:
+                logger.warning("Detector %s failed: %s", detector.name, e)
         return events
 
     def run(self) -> None:

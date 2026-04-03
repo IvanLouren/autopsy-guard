@@ -95,6 +95,6 @@ class EmailNotifier:
                 
             logger.info("Email '%s' enviado com sucesso para %s", subject, self.config.email_recipient)
             return True
-        except Exception as e:
+        except (smtplib.SMTPException, OSError, TimeoutError) as e:
             logger.error("Falha ao enviar e-mail por SMTP: %s", e)
             return False

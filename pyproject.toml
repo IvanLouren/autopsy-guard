@@ -1,7 +1,7 @@
 [project]
 name = "autopsyguard"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time monitoring system for Autopsy digital forensics tool"
 requires-python = ">=3.11"
 dependencies = [
     "psutil>=7.2.2",
