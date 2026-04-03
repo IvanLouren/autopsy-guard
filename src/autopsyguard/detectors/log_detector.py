@@ -46,9 +46,7 @@ class LogDetector(BaseDetector):
                 if log_file.is_file():
                     self._file_offsets[log_file] = log_file.stat().st_size
             self._initialised = True
-            logger.info(
-                "LogDetector initialised — tracking %d log file(s)", len(log_files)
-            )
+            logger.debug("LogDetector: tracking %d log file(s)", len(log_files))
             return []
 
         events: list[CrashEvent] = []

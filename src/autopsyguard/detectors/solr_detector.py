@@ -424,8 +424,7 @@ class SolrDetector(BaseDetector):
 
         if not self._initialized:
             self._initialized = True
-            logger.info("SolrDetector log monitoring initialised — tracking %d log file(s)", 
-                       len(self._last_log_position))
+            logger.debug("SolrDetector: tracking %d Solr log file(s)", len(self._last_log_position))
 
         return events
 

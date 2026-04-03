@@ -51,7 +51,7 @@ class ProcessDetector(BaseDetector):
             # Try to discover the Autopsy process
             self._tracked_pid = self._find_autopsy_pid()
             if self._tracked_pid is not None:
-                logger.info("Tracking Autopsy process PID %d", self._tracked_pid)
+                logger.debug("Tracking Autopsy PID %d", self._tracked_pid)
                 self._process_lost_reported = False
                 self._tracked_children = self._snapshot_children(self._tracked_pid)
             else:

@@ -18,10 +18,19 @@ ERROS DISPONÍVEIS:
 
 import argparse
 import os
+import platform
 import random
 import sys
 from datetime import datetime
 from pathlib import Path
+
+
+def get_autopsy_user_dir() -> Path:
+    """Retorna o diretório de dados do Autopsy no perfil do utilizador."""
+    if platform.system() == "Windows":
+        return Path(os.environ.get("APPDATA", "")) / "autopsy"
+    else:
+        return Path.home() / ".autopsy"
 
 
 def get_case_log_path(case_dir: Path) -> Path:
@@ -29,9 +38,9 @@ def get_case_log_path(case_dir: Path) -> Path:
     return case_dir / "Log" / "autopsy.log.0"
 
 
-def get_solr_log_dir(case_dir: Path) -> Path:
-    """Retorna o diretório de logs do Solr."""
-    return case_dir / "ModuleOutput" / "KeywordSearch"
+def get_solr_log_dir() -> Path:
+    """Retorna o diretório de logs do Solr (localização real do Autopsy)."""
+    return get_autopsy_user_dir() / "var" / "log" / "solr"
 
 
 def inject_log_error(case_dir: Path, error_type: str) -> bool:
@@ -64,9 +73,10 @@ def inject_log_error(case_dir: Path, error_type: str) -> bool:
 
 
 def create_jvm_crash_file(case_dir: Path) -> bool:
-    """Cria um ficheiro de crash JVM falso (hs_err_pid*.log)."""
+    """Cria um ficheiro de crash JVM falso (hs_err_pid*.log) no diretório HOME."""
     pid = random.randint(10000, 99999)
-    crash_file = case_dir / f"hs_err_pid{pid}.log"
+    # JVM crash files go to user home directory (where JvmCrashDetector looks)
+    crash_file = Path.home() / f"hs_err_pid{pid}.log"
     
     crash_content = f"""#
 # A fatal error has been detected by the Java Runtime Environment:
@@ -89,22 +99,25 @@ def create_jvm_crash_file(case_dir: Path) -> bool:
         f.write(crash_content)
     
     print(f"✅ Ficheiro de crash JVM criado: {crash_file}")
+    print(f"   (JvmCrashDetector procura em: {Path.home()})")
     return True
 
 
-def inject_solr_error(case_dir: Path, error_type: str) -> bool:
-    """Injeta erro no log do Solr."""
-    solr_log_dir = get_solr_log_dir(case_dir)
+def inject_solr_error(error_type: str) -> bool:
+    """Injeta erro no log do Solr (localização real)."""
+    solr_log_dir = get_solr_log_dir()
     
     if not solr_log_dir.exists():
-        solr_log_dir.mkdir(parents=True, exist_ok=True)
+        print(f"❌ Diretório de logs do Solr não existe: {solr_log_dir}")
+        print("   O Autopsy precisa de estar a correr para criar os logs do Solr.")
+        return False
     
-    # Find or create solr log file
-    solr_logs = list(solr_log_dir.glob("solr*.log"))
-    if solr_logs:
-        log_file = solr_logs[0]
-    else:
-        log_file = solr_log_dir / "solr.log"
+    # Use the main solr.log file
+    log_file = solr_log_dir / "solr.log"
+    
+    if not log_file.exists():
+        print(f"❌ Ficheiro de log do Solr não existe: {log_file}")
+        return False
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     
@@ -118,8 +131,10 @@ def inject_solr_error(case_dir: Path, error_type: str) -> bool:
         print(f"❌ Tipo de erro Solr desconhecido: {error_type}")
         return False
     
-    with open(log_file, "a", encoding="utf-8") as f:
+    # Use same encoding as Solr (typically system default on Windows)
+    with open(log_file, "a", encoding="utf-8", errors="replace") as f:
         f.write(error_line + "\n")
+        f.flush()
     
     print(f"✅ Erro Solr injetado em: {log_file}")
     print(f"   Linha: {error_line[:80]}...")
@@ -128,7 +143,8 @@ def inject_solr_error(case_dir: Path, error_type: str) -> bool:
 
 def list_available_errors():
     """Lista todos os erros disponíveis para simulação."""
-    print("""
+    solr_log_dir = get_solr_log_dir()
+    print(f"""
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                    DEMO SIMULATOR - Erros Disponíveis                         ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
@@ -141,6 +157,11 @@ def list_available_errors():
 ║  solr-error    │ SolrDetector    │ WARNING    │ Erro no log do Solr           ║
 ║  solr-oom      │ SolrDetector    │ CRITICAL   │ OOM no log do Solr            ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+LOCALIZAÇÕES DOS FICHEIROS:
+  • Logs Autopsy:  <case_dir>/Log/autopsy.log.0
+  • Logs Solr:     {solr_log_dir}
+  • JVM Crash:     {Path.home()}
 
 EXEMPLO DE USO:
     uv run python demo_simulator.py --case-dir "C:\\Cases\\MeuCaso" --error log-oom
@@ -174,8 +195,24 @@ def main():
         list_available_errors()
         return
     
+    # Solr errors don't need case_dir
+    if args.error and args.error.startswith("solr-"):
+        success = inject_solr_error(args.error)
+        if success:
+            print("\n🎯 O AutopsyGuard deve detetar este erro no próximo ciclo de polling (10s)")
+            print("📧 Verifica o Mailtrap para ver o alerta: https://mailtrap.io/inboxes")
+        return
+    
+    # JVM crash doesn't need case_dir either (goes to home)
+    if args.error == "jvm-crash":
+        success = create_jvm_crash_file(Path("."))  # case_dir not used
+        if success:
+            print("\n🎯 O AutopsyGuard deve detetar este erro no próximo ciclo de polling (10s)")
+            print("📧 Verifica o Mailtrap para ver o alerta: https://mailtrap.io/inboxes")
+        return
+    
     if not args.case_dir:
-        print("❌ Erro: --case-dir é obrigatório")
+        print("❌ Erro: --case-dir é obrigatório para erros de log")
         print("   Use: --error list para ver opções disponíveis")
         sys.exit(1)
     
@@ -189,10 +226,6 @@ def main():
     
     if error_type.startswith("log-"):
         success = inject_log_error(case_dir, error_type)
-    elif error_type == "jvm-crash":
-        success = create_jvm_crash_file(case_dir)
-    elif error_type.startswith("solr-"):
-        success = inject_solr_error(case_dir, error_type)
     else:
         print(f"❌ Erro desconhecido: {error_type}")
         success = False

@@ -43,10 +43,7 @@ class JvmCrashDetector(BaseDetector):
             # First run: record existing files without alerting
             self._known_files = current_files
             self._initialised = True
-            logger.info(
-                "JvmCrashDetector initialised — %d pre-existing hs_err files",
-                len(current_files),
-            )
+            logger.debug("JvmCrashDetector: %d pre-existing hs_err files", len(current_files))
             return []
 
         new_files = current_files - self._known_files

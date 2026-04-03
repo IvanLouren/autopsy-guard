@@ -127,13 +127,14 @@ def main() -> int:
             )
             return 1
     
-    logger.info("=" * 60)
-    logger.info("AutopsyGuard - Forensic Software Monitor")
-    logger.info("=" * 60)
-    logger.info("Case directory: %s", config.case_dir)
-    logger.info("Poll interval: %.1fs", config.poll_interval)
-    logger.info("Hang timeout: %.1fs", config.hang_timeout)
-    logger.info("=" * 60)
+    # Clean startup banner
+    print("\n╔═══════════════════════════════════════════════════════════╗")
+    print("║           🔍 AutopsyGuard - Forensic Monitor 🔍           ║")
+    print("╚═══════════════════════════════════════════════════════════╝")
+    print(f"  Case:     {config.case_dir.name}")
+    print(f"  Polling:  {config.poll_interval:.0f}s │ Hang timeout: {config.hang_timeout:.0f}s")
+    print(f"  Email:    {'✅ Enabled' if config.smtp_host else '❌ Disabled'}")
+    print("─" * 61)
     
     # Create and run monitor
     monitor = Monitor(config)

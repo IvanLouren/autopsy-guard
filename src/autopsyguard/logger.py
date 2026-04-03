@@ -4,15 +4,22 @@ from pathlib import Path
 
 def setup_logging(log_dir: Path | None = None, level: int = logging.INFO) -> None:
     """Configure centralized logging for AutopsyGuard."""
-    # Define the standard format for all our logs
-    log_format = logging.Formatter(
+    
+    # Concise format for console (no module path clutter)
+    console_format = logging.Formatter(
+        "%(asctime)s │ %(levelname)-7s │ %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    
+    # Detailed format for file (includes module for debugging)
+    file_format = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     # 1. Console Handler (Prints to terminal)
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(log_format)
+    console_handler.setFormatter(console_format)
 
     # Get the root logger and set the level
     root_logger = logging.getLogger()
@@ -31,5 +38,5 @@ def setup_logging(log_dir: Path | None = None, level: int = logging.INFO) -> Non
         file_handler = RotatingFileHandler(
             log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
         )
-        file_handler.setFormatter(log_format)
+        file_handler.setFormatter(file_format)
         root_logger.addHandler(file_handler)

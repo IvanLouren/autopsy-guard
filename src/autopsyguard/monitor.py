@@ -86,11 +86,7 @@ class Monitor:
         """
         self._running = True
         self._state = MonitorState.WAITING
-        logger.info(
-            "AutopsyGuard starting — monitoring case at %s (poll every %.1fs)",
-            self.config.case_dir,
-            self.config.poll_interval,
-        )
+        logger.info("Waiting for Autopsy process...")
 
         try:
             while self._running:
@@ -104,10 +100,10 @@ class Monitor:
                 time.sleep(self.config.poll_interval)
 
         except KeyboardInterrupt:
-            logger.info("Monitoring stopped by user")
+            pass
         finally:
             self._running = False
-            logger.info("AutopsyGuard stopped (state: %s)", self._state.value)
+            logger.info("Monitor stopped")
 
     def stop(self) -> None:
         """Signal the monitoring loop to stop."""
@@ -117,16 +113,14 @@ class Monitor:
         """Wait until Autopsy is running and the case is active."""
         if self._is_case_active():
             self._state = MonitorState.ACTIVE
-            logger.info(
-                "Autopsy is running and case is active — starting detection"
-            )
+            logger.info("✅ Autopsy detected — monitoring active")
         else:
             pid = find_autopsy_process()
             lock = get_case_lock_file(self.config.case_dir).exists()
             logger.debug(
-                "Waiting for Autopsy (process: %s, lock file: %s)",
-                pid if pid else "not found",
-                "present" if lock else "absent",
+                "Waiting... (process: %s, lock: %s)",
+                pid if pid else "no",
+                "yes" if lock else "no",
             )
 
     def _handle_active(self) -> None:
@@ -161,9 +155,7 @@ class Monitor:
         if pid is None and not lock_exists:
             # Graceful shutdown: process exited and lock file was cleaned up
             self._state = MonitorState.FINISHED
-            logger.info(
-                "Autopsy shut down gracefully — case processing complete"
-            )
+            logger.info("Autopsy finished — case complete")
         elif pid is None and lock_exists:
             # Process gone but lock file remains — crash already detected
             # by ProcessDetector; stay active in case Autopsy restarts
@@ -171,5 +163,11 @@ class Monitor:
 
     @staticmethod
     def _handle_event(event: CrashEvent) -> None:
-        """Log a detected event.  Future: send email / webhook / etc."""
-        logger.warning("EVENT DETECTED: %s", event)
+        """Log a detected event."""
+        severity_icon = "🔴" if event.severity.name == "CRITICAL" else "🟡"
+        logger.warning(
+            "%s %s: %s", 
+            severity_icon, 
+            event.crash_type.name, 
+            event.message
+        )
