@@ -2,15 +2,21 @@
 
 Covers crash type 4: Application Hang/Freeze.
 
-A hang is detected via two independent signals:
+A hang is detected when MULTIPLE signals occur together:
   - CPU usage near zero for an extended period while the process is alive
   - Log files stop being written to for an extended period
+  - Solr service is unresponsive or slow
+
+A single signal alone (e.g., low CPU) is NOT sufficient - Autopsy may be
+legitimately idle waiting for user input or after completing processing.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 import psutil
@@ -24,14 +30,32 @@ logger = logging.getLogger(__name__)
 
 
 class HangDetector(BaseDetector):
-    """Detects application hangs via CPU inactivity and log file staleness."""
+    """Detects application hangs via correlation of multiple signals.
+    
+    Hang detection requires at least 2 of 3 signals to trigger:
+      1. CPU near zero for extended period
+      2. Log files not updated for extended period  
+      3. Solr service unresponsive
+    
+    This prevents false positives when Autopsy is legitimately idle.
+    """
 
     def __init__(self, config: MonitorConfig) -> None:
         super().__init__(config)
-        self._low_cpu_since: float | None = None
-        self._log_stale_since: float | None = None
+        # CPU tracking
+        self._low_cpu_start: float | None = None
+        self._last_cpu_value: float | None = None
+        
+        # Log tracking
+        self._log_stale_start: float | None = None
         self._last_log_mtime: float | None = None
+        
+        # Solr tracking
+        self._solr_unresponsive_start: float | None = None
+        
+        # Hang state
         self._hang_reported = False
+        self._hang_start_time: float | None = None
 
     @property
     def name(self) -> str:
@@ -41,113 +65,173 @@ class HangDetector(BaseDetector):
         events: list[CrashEvent] = []
         now = time.time()
 
-        cpu_hang = self._check_cpu_hang(now)
-        log_hang = self._check_log_stale(now)
-
-        if cpu_hang and not self._hang_reported:
-            events.append(cpu_hang)
-            self._hang_reported = True
-        if log_hang and not self._hang_reported:
-            events.append(log_hang)
-            self._hang_reported = True
-
-        # Reset if conditions clear
-        if not cpu_hang and not log_hang:
-            self._hang_reported = False
+        # Collect signals
+        cpu_signal = self._check_cpu_signal(now)
+        log_signal = self._check_log_signal(now)
+        solr_signal = self._check_solr_signal(now)
+        
+        # Count active signals
+        signals = [cpu_signal, log_signal, solr_signal]
+        active_signals = sum(1 for s in signals if s is not None)
+        
+        # Need at least 2 signals to declare a hang
+        if active_signals >= 2 and not self._hang_reported:
+            if self._hang_start_time is None:
+                self._hang_start_time = now
+            
+            hang_duration = now - self._hang_start_time
+            
+            # Only report after sustained correlation
+            if hang_duration >= 60:  # 1 minute of correlated signals
+                signal_names = []
+                if cpu_signal:
+                    signal_names.append(f"CPU {cpu_signal['cpu']:.1f}%")
+                if log_signal:
+                    signal_names.append(f"logs stale {log_signal['stale_seconds']:.0f}s")
+                if solr_signal:
+                    signal_names.append(f"Solr {solr_signal['status']}")
+                
+                events.append(CrashEvent(
+                    crash_type=CrashType.HANG,
+                    severity=Severity.CRITICAL,
+                    message=f"Possible hang detected: {', '.join(signal_names)}",
+                    details={
+                        "signals_active": active_signals,
+                        "cpu_signal": cpu_signal,
+                        "log_signal": log_signal,
+                        "solr_signal": solr_signal,
+                        "hang_duration": hang_duration,
+                    },
+                ))
+                self._hang_reported = True
+        
+        elif active_signals < 2:
+            # Signals cleared - reset hang tracking
+            self._hang_start_time = None
+            if self._hang_reported:
+                logger.info("Hang condition cleared")
+                self._hang_reported = False
 
         return events
 
-    # ------------------------------------------------------------------
-    # CPU-based hang detection
-    # ------------------------------------------------------------------
-
-    def _check_cpu_hang(self, now: float) -> CrashEvent | None:
-        """Detect when Autopsy's CPU usage stays near zero."""
+    def _check_cpu_signal(self, now: float) -> dict | None:
+        """Check if CPU is suspiciously low.
+        
+        Returns signal dict if CPU has been below threshold for timeout period.
+        """
         pid = self._find_autopsy_pid()
         if pid is None:
-            self._low_cpu_since = None
+            self._low_cpu_start = None
+            self._last_cpu_value = None
             return None
 
         try:
             proc = psutil.Process(pid)
-            cpu = proc.cpu_percent(interval=0)
+            # Use interval=0.1 for a quick but meaningful measurement
+            cpu = proc.cpu_percent(interval=0.1)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            self._low_cpu_since = None
+            self._low_cpu_start = None
             return None
 
+        self._last_cpu_value = cpu
+        
         if cpu <= self.config.hang_cpu_threshold:
-            if self._low_cpu_since is None:
-                self._low_cpu_since = now
-            elapsed = now - self._low_cpu_since
+            if self._low_cpu_start is None:
+                self._low_cpu_start = now
+            
+            elapsed = now - self._low_cpu_start
             if elapsed >= self.config.hang_timeout:
-                return CrashEvent(
-                    crash_type=CrashType.HANG,
-                    severity=Severity.WARNING,
-                    message=(
-                        f"Autopsy (PID {pid}) CPU at {cpu:.1f}% "
-                        f"for {elapsed:.0f}s — possible hang"
-                    ),
-                    details={
-                        "pid": pid,
-                        "cpu_percent": cpu,
-                        "duration_seconds": elapsed,
-                    },
-                )
+                return {
+                    "pid": pid,
+                    "cpu": cpu,
+                    "duration": elapsed,
+                }
         else:
-            self._low_cpu_since = None
+            # CPU is active - reset
+            self._low_cpu_start = None
 
         return None
 
-    # ------------------------------------------------------------------
-    # Log-staleness-based hang detection
-    # ------------------------------------------------------------------
-
-    def _check_log_stale(self, now: float) -> CrashEvent | None:
-        """Detect when log files stop being updated."""
+    def _check_log_signal(self, now: float) -> dict | None:
+        """Check if log files have stopped being written.
+        
+        Returns signal dict if logs haven't been updated for timeout period.
+        """
         log_files = self._get_monitored_logs()
         if not log_files:
             return None
 
-        latest_mtime = max(
-            (f.stat().st_mtime for f in log_files if f.is_file()),
-            default=None,
-        )
+        try:
+            latest_mtime = max(
+                (f.stat().st_mtime for f in log_files if f.is_file()),
+                default=None,
+            )
+        except OSError:
+            return None
+            
         if latest_mtime is None:
             return None
 
+        # First run - just record the mtime
         if self._last_log_mtime is None:
             self._last_log_mtime = latest_mtime
             return None
 
         if latest_mtime > self._last_log_mtime:
-            # Logs are still being written
+            # Logs are being written - reset
             self._last_log_mtime = latest_mtime
-            self._log_stale_since = None
+            self._log_stale_start = None
             return None
 
         # Logs haven't changed
-        if self._log_stale_since is None:
-            self._log_stale_since = now
+        if self._log_stale_start is None:
+            self._log_stale_start = now
 
-        stale_duration = now - self._log_stale_since
+        stale_duration = now - self._log_stale_start
         if stale_duration >= self.config.log_stale_timeout:
-            return CrashEvent(
-                crash_type=CrashType.HANG,
-                severity=Severity.WARNING,
-                message=(
-                    f"No log activity for {stale_duration:.0f}s — possible hang"
-                ),
-                details={
-                    "stale_seconds": stale_duration,
-                    "log_files": [str(f) for f in log_files],
-                },
-            )
+            return {
+                "stale_seconds": stale_duration,
+                "last_mtime": latest_mtime,
+            }
 
         return None
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    def _check_solr_signal(self, now: float) -> dict | None:
+        """Check if Solr is unresponsive.
+        
+        Returns signal dict if Solr fails to respond or is very slow.
+        """
+        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/ping"
+        
+        try:
+            start = time.time()
+            response = urllib.request.urlopen(solr_url, timeout=5.0)
+            elapsed = time.time() - start
+            
+            if response.status == 200:
+                # Solr responded - but check if very slow
+                if elapsed > 3.0:
+                    if self._solr_unresponsive_start is None:
+                        self._solr_unresponsive_start = now
+                    
+                    if now - self._solr_unresponsive_start >= 60:
+                        return {"status": "slow", "response_time": elapsed}
+                else:
+                    self._solr_unresponsive_start = None
+                return None
+                
+        except urllib.error.URLError:
+            # Solr not responding
+            if self._solr_unresponsive_start is None:
+                self._solr_unresponsive_start = now
+            
+            if now - self._solr_unresponsive_start >= 30:
+                return {"status": "unresponsive"}
+                
+        except Exception:
+            pass
+        
+        return None
 
     def _get_monitored_logs(self) -> list[Path]:
         """Collect log files to check for freshness."""
@@ -164,7 +248,7 @@ class HangDetector(BaseDetector):
 
     @staticmethod
     def _find_autopsy_pid() -> int | None:
-        """Quick scan for the Autopsy process (reuses platform logic)."""
+        """Quick scan for the Autopsy process."""
         from autopsyguard.platform_utils import get_autopsy_process_names
 
         target_names = [n.lower() for n in get_autopsy_process_names()]
