@@ -27,14 +27,11 @@ error_patterns:
   - FATAL
   - StackOverflowError
 
-# --- Email Notification Settings ---
-smtp_host: "smtp.gmail.com"
-smtp_port: 587
-smtp_user: "[EMAIL_ADDRESS]"
-smtp_password: "[PASSWORD]"
-email_sender: "AutopsyGuard <[EMAIL_ADDRESS]>"
-email_recipient: "[EMAIL_ADDRESS]"
+smtp_host: "localhost"
+smtp_port: 1025
+smtp_user: "test"
+smtp_password: ""
+email_sender: "AutopsyGuard <test@autopsyguard.local>"
+email_recipient: "demo@autopsyguard.local"
 
-# --- Periodic Reporting ---
-# Send a status email every X hours (even if there are no errors)
 report_interval_hours: 0.005
