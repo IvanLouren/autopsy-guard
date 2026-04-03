@@ -42,9 +42,9 @@ class SolrMetrics:
 def get_solr_log_dir() -> Path:
     """Return the Solr log directory for Autopsy's embedded instance.
 
-    Autopsy uses an embedded Solr 8 instance stored in the user directory.
+    Autopsy stores Solr logs in the var/log/solr directory.
     """
-    return get_autopsy_user_dir() / "solr8" / "server" / "logs"
+    return get_autopsy_user_dir() / "var" / "log" / "solr"
 
 
 class SolrDetector(BaseDetector):
@@ -67,6 +67,7 @@ class SolrDetector(BaseDetector):
         self._cpu_warning_reported = False
         self._last_log_position: dict[Path, int] = {}
         self._reported_log_errors: set[str] = set()
+        self._initialized = False
 
     @property
     def name(self) -> str:
@@ -413,9 +414,18 @@ class SolrDetector(BaseDetector):
 
         for log_file in log_dir.glob("solr*.log"):
             try:
+                # On first run, seek to end to ignore pre-existing errors
+                if not self._initialized and log_file not in self._last_log_position:
+                    self._last_log_position[log_file] = log_file.stat().st_size
+                    continue
                 events.extend(self._scan_log_file(log_file, log_patterns))
             except OSError as e:
                 logger.debug("Failed to read Solr log %s: %s", log_file, e)
+
+        if not self._initialized:
+            self._initialized = True
+            logger.info("SolrDetector log monitoring initialised — tracking %d log file(s)", 
+                       len(self._last_log_position))
 
         return events
 

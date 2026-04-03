@@ -574,7 +574,6 @@ class TestSolrLogMonitoring:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         log_file = log_dir / "solr.log"
-        log_file.write_text("2024-01-01 ERROR SolrCore Something bad happened\n")
 
         with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
             mock_log_dir.return_value = log_dir
@@ -583,6 +582,12 @@ class TestSolrLogMonitoring:
             with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
+                # First check initializes (no errors yet)
+                log_file.write_text("")
+                detector.check()
+
+                # Now write error and check again
+                log_file.write_text("2024-01-01 ERROR SolrCore Something bad happened\n")
                 events = detector.check()
 
         log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
@@ -599,7 +604,6 @@ class TestSolrLogMonitoring:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         log_file = log_dir / "solr.log"
-        log_file.write_text("2024-01-01 java.lang.OutOfMemoryError: Java heap space\n")
 
         with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
             mock_log_dir.return_value = log_dir
@@ -607,6 +611,12 @@ class TestSolrLogMonitoring:
             with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
+                # First check initializes
+                log_file.write_text("")
+                detector.check()
+
+                # Now write OOM error and check again
+                log_file.write_text("2024-01-01 java.lang.OutOfMemoryError: Java heap space\n")
                 events = detector.check()
 
         log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
@@ -622,7 +632,6 @@ class TestSolrLogMonitoring:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         log_file = log_dir / "solr.log"
-        log_file.write_text("2024-01-01 ERROR First error\n")
 
         with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
             mock_log_dir.return_value = log_dir
@@ -630,14 +639,19 @@ class TestSolrLogMonitoring:
             with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
                 mock_urlopen.side_effect = urllib.error.URLError("x")
 
-                # First check
+                # First check initializes (empty log)
+                log_file.write_text("")
+                detector.check()
+
+                # Write first error
+                log_file.write_text("2024-01-01 ERROR First error\n")
                 events1 = detector.check()
 
                 # Add new error
                 with open(log_file, "a") as f:
                     f.write("2024-01-01 ERROR Second error\n")
 
-                # Second check should only see new error
+                # Third check should only see second error
                 events2 = detector.check()
 
         assert len([e for e in events1 if e.crash_type == CrashType.LOG_ERROR]) == 1
