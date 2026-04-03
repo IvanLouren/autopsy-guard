@@ -55,7 +55,7 @@ class ResourceDetector(BaseDetector):
         now = time.time()
         try:
             proc = psutil.Process(pid)
-            cpu = proc.cpu_percent(interval=0)
+            cpu = proc.cpu_percent(interval=0.1)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._high_cpu_since = None
             return []
