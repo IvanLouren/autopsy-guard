@@ -81,11 +81,8 @@ class EmailNotifier:
         msg['To'] = self.config.email_recipient
 
         try:
-            logger.debug("A conectar ao servidor SMTP %s:%d...", self.config.smtp_host, self.config.smtp_port)
-            # Conexão SMTP com STARTTLS (Norma da indústria para Gmail/Outlook)
             with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
                 server.ehlo()
-                # Verifica se STARTTLS é suportado
                 if server.has_extn('STARTTLS'):
                     server.starttls()
                     server.ehlo()
@@ -93,8 +90,8 @@ class EmailNotifier:
                     server.login(self.config.smtp_user, self.config.smtp_password)
                 server.send_message(msg)
                 
-            logger.info("Email '%s' enviado com sucesso para %s", subject, self.config.email_recipient)
+            logger.info("📧 Email enviado: %s", subject[:50])
             return True
         except (smtplib.SMTPException, OSError, TimeoutError) as e:
-            logger.error("Falha ao enviar e-mail por SMTP: %s", e)
+            logger.error("❌ Falha ao enviar email: %s", e)
             return False

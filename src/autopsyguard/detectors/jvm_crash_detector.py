@@ -60,7 +60,6 @@ class JvmCrashDetector(BaseDetector):
                     "summary": summary,
                 },
             ))
-            logger.critical("New hs_err file: %s", path)
 
         self._known_files = current_files
         return events

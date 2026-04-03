@@ -274,14 +274,6 @@ class SolrDetector(BaseDetector):
                 logger.info("Solr CPU usage normalized: %.1f%%", metrics.cpu_percent)
             self._cpu_warning_reported = False
 
-        logger.debug(
-            "Solr metrics: heap=%.1f%%, cpu=%.1f%%, threads=%d, gc_count=%d",
-            metrics.heap_usage_percent,
-            metrics.cpu_percent,
-            metrics.thread_count,
-            metrics.gc_count,
-        )
-
         return events
 
     def _fetch_metrics(self) -> SolrMetrics | None:
@@ -365,14 +357,6 @@ class SolrDetector(BaseDetector):
                 has_deletions = index_info.get("hasDeletions", False)
                 num_docs = index_info.get("numDocs", 0)
                 size_bytes = index_info.get("sizeInBytes", 0)
-
-                logger.debug(
-                    "Solr core '%s': docs=%d, size=%dMB, hasDeletions=%s",
-                    core_name,
-                    num_docs,
-                    size_bytes // (1024 * 1024),
-                    has_deletions,
-                )
 
                 # Check for initialization failures
                 init_failures = data.get("initFailures", {})
