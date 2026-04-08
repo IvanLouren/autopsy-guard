@@ -52,7 +52,7 @@ class TestHangDetection:
 
         detector = HangDetector(config)
 
-        with patch.object(HangDetector, "_find_autopsy_pid", return_value=1000):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=1000):
             with patch("autopsyguard.detectors.hang_detector.psutil") as mock_psutil:
                 proc = MagicMock()
                 proc.cpu_percent.return_value = 0.0  # Low CPU signal
@@ -70,7 +70,7 @@ class TestHangDetection:
         """Active CPU should not contribute to hang detection."""
         detector = HangDetector(config)
 
-        with patch.object(HangDetector, "_find_autopsy_pid", return_value=1000):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=1000):
             with patch("autopsyguard.detectors.hang_detector.psutil") as mock_psutil:
                 proc = MagicMock()
                 proc.cpu_percent.return_value = 45.0  # Normal CPU
@@ -84,7 +84,7 @@ class TestHangDetection:
         """If Autopsy isn't running, no hang to report."""
         detector = HangDetector(config)
 
-        with patch.object(HangDetector, "_find_autopsy_pid", return_value=None):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=None):
             events = detector.check()
 
         assert events == []

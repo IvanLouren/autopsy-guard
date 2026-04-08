@@ -16,10 +16,10 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.platform_utils import (
-    get_autopsy_process_names,
     get_case_lock_file,
     get_java_process_names,
 )
+from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class ProcessDetector(BaseDetector):
 
         if self._tracked_pid is None:
             # Try to discover the Autopsy process
-            self._tracked_pid = self._find_autopsy_pid()
+            self._tracked_pid = find_autopsy_pid()
             if self._tracked_pid is not None:
                 logger.debug("Tracking Autopsy PID %d", self._tracked_pid)
                 self._process_lost_reported = False
@@ -96,19 +96,6 @@ class ProcessDetector(BaseDetector):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _find_autopsy_pid(self) -> int | None:
-        """Scan running processes for an Autopsy launcher."""
-        target_names = get_autopsy_process_names()
-        for proc in psutil.process_iter(["pid", "name"]):
-            try:
-                if proc.info["name"] and proc.info["name"].lower() in [
-                    n.lower() for n in target_names
-                ]:
-                    return proc.info["pid"]
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return None
 
     def _snapshot_children(self, pid: int) -> set[int]:
         """Get current child PIDs of the Autopsy process."""

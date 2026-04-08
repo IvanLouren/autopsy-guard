@@ -21,7 +21,8 @@ class TestCpuMonitoring:
 
         detector = ResourceDetector(config)
 
-        with patch.object(ResourceDetector, "_find_autopsy_pid", return_value=1000):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
             with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
                 proc = MagicMock()
                 proc.cpu_percent.return_value = 99.0
@@ -44,7 +45,8 @@ class TestCpuMonitoring:
     def test_normal_cpu_no_warning(self, config: MonitorConfig) -> None:
         detector = ResourceDetector(config)
 
-        with patch.object(ResourceDetector, "_find_autopsy_pid", return_value=1000):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
             with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
                 proc = MagicMock()
                 proc.cpu_percent.return_value = 50.0
@@ -71,7 +73,8 @@ class TestMemoryMonitoring:
 
         detector = ResourceDetector(config)
 
-        with patch.object(ResourceDetector, "_find_autopsy_pid", return_value=1000):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
             with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
                 proc = MagicMock()
                 proc.cpu_percent.return_value = 10.0
@@ -100,7 +103,8 @@ class TestDiskMonitoring:
 
         detector = ResourceDetector(config)
 
-        with patch.object(ResourceDetector, "_find_autopsy_pid", return_value=None):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = None
             with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
                 DiskUsage = namedtuple("DiskUsage", ["free", "total"])
                 mock_psutil.disk_usage.return_value = DiskUsage(
@@ -119,7 +123,8 @@ class TestDiskMonitoring:
 
         detector = ResourceDetector(config)
 
-        with patch.object(ResourceDetector, "_find_autopsy_pid", return_value=None):
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = None
             with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
                 DiskUsage = namedtuple("DiskUsage", ["free", "total"])
                 mock_psutil.disk_usage.return_value = DiskUsage(
@@ -130,3 +135,8 @@ class TestDiskMonitoring:
                 events = detector.check()
 
         assert events == []
+
+
+
+
+

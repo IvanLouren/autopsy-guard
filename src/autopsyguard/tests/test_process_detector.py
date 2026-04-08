@@ -46,10 +46,13 @@ class TestProcessDisappearance:
         # First check: process is alive
         fake_proc = MagicMock()
         fake_proc.info = {"pid": 1234, "name": "autopsy64.exe"}
-        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+        with patch("autopsyguard.utils.process_utils.psutil") as mock_psutil:
             mock_psutil.process_iter.return_value = [fake_proc]
-            mock_psutil.Process.return_value.children.return_value = []
-            events = detector.check()
+            mock_psutil.NoSuchProcess = real_psutil.NoSuchProcess
+            mock_psutil.AccessDenied = real_psutil.AccessDenied
+            with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil_detector:
+                mock_psutil_detector.Process.return_value.children.return_value = []
+                events = detector.check()
         assert events == []
         assert detector._tracked_pid == 1234
 

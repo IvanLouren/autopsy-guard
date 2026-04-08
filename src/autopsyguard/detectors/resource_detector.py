@@ -17,6 +17,7 @@ import psutil
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
+from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class ResourceDetector(BaseDetector):
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
 
-        pid = self._find_autopsy_pid()
+        pid = find_autopsy_pid()
         if pid is not None:
             events.extend(self._check_cpu(pid))
             events.extend(self._check_memory(pid))
@@ -162,17 +163,4 @@ class ResourceDetector(BaseDetector):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _find_autopsy_pid() -> int | None:
-        from autopsyguard.platform_utils import get_autopsy_process_names
-
-        target_names = [n.lower() for n in get_autopsy_process_names()]
-        for proc in psutil.process_iter(["pid", "name"]):
-            try:
-                if proc.info["name"] and proc.info["name"].lower() in target_names:
-                    return proc.info["pid"]
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return None
 
