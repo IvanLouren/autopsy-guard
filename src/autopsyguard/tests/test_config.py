@@ -10,6 +10,10 @@ from autopsyguard.config import MonitorConfig
 
 
 def test_from_sources_loads_yaml_values(tmp_path: Path) -> None:
+    # Create the case directory so validation passes
+    case_dir = tmp_path / "CaseA"
+    case_dir.mkdir()
+    
     cfg = tmp_path / "config.yml"
     cfg.write_text(
         "\n".join(
@@ -34,6 +38,10 @@ def test_from_sources_loads_yaml_values(tmp_path: Path) -> None:
 
 
 def test_from_sources_cli_overrides_yaml(tmp_path: Path) -> None:
+    # Create the case directories so validation passes
+    (tmp_path / "CaseA").mkdir()
+    (tmp_path / "CaseB").mkdir()
+    
     cfg = tmp_path / "config.yml"
     cfg.write_text(
         "\n".join(
@@ -60,6 +68,9 @@ def test_from_sources_requires_case_dir() -> None:
 
 
 def test_from_sources_rejects_unknown_key(tmp_path: Path) -> None:
+    # Create the case directory
+    (tmp_path / "CaseA").mkdir()
+    
     cfg = tmp_path / "config.yml"
     cfg.write_text(
         "\n".join(
@@ -76,6 +87,9 @@ def test_from_sources_rejects_unknown_key(tmp_path: Path) -> None:
 
 
 def test_from_sources_loads_solr_settings(tmp_path: Path) -> None:
+    # Create the case directory
+    (tmp_path / "CaseA").mkdir()
+    
     cfg = tmp_path / "config.yml"
     cfg.write_text(
         "\n".join(

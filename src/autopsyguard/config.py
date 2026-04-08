@@ -257,15 +257,11 @@ def _validate_config(config: MonitorConfig) -> None:
     if config.disk_min_free_gb < 0:
         raise ValueError(f"Invalid disk_min_free_gb: {config.disk_min_free_gb} (must be >= 0)")
         
-    # Validate email settings if any are provided
-    email_fields = [config.smtp_host, config.smtp_user, config.email_sender, config.email_recipient]
-    if any(email_fields):
+    # Validate email settings only if email_recipient is configured
+    # (email_sender has a default, so we check recipient as the trigger)
+    if config.email_recipient:
         if not config.smtp_host:
-            raise ValueError("smtp_host is required when email settings are configured")
-        if not config.smtp_user:
-            raise ValueError("smtp_user is required when email settings are configured")
-        if not config.email_recipient:
-            raise ValueError("email_recipient is required when email settings are configured")
+            raise ValueError("smtp_host is required when email_recipient is configured")
         if not (1 <= config.smtp_port <= 65535):
             raise ValueError(f"Invalid smtp_port: {config.smtp_port} (must be 1-65535)")
             
