@@ -18,6 +18,7 @@ import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+from typing import TypedDict
 
 import psutil
 
@@ -28,6 +29,25 @@ from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file
 from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
+
+
+class CpuSignal(TypedDict):
+    """Signal indicating CPU is suspiciously low."""
+    pid: int
+    cpu: float
+    duration: float
+
+
+class LogSignal(TypedDict):
+    """Signal indicating log files have stopped being written."""
+    stale_seconds: float
+    last_mtime: float
+
+
+class SolrSignal(TypedDict):
+    """Signal indicating Solr is unresponsive or slow."""
+    status: str  # "slow", "unresponsive"
+    response_time: float | None = None  # Only for "slow" status
 
 
 class HangDetector(BaseDetector):
@@ -57,6 +77,9 @@ class HangDetector(BaseDetector):
         # Hang state
         self._hang_reported = False
         self._hang_start_time: float | None = None
+        
+        # Process restart tracking
+        self._last_known_pid: int | None = None
 
     @property
     def name(self) -> str:
@@ -65,6 +88,16 @@ class HangDetector(BaseDetector):
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
         now = time.time()
+
+        # Check for process restart and reset state if needed
+        current_pid = find_autopsy_pid()
+        if current_pid != self._last_known_pid:
+            if self._last_known_pid is not None:
+                # Process restarted - reset all hang tracking state
+                logger.debug("Autopsy process restarted (PID %s -> %s), resetting hang state", 
+                            self._last_known_pid, current_pid)
+                self._reset_hang_state()
+            self._last_known_pid = current_pid
 
         # Collect signals
         cpu_signal = self._check_cpu_signal(now)
@@ -115,7 +148,20 @@ class HangDetector(BaseDetector):
 
         return events
 
-    def _check_cpu_signal(self, now: float) -> dict | None:
+    def _check_cpu_signal(self, now: float) -> CpuSignal | None:
+        """Check if CPU usage is suspiciously low, indicating a possible hang.
+        
+        Args:
+            now: Current timestamp to compare against.
+            
+        Returns:
+            CpuSignal dict with pid, cpu percentage, and duration if hang detected.
+            None if no hang or if Autopsy process not found.
+            
+        Side effects:
+            Updates self._low_cpu_start timestamp and self._last_known_pid.
+            Resets hang state when process PID changes (process restart).
+        """
         """Check if CPU is suspiciously low.
         
         Returns signal dict if CPU has been below threshold for timeout period.
@@ -153,7 +199,20 @@ class HangDetector(BaseDetector):
 
         return None
 
-    def _check_log_signal(self, now: float) -> dict | None:
+    def _check_log_signal(self, now: float) -> LogSignal | None:
+        """Check if log files have stopped being written for an extended period.
+        
+        Args:
+            now: Current timestamp to compare modification times against.
+            
+        Returns:
+            LogSignal dict with stale_seconds and last_mtime if logs are stale.
+            None if logs are recent or if no log files found.
+            
+        Note:
+            Only considers logs stale if they haven't been modified for more than 
+            self.config.hang_log_stale_threshold_minutes.
+        """
         """Check if log files have stopped being written.
         
         Returns signal dict if logs haven't been updated for timeout period.
@@ -197,23 +256,36 @@ class HangDetector(BaseDetector):
 
         return None
 
-    def _check_solr_signal(self, now: float) -> dict | None:
-        """Check if Solr is unresponsive.
+    def _check_solr_signal(self, now: float) -> SolrSignal | None:
+        """Check if Solr is unresponsive or responding slowly.
         
-        Returns signal dict if Solr fails to respond or is very slow.
+        Args:
+            now: Current timestamp (unused but maintained for consistency).
+            
+        Returns:
+            SolrSignal dict with status ("slow"|"unresponsive") and response_time.
+            None if Solr is responsive within acceptable time limits.
+            
+        Side effects:
+            Updates self._solr_unresponsive_start timestamp when transitioning 
+            from responsive to unresponsive state.
+            
+        Note:
+            Uses self.config.solr_ping_timeout for connection timeout.
+            Considers response slow if > self.config.hang_solr_slow_threshold_seconds.
         """
         solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/ping"
         
         try:
             start = time.time()
-            response = urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout)
-            elapsed = time.time() - start
-            
-            if response.status == 200:
-                # Solr responded - but check if very slow
-                if elapsed > self.config.solr_ping_slow_threshold:
-                    if self._solr_unresponsive_start is None:
-                        self._solr_unresponsive_start = now
+            with urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout) as response:
+                elapsed = time.time() - start
+                
+                if response.status == 200:
+                    # Solr responded - but check if very slow
+                    if elapsed > self.config.solr_ping_slow_threshold:
+                        if self._solr_unresponsive_start is None:
+                            self._solr_unresponsive_start = now
                     
                     if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
                         return {"status": "slow", "response_time": elapsed}
@@ -243,3 +315,14 @@ class HangDetector(BaseDetector):
             if p.is_file():
                 files.append(p)
         return files
+
+    def _reset_hang_state(self) -> None:
+        """Reset all hang tracking state when process restarts."""
+        self._low_cpu_start = None
+        self._last_cpu_value = None
+        self._log_stale_start = None
+        self._last_log_mtime = None
+        self._solr_unresponsive_start = None
+        self._hang_reported = False
+        self._hang_start_time = None
+

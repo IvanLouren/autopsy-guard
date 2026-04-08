@@ -15,6 +15,7 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file
+from autopsyguard.utils.log_tracker import LogFileTracker
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,12 @@ class LogDetector(BaseDetector):
 
     def __init__(self, config: MonitorConfig) -> None:
         super().__init__(config)
-        # Map from file path → byte offset we've read up to
-        self._file_offsets: dict[Path, int] = {}
+        
+        # Initialize log file tracker with persistence
+        state_dir = config.case_dir / ".autopsyguard_state"
+        state_file = state_dir / "log_positions.json"
+        self._log_tracker = LogFileTracker(state_file=state_file)
+        self._log_tracker.load_positions()
         self._initialised = False
 
     @property
@@ -44,9 +49,12 @@ class LogDetector(BaseDetector):
             # Seek to end of all files on first run so we only catch new errors
             for log_file in log_files:
                 if log_file.is_file():
-                    self._file_offsets[log_file] = log_file.stat().st_size
+                    # Set position to end of file
+                    self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
             self._initialised = True
             logger.debug("LogDetector: tracking %d log file(s)", len(log_files))
+            # Save initial positions
+            self._log_tracker.save_positions()
             return []
 
         events: list[CrashEvent] = []
@@ -84,33 +92,17 @@ class LogDetector(BaseDetector):
         if not path.is_file():
             return events
 
-        try:
-            current_size = path.stat().st_size
-        except OSError:
-            return events
-
-        last_offset = self._file_offsets.get(path, 0)
-
-        # Handle log rotation (file got smaller)
-        if current_size < last_offset:
-            last_offset = 0
-
-        if current_size == last_offset:
-            return events
-
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(last_offset)
-                new_text = fh.read()
-                self._file_offsets[path] = fh.tell()
-        except OSError as exc:
-            logger.warning("Could not read %s: %s", path, exc)
-            return events
-
-        for line in new_text.splitlines():
-            event = self._classify_line(line, path)
-            if event is not None:
-                events.append(event)
+        # Use LogFileTracker for incremental reading
+        new_content = self._log_tracker.read_new_content(path)
+        
+        if new_content:
+            # Save positions after reading
+            self._log_tracker.save_positions()
+            
+            for line in new_content.splitlines():
+                event = self._classify_line(line, path)
+                if event is not None:
+                    events.append(event)
 
         return events
 

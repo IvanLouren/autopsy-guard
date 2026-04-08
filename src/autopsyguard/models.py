@@ -18,6 +18,7 @@ class CrashType(enum.Enum):
     HIGH_RESOURCE_USAGE = "high_resource_usage"
     ABNORMAL_EXIT = "abnormal_exit"
     LOG_ERROR = "log_error"
+    ZOMBIE = "zombie"
 
 
 class Severity(enum.Enum):

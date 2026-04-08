@@ -78,7 +78,7 @@ class ProcessDetector(BaseDetector):
         if status == psutil.STATUS_ZOMBIE:
             if not self._zombie_reported:
                 events.append(CrashEvent(
-                    crash_type=CrashType.PROCESS_DISAPPEARED,
+                    crash_type=CrashType.ZOMBIE,
                     severity=Severity.CRITICAL,
                     message=f"Autopsy process (PID {self._tracked_pid}) is a zombie",
                     details={"pid": self._tracked_pid},
@@ -98,7 +98,19 @@ class ProcessDetector(BaseDetector):
     # ------------------------------------------------------------------
 
     def _snapshot_children(self, pid: int) -> set[int]:
-        """Get current child PIDs of the Autopsy process."""
+        """Snapshot current child PIDs of the Autopsy process.
+        
+        Args:
+            pid: The parent Autopsy process PID to find children for.
+            
+        Returns:
+            Set of child process PIDs that are Java processes (includes grandchildren).
+            Empty set if parent doesn't exist or has no Java children.
+            
+        Note:
+            Only includes children with names in get_java_process_names().
+            Handles NoSuchProcess gracefully by returning empty set.
+        """
         try:
             parent = psutil.Process(pid)
             children = parent.children(recursive=True)
@@ -172,19 +184,27 @@ class ProcessDetector(BaseDetector):
 
         events: list[CrashEvent] = []
         for child_pid in missing:
-            events.append(CrashEvent(
-                crash_type=CrashType.SOLR_CRASH,
-                severity=Severity.WARNING,
-                message=(
-                    f"Child Java process (PID {child_pid}) of Autopsy "
-                    f"(PID {self._tracked_pid}) has disappeared — "
-                    f"possible Solr or module subprocess crash"
-                ),
-                details={
-                    "parent_pid": self._tracked_pid,
-                    "child_pid": child_pid,
-                },
-            ))
+            # Validate that the child was actually a child of our tracked process
+            # Handle OS PID recycling by checking parent-child relationship
+            is_valid_child = self._validate_child_relationship(child_pid, self._tracked_pid)
+            
+            if is_valid_child:
+                events.append(CrashEvent(
+                    crash_type=CrashType.SOLR_CRASH,
+                    severity=Severity.WARNING,
+                    message=(
+                        f"Child Java process (PID {child_pid}) of Autopsy "
+                        f"(PID {self._tracked_pid}) has disappeared — "
+                        f"possible Solr or module subprocess crash"
+                    ),
+                    details={
+                        "parent_pid": self._tracked_pid,
+                        "child_pid": child_pid,
+                    },
+                ))
+            else:
+                logger.debug("Ignoring disappeared PID %d - was not a valid child of %d", 
+                            child_pid, self._tracked_pid)
 
         # Update snapshot so we don't re-report
         self._tracked_children = current_children
@@ -221,3 +241,24 @@ class ProcessDetector(BaseDetector):
             return proc.wait(timeout=0)
         except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
             return None
+
+    def _validate_child_relationship(self, child_pid: int, parent_pid: int) -> bool:
+        """Validate that a PID was actually a child of the parent process.
+        
+        This handles OS PID recycling where a PID might be reused for a different process.
+        """
+        try:
+            # Check if the PID still exists
+            if not psutil.pid_exists(child_pid):
+                # Process is gone, so it was a legitimate child that died
+                return True
+                
+            # Check if it's still a child of our parent
+            child_proc = psutil.Process(child_pid)
+            actual_parent_pid = child_proc.ppid()
+            
+            return actual_parent_pid == parent_pid
+            
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Process died or no access - assume it was a valid child
+            return True

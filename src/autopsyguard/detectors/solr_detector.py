@@ -24,6 +24,7 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.platform_utils import get_autopsy_user_dir
+from autopsyguard.utils.log_tracker import LogFileTracker
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,14 @@ class SolrDetector(BaseDetector):
         self._consecutive_slow_responses = 0
         self._heap_warning_reported = False
         self._cpu_warning_reported = False
-        self._last_log_position: dict[Path, int] = {}
         self._reported_log_errors: set[str] = set()
         self._initialized = False
+        
+        # Initialize log file tracker with persistence
+        state_dir = config.case_dir / ".autopsyguard_state"
+        state_file = state_dir / "solr_log_positions.json"
+        self._log_tracker = LogFileTracker(state_file=state_file)
+        self._log_tracker.load_positions()
 
     @property
     def name(self) -> str:
@@ -82,17 +88,17 @@ class SolrDetector(BaseDetector):
 
         start_time = time.time()
         try:
-            response = urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds)
-            elapsed = time.time() - start_time
+            with urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds) as response:
+                elapsed = time.time() - start_time
 
-            if response.status == 200:
-                # Solr is alive — check if it was previously down
-                if self._solr_down_reported:
-                    logger.info(
-                        "Solr service has recovered and is responding on port %d.",
-                        self.config.solr_port,
-                    )
-                self._solr_down_reported = False
+                if response.status == 200:
+                    # Solr is alive — check if it was previously down
+                    if self._solr_down_reported:
+                        logger.info(
+                            "Solr service has recovered and is responding on port %d.",
+                            self.config.solr_port,
+                        )
+                    self._solr_down_reported = False
 
                 # Check for slow response (potential hang)
                 events.extend(self._check_slow_response(elapsed))
@@ -145,8 +151,8 @@ class SolrDetector(BaseDetector):
                 ))
                 self._solr_hang_reported = True
         else:
-            # Fast response — reset counters
-            if self._solr_hang_reported:
+            # Fast response — reset counters and clear hang flag
+            if self._consecutive_slow_responses > 0 or self._solr_hang_reported:
                 logger.info("Solr response times have normalized (%.2fs).", elapsed)
             self._consecutive_slow_responses = 0
             self._solr_hang_reported = False
@@ -284,8 +290,8 @@ class SolrDetector(BaseDetector):
         """
         metrics_url = f"{self._solr_base_url}/solr/admin/metrics?group=jvm&wt=json"
         try:
-            response = urllib.request.urlopen(metrics_url, timeout=self.config.solr_timeout_seconds)
-            data = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(metrics_url, timeout=self.config.solr_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
             return self._parse_metrics(data)
         except (urllib.error.URLError, json.JSONDecodeError, KeyError) as e:
             logger.debug("Failed to fetch Solr metrics: %s", e)
@@ -352,8 +358,8 @@ class SolrDetector(BaseDetector):
         cores_url = f"{self._solr_base_url}/solr/admin/cores?action=STATUS&wt=json"
 
         try:
-            response = urllib.request.urlopen(cores_url, timeout=self.config.solr_timeout_seconds)
-            data = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(cores_url, timeout=self.config.solr_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
             status = data.get("status", {})
 
             for core_name, core_info in status.items():
@@ -404,8 +410,10 @@ class SolrDetector(BaseDetector):
         for log_file in log_dir.glob("solr*.log"):
             try:
                 # On first run, seek to end to ignore pre-existing errors
-                if not self._initialized and log_file not in self._last_log_position:
-                    self._last_log_position[log_file] = log_file.stat().st_size
+                if not self._initialized and self._log_tracker.get_position(log_file) == 0:
+                    # Set position to end of file on first run
+                    if log_file.exists():
+                        self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
                     continue
                 events.extend(self._scan_log_file(log_file, log_patterns))
             except OSError as e:
@@ -413,7 +421,10 @@ class SolrDetector(BaseDetector):
 
         if not self._initialized:
             self._initialized = True
-            logger.debug("SolrDetector: tracking %d Solr log file(s)", len(self._last_log_position))
+            tracked_count = len(self._log_tracker._file_offsets)
+            logger.debug("SolrDetector: tracking %d Solr log file(s)", tracked_count)
+            # Save initial positions
+            self._log_tracker.save_positions()
 
         return events
 
@@ -425,46 +436,36 @@ class SolrDetector(BaseDetector):
         """Scan a single log file for error patterns."""
         events: list[CrashEvent] = []
 
-        # Track file position to only read new content
-        last_pos = self._last_log_position.get(log_file, 0)
+        # Use LogFileTracker for incremental reading
+        new_content = self._log_tracker.read_new_content(log_file)
+        
+        if not new_content:
+            return events
 
-        try:
-            file_size = log_file.stat().st_size
-            if file_size < last_pos:
-                # File was truncated/rotated — start from beginning
-                last_pos = 0
+        # Scan line by line for error patterns
+        for line in new_content.splitlines():
+            for pattern, severity in patterns:
+                if pattern.search(line):
+                    # Create unique key using stable hash to survive process restarts
+                    line_hash = hashlib.md5(line[:100].encode('utf-8')).hexdigest()[:16]
+                    error_key = f"{log_file.name}:{line_hash}"
+                    if error_key not in self._reported_log_errors:
+                        events.append(CrashEvent(
+                            crash_type=CrashType.LOG_ERROR,
+                            severity=severity,
+                            message=f"Solr log error in {log_file.name}",
+                            details={
+                                "log_file": str(log_file),
+                                "log_line": line[:500],  # Truncate long lines
+                            },
+                        ))
+                        self._reported_log_errors.add(error_key)
+                        # Limit to first matching pattern per line
+                        break
 
-            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(last_pos)
-                new_content = f.read()
-                self._last_log_position[log_file] = f.tell()
-
-            if not new_content:
-                return events
-
-            # Scan line by line for error patterns
-            for line in new_content.splitlines():
-                for pattern, severity in patterns:
-                    if pattern.search(line):
-                        # Create unique key using stable hash to survive process restarts
-                        line_hash = hashlib.md5(line[:100].encode('utf-8')).hexdigest()[:16]
-                        error_key = f"{log_file.name}:{line_hash}"
-                        if error_key not in self._reported_log_errors:
-                            events.append(CrashEvent(
-                                crash_type=CrashType.LOG_ERROR,
-                                severity=severity,
-                                message=f"Solr log error in {log_file.name}",
-                                details={
-                                    "log_file": str(log_file),
-                                    "log_line": line[:500],  # Truncate long lines
-                                },
-                            ))
-                            self._reported_log_errors.add(error_key)
-                            # Limit to first matching pattern per line
-                            break
-
-        except OSError as e:
-            logger.debug("Error scanning log file %s: %s", log_file, e)
+        # Save positions after processing
+        if events:
+            self._log_tracker.save_positions()
 
         return events
 

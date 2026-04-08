@@ -127,7 +127,12 @@ class MonitorConfig:
             ):
                 raise ValueError("'error_patterns' must be a list of strings")
 
-        return cls(**values)
+        config = cls(**values)
+        
+        # Validate the final config
+        _validate_config(config)
+        
+        return config
 
 
 _SUPPORTED_CONFIG_KEYS = {
@@ -196,3 +201,81 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
             values[key] = value
 
     return values
+
+
+def _validate_config(config: MonitorConfig) -> None:
+    """Validate configuration values for consistency and correctness."""
+    
+    # Validate case directory
+    if not config.case_dir.exists():
+        raise ValueError(f"Case directory does not exist: {config.case_dir}")
+    if not config.case_dir.is_dir():
+        raise ValueError(f"Case directory is not a directory: {config.case_dir}")
+        
+    # Validate Solr port
+    if not (1 <= config.solr_port <= 65535):
+        raise ValueError(f"Invalid solr_port: {config.solr_port} (must be 1-65535)")
+        
+    # Validate percentage thresholds
+    percentage_fields = [
+        ("cpu_warning_percent", config.cpu_warning_percent),
+        ("memory_warning_percent", config.memory_warning_percent),
+        ("hang_cpu_threshold", config.hang_cpu_threshold),
+        ("solr_heap_usage_warning", config.solr_heap_usage_warning),
+        ("solr_heap_usage_critical", config.solr_heap_usage_critical),
+        ("solr_cpu_warning", config.solr_cpu_warning),
+    ]
+    
+    for field_name, value in percentage_fields:
+        if not (0 <= value <= 100):
+            raise ValueError(f"Invalid {field_name}: {value} (must be 0-100)")
+            
+    # Validate timeout values
+    timeout_fields = [
+        ("poll_interval", config.poll_interval),
+        ("hang_timeout", config.hang_timeout),
+        ("hang_confirmation_duration", config.hang_confirmation_duration),
+        ("log_stale_timeout", config.log_stale_timeout),
+        ("cpu_warning_duration", config.cpu_warning_duration),
+        ("solr_timeout_seconds", config.solr_timeout_seconds),
+        ("solr_slow_threshold_seconds", config.solr_slow_threshold_seconds),
+        ("solr_ping_timeout", config.solr_ping_timeout),
+        ("solr_ping_slow_threshold", config.solr_ping_slow_threshold),
+        ("solr_ping_slow_duration", config.solr_ping_slow_duration),
+        ("solr_unresponsive_duration", config.solr_unresponsive_duration),
+    ]
+    
+    for field_name, value in timeout_fields:
+        if value <= 0:
+            raise ValueError(f"Invalid {field_name}: {value} (must be > 0)")
+            
+    # Validate count thresholds
+    if config.solr_slow_count_threshold <= 0:
+        raise ValueError(f"Invalid solr_slow_count_threshold: {config.solr_slow_count_threshold} (must be > 0)")
+        
+    # Validate disk space
+    if config.disk_min_free_gb < 0:
+        raise ValueError(f"Invalid disk_min_free_gb: {config.disk_min_free_gb} (must be >= 0)")
+        
+    # Validate email settings if any are provided
+    email_fields = [config.smtp_host, config.smtp_user, config.email_sender, config.email_recipient]
+    if any(email_fields):
+        if not config.smtp_host:
+            raise ValueError("smtp_host is required when email settings are configured")
+        if not config.smtp_user:
+            raise ValueError("smtp_user is required when email settings are configured")
+        if not config.email_recipient:
+            raise ValueError("email_recipient is required when email settings are configured")
+        if not (1 <= config.smtp_port <= 65535):
+            raise ValueError(f"Invalid smtp_port: {config.smtp_port} (must be 1-65535)")
+            
+    # Validate report interval
+    if config.report_interval_hours <= 0:
+        raise ValueError(f"Invalid report_interval_hours: {config.report_interval_hours} (must be > 0)")
+        
+    # Validate heap thresholds are logical
+    if config.solr_heap_usage_warning >= config.solr_heap_usage_critical:
+        raise ValueError(
+            f"solr_heap_usage_warning ({config.solr_heap_usage_warning}) must be less than "
+            f"solr_heap_usage_critical ({config.solr_heap_usage_critical})"
+        )
