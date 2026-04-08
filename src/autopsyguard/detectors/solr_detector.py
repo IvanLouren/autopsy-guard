@@ -10,6 +10,7 @@ Covers crash types:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -290,8 +291,11 @@ class SolrDetector(BaseDetector):
             logger.debug("Failed to fetch Solr metrics: %s", e)
             return None
 
-    def _parse_metrics(self, data: dict) -> SolrMetrics:
-        """Parse Solr metrics JSON response into SolrMetrics dataclass."""
+    def _parse_metrics(self, data: dict) -> SolrMetrics | None:
+        """Parse Solr metrics JSON response into SolrMetrics dataclass.
+        
+        Returns None if parsing fails to allow caller to handle the error.
+        """
         metrics = SolrMetrics()
         try:
             jvm_metrics = data.get("metrics", {}).get("solr.jvm", {})
@@ -336,10 +340,11 @@ class SolrDetector(BaseDetector):
                         value = value.get("value", 0)
                     metrics.gc_time_ms += int(value) if value else 0
 
+            return metrics
+
         except (KeyError, TypeError, ValueError) as e:
             logger.debug("Error parsing Solr metrics: %s", e)
-
-        return metrics
+            return None
 
     def _check_cores(self) -> list[CrashEvent]:
         """Check Solr core status for errors or issues."""
@@ -441,8 +446,9 @@ class SolrDetector(BaseDetector):
             for line in new_content.splitlines():
                 for pattern, severity in patterns:
                     if pattern.search(line):
-                        # Create unique key to avoid duplicate reports
-                        error_key = f"{log_file.name}:{hash(line[:100])}"
+                        # Create unique key using stable hash to survive process restarts
+                        line_hash = hashlib.md5(line[:100].encode('utf-8')).hexdigest()[:16]
+                        error_key = f"{log_file.name}:{line_hash}"
                         if error_key not in self._reported_log_errors:
                             events.append(CrashEvent(
                                 crash_type=CrashType.LOG_ERROR,

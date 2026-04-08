@@ -35,6 +35,8 @@ class ProcessDetector(BaseDetector):
         self._tracked_children: set[int] = set()
         # Whether we already fired a "process disappeared" event
         self._process_lost_reported = False
+        # Whether we already reported zombie state
+        self._zombie_reported = False
 
     @property
     def name(self) -> str:
@@ -53,6 +55,7 @@ class ProcessDetector(BaseDetector):
             if self._tracked_pid is not None:
                 logger.debug("Tracking Autopsy PID %d", self._tracked_pid)
                 self._process_lost_reported = False
+                self._zombie_reported = False
                 self._tracked_children = self._snapshot_children(self._tracked_pid)
             else:
                 # Check for a stale lock file — suggests a crash happened
@@ -73,12 +76,17 @@ class ProcessDetector(BaseDetector):
             return events
 
         if status == psutil.STATUS_ZOMBIE:
-            events.append(CrashEvent(
-                crash_type=CrashType.PROCESS_DISAPPEARED,
-                severity=Severity.CRITICAL,
-                message=f"Autopsy process (PID {self._tracked_pid}) is a zombie",
-                details={"pid": self._tracked_pid},
-            ))
+            if not self._zombie_reported:
+                events.append(CrashEvent(
+                    crash_type=CrashType.PROCESS_DISAPPEARED,
+                    severity=Severity.CRITICAL,
+                    message=f"Autopsy process (PID {self._tracked_pid}) is a zombie",
+                    details={"pid": self._tracked_pid},
+                ))
+                self._zombie_reported = True
+        else:
+            # Process is not zombie - reset flag
+            self._zombie_reported = False
 
         # Check for missing child processes (Solr crash)
         events.extend(self._check_children())

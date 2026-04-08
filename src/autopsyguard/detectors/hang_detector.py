@@ -82,7 +82,7 @@ class HangDetector(BaseDetector):
             hang_duration = now - self._hang_start_time
             
             # Only report after sustained correlation
-            if hang_duration >= 60:  # 1 minute of correlated signals
+            if hang_duration >= self.config.hang_confirmation_duration:
                 signal_names = []
                 if cpu_signal:
                     signal_names.append(f"CPU {cpu_signal['cpu']:.1f}%")
@@ -205,16 +205,16 @@ class HangDetector(BaseDetector):
         
         try:
             start = time.time()
-            response = urllib.request.urlopen(solr_url, timeout=5.0)
+            response = urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout)
             elapsed = time.time() - start
             
             if response.status == 200:
                 # Solr responded - but check if very slow
-                if elapsed > 3.0:
+                if elapsed > self.config.solr_ping_slow_threshold:
                     if self._solr_unresponsive_start is None:
                         self._solr_unresponsive_start = now
                     
-                    if now - self._solr_unresponsive_start >= 60:
+                    if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
                         return {"status": "slow", "response_time": elapsed}
                 else:
                     self._solr_unresponsive_start = None
@@ -225,11 +225,8 @@ class HangDetector(BaseDetector):
             if self._solr_unresponsive_start is None:
                 self._solr_unresponsive_start = now
             
-            if now - self._solr_unresponsive_start >= 30:
+            if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:
                 return {"status": "unresponsive"}
-                
-        except Exception:
-            pass
         
         return None
 

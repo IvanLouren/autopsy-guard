@@ -31,6 +31,14 @@ class MonitorConfig:
     # Seconds of near-zero CPU before declaring a hang
     hang_cpu_threshold: float = 1.0  # percent
     hang_timeout: float = 300.0  # 5 minutes
+    # Minimum duration for correlated hang signals before reporting
+    hang_confirmation_duration: float = 60.0  # 1 minute
+    
+    # Solr health check settings for hang detection
+    solr_ping_timeout: float = 5.0  # timeout for ping requests
+    solr_ping_slow_threshold: float = 3.0  # slow response threshold
+    solr_ping_slow_duration: float = 60.0  # duration before declaring slow
+    solr_unresponsive_duration: float = 30.0  # duration before declaring unresponsive
 
     # Seconds without log file modification before suspecting a hang
     log_stale_timeout: float = 600.0  # 10 minutes
@@ -128,6 +136,11 @@ _SUPPORTED_CONFIG_KEYS = {
     "poll_interval",
     "hang_cpu_threshold",
     "hang_timeout",
+    "hang_confirmation_duration",
+    "solr_ping_timeout",
+    "solr_ping_slow_threshold",
+    "solr_ping_slow_duration",
+    "solr_unresponsive_duration",
     "log_stale_timeout",
     "cpu_warning_percent",
     "cpu_warning_duration",
