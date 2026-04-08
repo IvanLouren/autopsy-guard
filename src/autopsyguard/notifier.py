@@ -8,13 +8,36 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import psutil
 from email.message import EmailMessage
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
 
 logger = logging.getLogger(__name__)
+
+# Track when AutopsyGuard started for uptime calculation
+_start_time: datetime | None = None
+
+def set_start_time() -> None:
+    """Set the start time for uptime tracking. Call once at startup."""
+    global _start_time
+    _start_time = datetime.now()
+
+def get_uptime() -> str:
+    """Get formatted uptime string."""
+    if _start_time is None:
+        return "N/A"
+    delta = datetime.now() - _start_time
+    hours, remainder = divmod(int(delta.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -107,14 +130,29 @@ ALERT_EVENT_ROW = """
                     <div style="font-size:12px; font-weight:600; color:{severity_color}; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
                         {severity} — {crash_type}
                     </div>
-                    <div style="font-size:14px; color:#2d3436; line-height:1.4;">
+                    <div style="font-size:14px; color:#2d3436; line-height:1.4; margin-bottom:8px;">
                         {message}
                     </div>
+                    {details_html}
                 </td>
             </tr>
         </table>
     </td>
 </tr>
+"""
+
+DETAIL_ROW = """
+<div style="font-size:12px; color:#6b7280; background-color:#f9fafb; padding:8px 10px; border-radius:4px; margin-top:6px; font-family:monospace; word-break:break-all;">
+    <strong>{key}:</strong> {value}
+</div>
+"""
+
+METRIC_BOX = """
+<td style="text-align:center; padding:12px;">
+    <div style="font-size:24px; margin-bottom:4px;">{icon}</div>
+    <div style="font-size:20px; font-weight:600; color:{color};">{value}</div>
+    <div style="font-size:11px; color:#6b7280; text-transform:uppercase;">{label}</div>
+</td>
 """
 
 STATUS_CARD = """
@@ -151,8 +189,9 @@ def _get_event_icon(crash_type: str) -> tuple[str, str]:
         "SOLR_CRASH": ("🔍", "#fce7f3"),
         "HIGH_RESOURCE_USAGE": ("📊", "#dbeafe"),
         "LOG_ERROR": ("📝", "#f3e8ff"),
-        "OOM": ("🧠", "#fee2e2"),
+        "OUT_OF_MEMORY": ("🧠", "#fee2e2"),
         "ABNORMAL_EXIT": ("🚪", "#fed7aa"),
+        "ZOMBIE": ("🧟", "#e0e7ff"),
     }
     return icons.get(crash_type, ("⚠️", "#f3f4f6"))
 
@@ -166,6 +205,91 @@ def _get_severity_color(severity: Severity) -> str:
     }.get(severity, "#6b7280")
 
 
+def _format_details(details: dict[str, Any] | None) -> str:
+    """Format event details dict into HTML rows."""
+    if not details:
+        return ""
+    
+    html_parts = []
+    
+    # Priority order for display
+    priority_keys = ["log_line", "log_file", "pid", "exit_code", "error", "cpu_percent", 
+                     "memory_percent", "duration", "crash_summary"]
+    
+    # User-friendly labels
+    labels = {
+        "log_line": "📋 Log",
+        "log_file": "📁 Ficheiro",
+        "pid": "🔢 PID",
+        "exit_code": "⚠️ Exit Code",
+        "error": "❌ Erro",
+        "cpu_percent": "💻 CPU",
+        "memory_percent": "🧠 Memória",
+        "duration": "⏱️ Duração",
+        "crash_summary": "💥 Resumo",
+        "core_name": "📦 Core",
+        "timeout_seconds": "⏰ Timeout",
+        "elapsed": "⏱️ Tempo",
+    }
+    
+    # Show priority keys first, then others
+    shown_keys = set()
+    for key in priority_keys:
+        if key in details:
+            value = details[key]
+            # Truncate long values
+            str_value = str(value)
+            if len(str_value) > 200:
+                str_value = str_value[:200] + "..."
+            label = labels.get(key, key.replace("_", " ").title())
+            html_parts.append(DETAIL_ROW.format(key=label, value=str_value))
+            shown_keys.add(key)
+    
+    # Show remaining keys
+    for key, value in details.items():
+        if key not in shown_keys:
+            str_value = str(value)
+            if len(str_value) > 200:
+                str_value = str_value[:200] + "..."
+            label = labels.get(key, key.replace("_", " ").title())
+            html_parts.append(DETAIL_ROW.format(key=label, value=str_value))
+    
+    return "".join(html_parts)
+
+
+def _get_system_metrics() -> dict[str, Any]:
+    """Get current system metrics."""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage("/") if not psutil.WINDOWS else psutil.disk_usage("C:\\")
+        
+        return {
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory.percent,
+            "memory_used_gb": memory.used / (1024**3),
+            "memory_total_gb": memory.total / (1024**3),
+            "disk_free_gb": disk.free / (1024**3),
+            "disk_total_gb": disk.total / (1024**3),
+            "disk_percent": disk.percent,
+        }
+    except Exception as e:
+        logger.debug("Failed to get system metrics: %s", e)
+        return {}
+
+
+def _get_autopsy_pid() -> int | None:
+    """Find Autopsy process PID."""
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            name = proc.info['name'].lower()
+            if 'autopsy' in name and 'java' not in name:
+                return proc.info['pid']
+    except Exception:
+        pass
+    return None
+
+
 class EmailNotifier:
     """Sends HTML email alerts using Python's built-in smtplib."""
 
@@ -173,18 +297,35 @@ class EmailNotifier:
         self.config = config
         self._enabled = bool(
             self.config.smtp_host and 
-            self.config.smtp_user and 
             self.config.email_recipient
         )
+        self._event_history: list[tuple[datetime, CrashEvent]] = []
+        self._max_history = 50  # Keep last 50 events
 
     def is_enabled(self) -> bool:
         """Check if the email notifier has the minimum necessary configuration to run."""
         return self._enabled
+    
+    def record_event(self, event: CrashEvent) -> None:
+        """Record an event for history tracking."""
+        self._event_history.append((datetime.now(), event))
+        # Trim old events
+        if len(self._event_history) > self._max_history:
+            self._event_history = self._event_history[-self._max_history:]
+    
+    def get_recent_events(self, hours: float = 1.0) -> list[tuple[datetime, CrashEvent]]:
+        """Get events from the last N hours."""
+        cutoff = datetime.now() - timedelta(hours=hours)
+        return [(ts, ev) for ts, ev in self._event_history if ts >= cutoff]
 
     def send_alert(self, events: list[CrashEvent]) -> bool:
         """Send an immediate alert for critical/warning events."""
         if not self._enabled or not events:
             return False
+
+        # Record events for history
+        for event in events:
+            self.record_event(event)
 
         critical_count = sum(1 for e in events if e.severity == Severity.CRITICAL)
         warning_count = sum(1 for e in events if e.severity == Severity.WARNING)
@@ -195,11 +336,12 @@ class EmailNotifier:
         else:
             subject = f"⚠️ [AutopsyGuard] Aviso: {warning_count} anomalia(s) detetada(s)"
 
-        # Build event rows
+        # Build event rows with details
         event_rows = ""
         for event in events:
             icon, icon_bg = _get_event_icon(event.crash_type.name)
             severity_color = _get_severity_color(event.severity)
+            details_html = _format_details(event.details)
             
             event_rows += ALERT_EVENT_ROW.format(
                 icon=icon,
@@ -208,9 +350,35 @@ class EmailNotifier:
                 severity_color=severity_color,
                 crash_type=event.crash_type.name.replace("_", " "),
                 message=event.message,
+                details_html=details_html,
             )
 
-        # Summary section
+        # Get current system state
+        metrics = _get_system_metrics()
+        autopsy_pid = _get_autopsy_pid()
+
+        # System metrics bar
+        metrics_html = ""
+        if metrics:
+            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
+            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
+            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
+            
+            metrics_html = f"""
+            <div style="margin-bottom:20px; padding:16px; background-color:#f8f9fa; border-radius:8px;">
+                <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">
+                    📊 Estado do Sistema no Momento do Alerta
+                </div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        {METRIC_BOX.format(icon="💻", value=f"{metrics.get('cpu_percent', 0):.1f}%", label="CPU", color=cpu_color)}
+                        {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label="Memória", color=mem_color)}
+                        {METRIC_BOX.format(icon="💾", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label="Disco Livre", color=disk_color)}
+                        {METRIC_BOX.format(icon="🔍", value=str(autopsy_pid or 'N/A'), label="Autopsy PID", color="#3b82f6")}
+                    </tr>
+                </table>
+            </div>
+            """
         summary = f"""
         <div style="margin-bottom:24px;">
             <p style="color:#4b5563; font-size:15px; line-height:1.6; margin:0 0 16px 0;">
@@ -231,12 +399,12 @@ class EmailNotifier:
         """
 
         # Events table
-        body_content = summary + f"""
+        body_content = metrics_html + summary + f"""
         <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                 <tr>
                     <td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
-                        <strong style="color:#374151; font-size:14px;">Eventos Detetados</strong>
+                        <strong style="color:#374151; font-size:14px;">📋 Eventos Detetados</strong>
                     </td>
                 </tr>
                 {event_rows}
@@ -246,6 +414,12 @@ class EmailNotifier:
         <div style="margin-top:24px; padding:16px; background-color:#fef3c7; border-radius:8px; border-left:4px solid #d97706;">
             <p style="color:#92400e; font-size:13px; margin:0;">
                 <strong>💡 Recomendação:</strong> Verifique o estado do Autopsy e os logs do sistema para mais detalhes sobre estes eventos.
+            </p>
+        </div>
+        
+        <div style="margin-top:12px; padding:12px 16px; background-color:#f3f4f6; border-radius:8px;">
+            <p style="color:#6b7280; font-size:12px; margin:0;">
+                📁 <strong>Logs:</strong> {self.config.case_dir / "Log" if self.config.case_dir else "N/A"}
             </p>
         </div>
         """
@@ -272,6 +446,12 @@ class EmailNotifier:
 
         subject = "📊 [AutopsyGuard] Relatório de Status"
         
+        # Get system metrics and autopsy info
+        metrics = _get_system_metrics()
+        autopsy_pid = _get_autopsy_pid()
+        uptime = get_uptime()
+        recent_events = self.get_recent_events(self.config.report_interval_hours)
+        
         # Status card
         if events_last_period == 0:
             status_icon = "✅"
@@ -292,9 +472,75 @@ class EmailNotifier:
             value=status_text,
         )
 
+        # System metrics bar
+        metrics_html = ""
+        if metrics:
+            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
+            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
+            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
+            
+            metrics_html = f"""
+            <div style="margin-bottom:20px; padding:16px; background-color:#f8f9fa; border-radius:8px;">
+                <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">
+                    📊 Recursos do Sistema
+                </div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        {METRIC_BOX.format(icon="💻", value=f"{metrics.get('cpu_percent', 0):.1f}%", label="CPU", color=cpu_color)}
+                        {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label="Memória", color=mem_color)}
+                        {METRIC_BOX.format(icon="💾", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label="Disco Livre", color=disk_color)}
+                    </tr>
+                </table>
+            </div>
+            """
+
+        # Recent events section
+        recent_events_html = ""
+        if recent_events:
+            event_rows = ""
+            for ts, event in recent_events[-10:]:  # Show last 10
+                icon, icon_bg = _get_event_icon(event.crash_type.name)
+                severity_color = _get_severity_color(event.severity)
+                event_rows += f"""
+                <tr>
+                    <td style="padding:8px 12px; border-bottom:1px solid #f3f4f6; font-size:12px; color:#6b7280;">
+                        {ts.strftime("%H:%M:%S")}
+                    </td>
+                    <td style="padding:8px 12px; border-bottom:1px solid #f3f4f6;">
+                        <span style="font-size:14px;">{icon}</span>
+                    </td>
+                    <td style="padding:8px 12px; border-bottom:1px solid #f3f4f6; font-size:12px; color:{severity_color}; font-weight:600;">
+                        {event.severity.name}
+                    </td>
+                    <td style="padding:8px 12px; border-bottom:1px solid #f3f4f6; font-size:12px; color:#374151;">
+                        {event.message[:50]}{'...' if len(event.message) > 50 else ''}
+                    </td>
+                </tr>
+                """
+            recent_events_html = f"""
+            <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        <td style="background-color:#fef3c7; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
+                            <strong style="color:#92400e; font-size:14px;">⚠️ Eventos Recentes ({len(recent_events)})</strong>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0;">
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                                {event_rows}
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            """
+
         # System info
         body_content = f"""
         {status_card}
+        {metrics_html}
+        {recent_events_html}
         
         <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
@@ -308,7 +554,23 @@ class EmailNotifier:
                         <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                             <tr>
                                 <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
-                                    <span style="color:#6b7280; font-size:13px;">Estado Atual</span>
+                                    <span style="color:#6b7280; font-size:13px;">🔍 Autopsy PID</span>
+                                </td>
+                                <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
+                                    <span style="color:#111827; font-size:13px; font-weight:500;">{autopsy_pid or 'Não detetado'}</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
+                                    <span style="color:#6b7280; font-size:13px;">⏱️ Uptime AutopsyGuard</span>
+                                </td>
+                                <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
+                                    <span style="color:#111827; font-size:13px; font-weight:500;">{uptime}</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
+                                    <span style="color:#6b7280; font-size:13px;">📊 Estado Atual</span>
                                 </td>
                                 <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
                                     <span style="color:#111827; font-size:13px; font-weight:500;">{system_status}</span>
@@ -316,7 +578,7 @@ class EmailNotifier:
                             </tr>
                             <tr>
                                 <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
-                                    <span style="color:#6b7280; font-size:13px;">Eventos no Último Período</span>
+                                    <span style="color:#6b7280; font-size:13px;">📈 Eventos no Período</span>
                                 </td>
                                 <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
                                     <span style="color:#111827; font-size:13px; font-weight:500;">{events_last_period}</span>
@@ -324,7 +586,7 @@ class EmailNotifier:
                             </tr>
                             <tr>
                                 <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
-                                    <span style="color:#6b7280; font-size:13px;">Intervalo de Polling</span>
+                                    <span style="color:#6b7280; font-size:13px;">⏲️ Intervalo de Polling</span>
                                 </td>
                                 <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;">
                                     <span style="color:#111827; font-size:13px; font-weight:500;">{self.config.poll_interval}s</span>
@@ -332,7 +594,7 @@ class EmailNotifier:
                             </tr>
                             <tr>
                                 <td style="padding:8px 0;">
-                                    <span style="color:#6b7280; font-size:13px;">Timeout de Hang</span>
+                                    <span style="color:#6b7280; font-size:13px;">⏰ Timeout de Hang</span>
                                 </td>
                                 <td align="right" style="padding:8px 0;">
                                     <span style="color:#111827; font-size:13px; font-weight:500;">{self.config.hang_timeout}s</span>

@@ -103,42 +103,121 @@ def create_jvm_crash_file(case_dir: Path) -> bool:
     return True
 
 
-def inject_solr_error(error_type: str) -> bool:
-    """Injeta erro no log do Solr (localização real)."""
-    solr_log_dir = get_solr_log_dir()
+def trigger_real_solr_error(error_type: str) -> bool:
+    """Provoca um erro REAL no Solr via HTTP request.
     
-    if not solr_log_dir.exists():
-        print(f"❌ Diretório de logs do Solr não existe: {solr_log_dir}")
-        print("   O Autopsy precisa de estar a correr para criar os logs do Solr.")
+    Em vez de injetar texto no log (que é sobrescrito pelo buffer do Solr),
+    esta função faz pedidos HTTP que causam erros reais que o Solr regista.
+    """
+    import urllib.request
+    import urllib.error
+    import json
+    
+    SOLR_PORT = 23232  # Porta padrão do Solr no Autopsy
+    
+    print("🔍 A verificar se o Solr está acessível...")
+    
+    # Check if Solr is running
+    try:
+        with urllib.request.urlopen(f"http://localhost:{SOLR_PORT}/solr/admin/cores?action=STATUS&wt=json", timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            cores = list(data.get("status", {}).keys())
+            if not cores:
+                print("❌ Solr está a correr mas não tem cores ativos")
+                print("   Abra um caso no Autopsy primeiro.")
+                return False
+            print(f"✅ Solr ativo com {len(cores)} core(s): {cores[0][:30]}...")
+    except urllib.error.URLError as e:
+        print(f"❌ Não foi possível conectar ao Solr na porta {SOLR_PORT}")
+        print(f"   Erro: {e}")
+        print("   Certifique-se que o Autopsy está a correr com um caso aberto.")
         return False
     
-    # Use the main solr.log file
-    log_file = solr_log_dir / "solr.log"
+    # Use the first available core
+    core_name = cores[0]
     
-    if not log_file.exists():
-        print(f"❌ Ficheiro de log do Solr não existe: {log_file}")
+    if error_type == "solr-error":
+        # Send malformed query that will cause a parse error
+        print("📤 A enviar query malformada ao Solr...")
+        bad_queries = [
+            # Syntax error in query
+            f"http://localhost:{SOLR_PORT}/solr/{core_name}/select?q=[[INVALID_SYNTAX&wt=json",
+            # Invalid field reference
+            f"http://localhost:{SOLR_PORT}/solr/{core_name}/select?q=nonexistent_field_xyz:test&wt=json",
+            # Malformed function query
+            f"http://localhost:{SOLR_PORT}/solr/{core_name}/select?q={{!func}}invalid_func()&wt=json",
+        ]
+        
+        error_triggered = False
+        for url in bad_queries:
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    pass  # If it succeeds, try next
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 500):
+                    print(f"✅ Erro Solr provocado! (HTTP {e.code})")
+                    print(f"   O Solr registou este erro no log.")
+                    error_triggered = True
+                    break
+            except Exception:
+                pass
+        
+        if not error_triggered:
+            # Try posting invalid XML update
+            print("📤 A tentar update com XML inválido...")
+            try:
+                url = f"http://localhost:{SOLR_PORT}/solr/{core_name}/update?wt=json"
+                invalid_xml = b"<add><doc><field>INVALID XML WITHOUT CLOSING TAGS"
+                req = urllib.request.Request(url, data=invalid_xml, headers={"Content-Type": "application/xml"})
+                urllib.request.urlopen(req, timeout=5)
+            except urllib.error.HTTPError as e:
+                print(f"✅ Erro Solr provocado! (HTTP {e.code} - XML parse error)")
+                error_triggered = True
+            except Exception as e:
+                print(f"   Falhou: {e}")
+        
+        if error_triggered:
+            print("\n🎯 O AutopsyGuard deve detetar 'ERROR' no solr.log no próximo ciclo!")
+            return True
+        else:
+            print("❌ Não foi possível provocar um erro no Solr")
+            return False
+            
+    elif error_type == "solr-oom":
+        # OOM is harder to trigger safely - we'll do a massive facet query
+        print("📤 A enviar query pesada para provocar stress no Solr...")
+        print("⚠️  NOTA: OOM real é perigoso e pode crashar o Autopsy!")
+        print("   A usar query de stress moderada em vez disso...")
+        
+        # Heavy facet query that logs warnings/errors
+        stress_queries = [
+            # Request huge number of facets
+            f"http://localhost:{SOLR_PORT}/solr/{core_name}/select?q=*:*&rows=0&facet=true&facet.field=text&facet.limit=1000000&wt=json",
+            # Deep pagination (causes warnings)  
+            f"http://localhost:{SOLR_PORT}/solr/{core_name}/select?q=*:*&start=100000&rows=1000&wt=json",
+        ]
+        
+        for url in stress_queries:
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode())
+                    # Even if it succeeds, deep pagination logs warnings
+                    print("✅ Query de stress executada")
+            except urllib.error.HTTPError as e:
+                print(f"✅ Query causou erro HTTP {e.code}")
+            except Exception as e:
+                print(f"   Query falhou: {type(e).__name__}")
+        
+        print("\n⚠️  OOM real requer memória baixa configurada no Solr.")
+        print("   Para testes, use 'solr-error' ou verifique os logs por WARN/ERROR.")
+        print("   Logs do Solr: " + str(get_solr_log_dir() / "solr.log"))
+        return True
+    
+    else:
+        print(f"❌ Tipo de erro desconhecido: {error_type}")
         return False
-    
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    
-    errors = {
-        "solr-error": f"{timestamp} ERROR (qtp123456-15) [c:autopsy s:shard1 r:core_node1] o.a.s.h.RequestHandlerBase - Simulated Solr error for demo",
-        "solr-oom": f"{timestamp} ERROR (qtp123456-15) [c:autopsy] java.lang.OutOfMemoryError: Java heap space - SIMULATED FOR DEMO",
-    }
-    
-    error_line = errors.get(error_type)
-    if not error_line:
-        print(f"❌ Tipo de erro Solr desconhecido: {error_type}")
-        return False
-    
-    # Use same encoding as Solr (typically system default on Windows)
-    with open(log_file, "a", encoding="utf-8", errors="replace") as f:
-        f.write(error_line + "\n")
-        f.flush()
-    
-    print(f"✅ Erro Solr injetado em: {log_file}")
-    print(f"   Linha: {error_line[:80]}...")
-    return True
 
 
 def list_available_errors():
@@ -195,11 +274,11 @@ def main():
         list_available_errors()
         return
     
-    # Solr errors don't need case_dir
+    # Solr errors - trigger REAL errors via HTTP
     if args.error and args.error.startswith("solr-"):
-        success = inject_solr_error(args.error)
+        success = trigger_real_solr_error(args.error)
         if success:
-            print("\n🎯 O AutopsyGuard deve detetar este erro no próximo ciclo de polling (10s)")
+            print("\n🎯 O AutopsyGuard deve detetar este erro no próximo ciclo de polling")
             print("📧 Verifica o Mailtrap para ver o alerta: https://mailtrap.io/inboxes")
         return
     

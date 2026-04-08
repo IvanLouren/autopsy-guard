@@ -442,14 +442,31 @@ class SolrDetector(BaseDetector):
         if not new_content:
             return events
 
+        # Track which errors we've already reported in THIS batch to avoid
+        # reporting the same stack trace multiple times when ERROR appears
+        # on multiple consecutive lines
+        batch_reported = set()
+
         # Scan line by line for error patterns
         for line in new_content.splitlines():
+            if not line.strip():  # Skip empty lines
+                continue
+                
             for pattern, severity in patterns:
                 if pattern.search(line):
                     # Create unique key using stable hash to survive process restarts
+                    # Use first 100 chars of the line for deduplication
                     line_hash = hashlib.md5(line[:100].encode('utf-8')).hexdigest()[:16]
                     error_key = f"{log_file.name}:{line_hash}"
-                    if error_key not in self._reported_log_errors:
+                    
+                    # Skip if already reported (persistent) or in current batch
+                    if error_key not in self._reported_log_errors and error_key not in batch_reported:
+                        # For stack traces: only report the first line (the one with timestamp)
+                        # Stack trace continuation lines typically start with whitespace or "Caused by:"
+                        if line[0].isspace() or line.strip().startswith("Caused by:") or line.strip().startswith("=>"):
+                            # This is a continuation line, skip it
+                            break
+                        
                         events.append(CrashEvent(
                             crash_type=CrashType.LOG_ERROR,
                             severity=severity,
@@ -460,6 +477,7 @@ class SolrDetector(BaseDetector):
                             },
                         ))
                         self._reported_log_errors.add(error_key)
+                        batch_reported.add(error_key)
                         # Limit to first matching pattern per line
                         break
 
