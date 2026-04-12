@@ -62,6 +62,7 @@ class Monitor:
         self._state = MonitorState.WAITING
         self._last_report_time = time.time()
         self._events_since_last_report = 0
+        self._report_count = 0
 
     def _is_case_active(self) -> bool:
         """Check if Autopsy is running and the case is open."""
@@ -145,9 +146,11 @@ class Monitor:
         now = time.time()
         elapsed_hours = (now - self._last_report_time) / 3600.0
         if elapsed_hours >= self.config.report_interval_hours:
-            metrics_samples = self._metrics_store.fetch_samples(
-                since_ts=self._last_report_time
-            )
+            metrics_samples = None
+            if self._report_count > 0:
+                metrics_samples = self._metrics_store.fetch_samples(
+                    since_ts=self._last_report_time
+                )
             self.notifier.send_report(
                 system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
                 events_last_period=self._events_since_last_report,
@@ -155,6 +158,7 @@ class Monitor:
             )
             self._last_report_time = now
             self._events_since_last_report = 0
+            self._report_count += 1
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         pid = find_autopsy_process()

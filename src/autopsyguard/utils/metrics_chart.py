@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import math
 from typing import Any
 
 
-def render_memory_chart_base64(samples: list[dict[str, Any]]) -> str:
-    """Render a memory chart as a base64 PNG string.
+def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
+    """Render a memory chart as PNG bytes.
 
     Expects samples sorted by timestamp in ascending order.
-    Returns an empty string when there is not enough data.
+    Returns empty bytes when there is not enough data.
     """
     if len(samples) < 2:
-        return ""
+        return b""
 
     times = [sample.get("ts", 0.0) for sample in samples]
     t0 = times[0]
@@ -70,4 +69,4 @@ def render_memory_chart_base64(samples: list[dict[str, Any]]) -> str:
     fig.savefig(buffer, format="png")
     plt.close(fig)
 
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+    return buffer.getvalue()

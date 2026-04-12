@@ -15,7 +15,7 @@ from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
-from autopsyguard.utils.metrics_chart import render_memory_chart_base64
+from autopsyguard.utils.metrics_chart import render_memory_chart_png
 
 logger = logging.getLogger(__name__)
 
@@ -501,15 +501,17 @@ class EmailNotifier:
             """
 
         chart_html = ""
+        inline_images: list[tuple[str, bytes, str]] = []
         if metrics_samples:
-            chart_data = render_memory_chart_base64(metrics_samples)
-            if chart_data:
-                chart_html = f"""
+            chart_png = render_memory_chart_png(metrics_samples)
+            if chart_png:
+                inline_images.append(("memory_chart", chart_png, "png"))
+                chart_html = """
                 <div style="margin-bottom:20px;">
                     <div style="font-size:12px; color:#6b7280; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">
                         📈 Evolucao de Memoria (desde o ultimo email)
                     </div>
-                    <img src="data:image/png;base64,{chart_data}" alt="Memory chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb;">
+                    <img src="cid:memory_chart" alt="Memory chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb;">
                 </div>
                 """
 
@@ -646,13 +648,24 @@ class EmailNotifier:
             body_content=body_content,
         )
 
-        return self._dispatch_email(subject, html_body)
+        return self._dispatch_email(subject, html_body, inline_images=inline_images)
 
-    def _dispatch_email(self, subject: str, html_body: str) -> bool:
+    def _dispatch_email(
+        self,
+        subject: str,
+        html_body: str,
+        *,
+        inline_images: list[tuple[str, bytes, str]] | None = None,
+    ) -> bool:
         """Core function that constructs the MIME and talks to the SMTP server."""
         msg = EmailMessage()
         msg.set_content("O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno.")
         msg.add_alternative(html_body, subtype='html')
+
+        if inline_images:
+            html_part = msg.get_payload()[1]
+            for cid, data, subtype in inline_images:
+                html_part.add_related(data, maintype="image", subtype=subtype, cid=cid)
         
         msg['Subject'] = subject
         msg['From'] = self.config.email_sender
