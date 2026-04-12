@@ -15,6 +15,7 @@ from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
+from autopsyguard.utils.metrics_chart import render_memory_chart_base64
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +440,12 @@ class EmailNotifier:
 
         return self._dispatch_email(subject, html_body)
 
-    def send_report(self, system_status: str, events_last_period: int) -> bool:
+    def send_report(
+        self,
+        system_status: str,
+        events_last_period: int,
+        metrics_samples: list[dict[str, Any]] | None = None,
+    ) -> bool:
         """Send a periodic heartbeat report to assure the user the system is running."""
         if not self._enabled:
             return False
@@ -494,6 +500,19 @@ class EmailNotifier:
             </div>
             """
 
+        chart_html = ""
+        if metrics_samples:
+            chart_data = render_memory_chart_base64(metrics_samples)
+            if chart_data:
+                chart_html = f"""
+                <div style="margin-bottom:20px;">
+                    <div style="font-size:12px; color:#6b7280; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">
+                        📈 Evolucao de Memoria (desde o ultimo email)
+                    </div>
+                    <img src="data:image/png;base64,{chart_data}" alt="Memory chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb;">
+                </div>
+                """
+
         # Recent events section
         recent_events_html = ""
         if recent_events:
@@ -540,6 +559,7 @@ class EmailNotifier:
         body_content = f"""
         {status_card}
         {metrics_html}
+        {chart_html}
         {recent_events_html}
         
         <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">

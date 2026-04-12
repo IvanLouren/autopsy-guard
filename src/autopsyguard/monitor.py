@@ -28,6 +28,7 @@ from autopsyguard.platform_utils import (
     find_autopsy_process,
     get_case_lock_file,
 )
+from autopsyguard.utils.metrics_store import MetricsStore
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class Monitor:
             SolrDetector(config),
         ]
         self.notifier = EmailNotifier(config)
+        self._metrics_store = MetricsStore(case_dir=config.case_dir)
         self._running = False
         self._state = MonitorState.WAITING
         self._last_report_time = time.time()
@@ -103,6 +105,7 @@ class Monitor:
             pass
         finally:
             self._running = False
+            self._metrics_store.close()
             logger.info("Monitor stopped")
 
     def stop(self) -> None:
@@ -125,6 +128,7 @@ class Monitor:
 
     def _handle_active(self) -> None:
         """Run detectors while the case is being processed."""
+        self._metrics_store.record_sample()
         events = self.run_once()
         
         if events:
@@ -141,9 +145,13 @@ class Monitor:
         now = time.time()
         elapsed_hours = (now - self._last_report_time) / 3600.0
         if elapsed_hours >= self.config.report_interval_hours:
+            metrics_samples = self._metrics_store.fetch_samples(
+                since_ts=self._last_report_time
+            )
             self.notifier.send_report(
                 system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
-                events_last_period=self._events_since_last_report
+                events_last_period=self._events_since_last_report,
+                metrics_samples=metrics_samples,
             )
             self._last_report_time = now
             self._events_since_last_report = 0
