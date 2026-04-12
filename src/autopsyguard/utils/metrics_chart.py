@@ -20,6 +20,8 @@ def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
     t0 = times[0]
     x_minutes = [(ts - t0) / 60.0 for ts in times]
     memory_percent = [sample.get("memory_percent", 0.0) for sample in samples]
+    smooth_window = 5 if len(memory_percent) >= 5 else max(1, len(memory_percent))
+    memory_smoothed = _moving_average(memory_percent, smooth_window)
 
     rss_values = [sample.get("autopsy_rss_bytes") for sample in samples]
     has_rss = any(value is not None for value in rss_values)
@@ -36,7 +38,7 @@ def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
     fig, ax1 = plt.subplots(figsize=(6.2, 2.8), dpi=120)
     ax1.plot(
         x_minutes,
-        memory_percent,
+        memory_smoothed,
         color="#2563eb",
         linewidth=1.6,
         label="System memory (%)",
@@ -70,3 +72,20 @@ def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
     plt.close(fig)
 
     return buffer.getvalue()
+
+
+def _moving_average(values: list[float], window: int) -> list[float]:
+    """Compute a simple moving average with a fixed window size."""
+    if window <= 1:
+        return values
+
+    smoothed: list[float] = []
+    running_sum = 0.0
+    for index, value in enumerate(values):
+        running_sum += value
+        if index >= window:
+            running_sum -= values[index - window]
+            smoothed.append(running_sum / window)
+        else:
+            smoothed.append(running_sum / (index + 1))
+    return smoothed
