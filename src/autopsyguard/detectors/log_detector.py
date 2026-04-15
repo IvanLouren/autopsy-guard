@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 
 from autopsyguard.config import MonitorConfig
@@ -37,6 +38,8 @@ class LogDetector(BaseDetector):
         self._log_tracker = LogFileTracker(state_file=state_file)
         self._log_tracker.load_positions()
         self._initialised = False
+        self._recent_duplicate_window = 300.0  # seconds
+        self._recent_lines: dict[Path, tuple[str, float]] = {}
 
     @property
     def name(self) -> str:
@@ -100,6 +103,8 @@ class LogDetector(BaseDetector):
             self._log_tracker.save_positions()
             
             for line in new_content.splitlines():
+                if self._is_recent_duplicate(line, path):
+                    continue
                 event = self._classify_line(line, path)
                 if event is not None:
                     events.append(event)
@@ -155,3 +160,18 @@ class LogDetector(BaseDetector):
             )
 
         return None
+
+    def _is_recent_duplicate(self, line: str, source: Path) -> bool:
+        """Suppress repeated identical lines within a short window."""
+        now = time.time()
+        last_entry = self._recent_lines.get(source)
+        if last_entry is None:
+            self._recent_lines[source] = (line, now)
+            return False
+
+        last_line, last_ts = last_entry
+        if line == last_line and (now - last_ts) <= self._recent_duplicate_window:
+            return True
+
+        self._recent_lines[source] = (line, now)
+        return False
