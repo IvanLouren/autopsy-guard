@@ -274,7 +274,7 @@ class HangDetector(BaseDetector):
             Uses self.config.solr_ping_timeout for connection timeout.
             Considers response slow if > self.config.hang_solr_slow_threshold_seconds.
         """
-        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/ping"
+        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/info/system"
         
         try:
             start = time.time()
