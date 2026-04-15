@@ -286,11 +286,14 @@ class HangDetector(BaseDetector):
                     if elapsed > self.config.solr_ping_slow_threshold:
                         if self._solr_unresponsive_start is None:
                             self._solr_unresponsive_start = now
-                    
-                    if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
-                        return {"status": "slow", "response_time": elapsed}
-                else:
-                    self._solr_unresponsive_start = None
+
+                        if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
+                            return {"status": "slow", "response_time": elapsed}
+                    else:
+                        self._solr_unresponsive_start = None
+                    return None
+
+                self._solr_unresponsive_start = None
                 return None
                 
         except urllib.error.URLError:
