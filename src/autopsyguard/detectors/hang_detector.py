@@ -61,8 +61,9 @@ class HangDetector(BaseDetector):
     This prevents false positives when Autopsy is legitimately idle.
     """
 
-    def __init__(self, config: MonitorConfig) -> None:
+    def __init__(self, config: MonitorConfig, solr_cache=None) -> None:
         super().__init__(config)
+        self._solr_cache = solr_cache
         # CPU tracking
         self._low_cpu_start: float | None = None
         self._last_cpu_value: float | None = None
@@ -262,15 +263,12 @@ class HangDetector(BaseDetector):
             Uses self.config.solr_ping_timeout for connection timeout.
             Considers response slow if > self.config.hang_solr_slow_threshold_seconds.
         """
-        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/info/system"
-        
+        # Use shared solr cache if provided to avoid duplicate probes
         try:
-            start = time.time()
-            with urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout) as response:
-                elapsed = time.time() - start
-                
-                if response.status == 200:
-                    # Solr responded - but check if very slow
+            if self._solr_cache is not None:
+                status = self._solr_cache.get_status()
+                if status.is_up:
+                    elapsed = status.response_time or 0.0
                     if elapsed > self.config.solr_ping_slow_threshold:
                         if self._solr_unresponsive_start is None:
                             self._solr_unresponsive_start = now
@@ -280,18 +278,40 @@ class HangDetector(BaseDetector):
                     else:
                         self._solr_unresponsive_start = None
                     return None
+                else:
+                    # Solr not responding according to cache
+                    if self._solr_unresponsive_start is None:
+                        self._solr_unresponsive_start = now
 
-                self._solr_unresponsive_start = None
-                return None
-                
+                    if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:
+                        return {"status": "unresponsive"}
+                    return None
+
+        except Exception:
+            # Fall back to direct probe on unexpected errors
+            pass
+
+        # Fallback: perform a direct probe if cache missing/failed
+        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/info/system"
+        try:
+            start = time.time()
+            with urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout) as response:
+                elapsed = time.time() - start
+                if response.status == 200:
+                    if elapsed > self.config.solr_ping_slow_threshold:
+                        if self._solr_unresponsive_start is None:
+                            self._solr_unresponsive_start = now
+                        if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
+                            return {"status": "slow", "response_time": elapsed}
+                    else:
+                        self._solr_unresponsive_start = None
+                    return None
         except urllib.error.URLError:
-            # Solr not responding
             if self._solr_unresponsive_start is None:
                 self._solr_unresponsive_start = now
-            
             if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:
                 return {"status": "unresponsive"}
-        
+
         return None
 
     def _get_monitored_logs(self) -> list[Path]:

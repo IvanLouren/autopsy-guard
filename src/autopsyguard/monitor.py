@@ -22,6 +22,7 @@ from autopsyguard.detectors.log_detector import LogDetector
 from autopsyguard.detectors.process_detector import ProcessDetector
 from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
+from autopsyguard.utils.solr_health import SolrHealthCache
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifier import EmailNotifier
 from autopsyguard.platform_utils import (
@@ -49,13 +50,16 @@ class Monitor:
 
     def __init__(self, config: MonitorConfig) -> None:
         self.config = config
+        # Shared Solr health cache to avoid duplicate probes per cycle
+        solr_cache = SolrHealthCache(config)
+
         self.detectors: list[BaseDetector] = [
             ProcessDetector(config),
             JvmCrashDetector(config),
             LogDetector(config),
-            HangDetector(config),
+            HangDetector(config, solr_cache=solr_cache),
             ResourceDetector(config),
-            SolrDetector(config),
+            SolrDetector(config, solr_cache=solr_cache),
         ]
         self.notifier = EmailNotifier(config)
         self._metrics_store = MetricsStore(case_dir=config.case_dir)

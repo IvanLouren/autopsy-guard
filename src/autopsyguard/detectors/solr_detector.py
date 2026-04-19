@@ -63,8 +63,9 @@ class SolrDetector(BaseDetector):
       5. Log Errors — errors detected in Solr log files
     """
 
-    def __init__(self, config: MonitorConfig) -> None:
+    def __init__(self, config: MonitorConfig, solr_cache=None) -> None:
         super().__init__(config)
+        self._solr_cache = solr_cache
         self._solr_down_reported = False
         self._solr_hang_reported = False
         self._consecutive_slow_responses = 0
@@ -85,41 +86,63 @@ class SolrDetector(BaseDetector):
 
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
-
-        # Health check endpoint
-        solr_url = f"{self._solr_base_url}/solr/admin/info/system"
-
-        start_time = time.time()
+        # Use shared solr cache if available for the health probe
+        elapsed: float | None = None
         try:
-            with urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds) as response:
-                elapsed = time.time() - start_time
-
-                if response.status == 200:
-                    # Solr is alive — check if it was previously down
+            if self._solr_cache is not None:
+                status = self._solr_cache.get_status()
+                if status.is_up:
+                    elapsed = status.response_time or 0.0
                     if self._solr_down_reported:
                         logger.info(
                             "Solr service has recovered and is responding on port %d.",
                             self.config.solr_port,
                         )
                     self._solr_down_reported = False
+                else:
+                    # Treat as connection error
+                    return self._handle_connection_error(Exception(status.error or "solr down"), f"{self._solr_base_url}/solr/admin/info/system")
 
-                # Check for slow response (potential hang)
-                events.extend(self._check_slow_response(elapsed))
+        except Exception:
+            # If cache fails, fall back to original direct probe below
+            elapsed = None
 
-                # Now that Solr is responding, check metrics and cores
-                events.extend(self._check_metrics())
-                events.extend(self._check_cores())
-
-        except urllib.error.URLError as e:
-            # Timeout is a URLError with a socket.timeout reason
-            elapsed = time.time() - start_time
-            if self._is_timeout_error(e):
-                events.extend(self._handle_timeout(elapsed))
-            else:
+        # If cached elapsed is available, use it for slow-check; otherwise do direct probe
+        if elapsed is None:
+            solr_url = f"{self._solr_base_url}/solr/admin/info/system"
+            start_time = time.time()
+            try:
+                with urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds) as response:
+                    elapsed = time.time() - start_time
+                    if response.status == 200:
+                        if self._solr_down_reported:
+                            logger.info(
+                                "Solr service has recovered and is responding on port %d.",
+                                self.config.solr_port,
+                            )
+                        self._solr_down_reported = False
+                    # proceed to checks below
+            except urllib.error.URLError as e:
+                elapsed = time.time() - start_time
+                if self._is_timeout_error(e):
+                    events.extend(self._handle_timeout(elapsed))
+                else:
+                    events.extend(self._handle_connection_error(e, solr_url))
+                # Always check logs even on failure
+                events.extend(self._check_logs())
+                return events
+            except ConnectionError as e:
                 events.extend(self._handle_connection_error(e, solr_url))
+                events.extend(self._check_logs())
+                return events
 
-        except ConnectionError as e:
-            events.extend(self._handle_connection_error(e, solr_url))
+        # Check for slow response (potential hang)
+        if elapsed is not None:
+            events.extend(self._check_slow_response(elapsed))
+
+        # Now that Solr is responsive, check metrics and cores
+        events.extend(self._check_metrics())
+        events.extend(self._check_cores())
 
         # Always check logs (even if Solr is down, logs may have info)
         events.extend(self._check_logs())
