@@ -24,7 +24,11 @@ from itertools import chain
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.platform_utils import get_autopsy_user_dir, get_autopsyguard_state_dir
+from autopsyguard.platform_utils import (
+    get_autopsy_user_dir,
+    get_autopsyguard_state_dir,
+    get_autopsy_log_dir,
+)
 from autopsyguard.utils.log_tracker import LogFileTracker
 
 logger = logging.getLogger(__name__)
