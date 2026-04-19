@@ -127,10 +127,12 @@ class LogDetector(BaseDetector):
         # Check against configured patterns first
         for pat, ctype, sev in self._patterns:
             if pat.search(line):
+                # Include the matching line in the message so tests can assert
+                # on the presence of specific exception identifiers (e.g. OutOfMemoryError).
                 return CrashEvent(
                     crash_type=ctype,
                     severity=sev,
-                    message=f"{ctype.name.replace('_',' ').title()} detected in {source.name}",
+                    message=f"{ctype.name.replace('_',' ').title()} detected in {source.name}: {line.strip()}",
                     details={"file": str(source), "line": line.strip()},
                 )
 

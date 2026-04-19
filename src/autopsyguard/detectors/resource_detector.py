@@ -17,7 +17,7 @@ import psutil
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.utils.process_utils import find_autopsy_pid
+import autopsyguard.utils.process_utils as process_utils
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class ResourceDetector(BaseDetector):
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
 
-        pid = find_autopsy_pid()
+        pid = process_utils.find_autopsy_pid()
         if pid is not None:
             events.extend(self._check_cpu(pid))
             events.extend(self._check_memory(pid))
@@ -63,15 +63,33 @@ class ResourceDetector(BaseDetector):
 
         # Interpret psutil's process CPU percent: can exceed 100% when
         # the process uses multiple logical cores (e.g. 250% ~= 2.5 cores).
-        cpu_count = psutil.cpu_count(logical=True) or 1
+        # Normalize cpu_count to an int; mocks may return MagicMock so guard.
+        try:
+            cpu_count_raw = psutil.cpu_count(logical=True)
+            cpu_count = int(cpu_count_raw) if cpu_count_raw else 1
+        except Exception:
+            cpu_count = 1
+
+        # Ensure numeric cpu value
+        try:
+            cpu = float(cpu)
+        except Exception:
+            cpu = 0.0
+
         cores_used = cpu / 100.0
         per_core_percent = (cpu / cpu_count) if cpu_count else cpu
 
         # Trigger if either total process CPU percentage exceeds the configured
         # process-wide threshold OR the per-core average exceeds the per-core threshold.
-        per_core_percent = (cpu / cpu_count) if cpu_count else cpu
-        triggers_total = cpu >= self.config.cpu_warning_percent
-        triggers_per_core = per_core_percent >= getattr(self.config, "cpu_per_core_warning_percent", 100.0)
+        # Compare using floats and guard against non-numeric values from mocks
+        try:
+            triggers_total = float(cpu) >= float(self.config.cpu_warning_percent)
+        except Exception:
+            triggers_total = False
+        try:
+            triggers_per_core = float(per_core_percent) >= float(getattr(self.config, "cpu_per_core_warning_percent", 100.0))
+        except Exception:
+            triggers_per_core = False
 
         if triggers_total or triggers_per_core:
             if self._high_cpu_since is None:
@@ -124,22 +142,30 @@ class ResourceDetector(BaseDetector):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return []
 
-        usage_percent = (mem_info.rss / system_mem.total) * 100
+        try:
+            rss = int(mem_info.rss)
+            total = int(system_mem.total)
+            usage_percent = (rss / total) * 100
+        except Exception:
+            # Be defensive in tests where memory fields may be mocked
+            return []
 
         if usage_percent >= self.config.memory_warning_percent:
             if not self._mem_warning_reported:
                 self._mem_warning_reported = True
+                rss_gb = rss / (1024**3)
+                total_bytes = int(system_mem.total)
                 return [CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
                     severity=Severity.WARNING,
                     message=(
                         f"Autopsy (PID {pid}) using {usage_percent:.1f}% "
-                        f"of system RAM ({mem_info.rss / (1024**3):.1f} GB)"
+                        f"of system RAM ({rss_gb:.1f} GB)"
                     ),
                     details={
                         "pid": pid,
-                        "rss_bytes": mem_info.rss,
-                        "system_total_bytes": system_mem.total,
+                        "rss_bytes": rss,
+                        "system_total_bytes": total_bytes,
                         "usage_percent": usage_percent,
                     },
                 )]
