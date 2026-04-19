@@ -44,8 +44,10 @@ class SolrHealthCache:
                 start = time.time()
                 with urllib.request.urlopen(url, timeout=self._config.solr_timeout_seconds) as resp:
                     elapsed = time.time() - start
-                    if resp.status == 200:
-                        return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time())
+                    # Treat any HTTP response < 500 as service reachable; record non-200 as an error
+                    if resp.status < 500:
+                        err = None if resp.status == 200 else f"HTTP {resp.status}"
+                        return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time(), error=err)
                     return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {resp.status}")
             except Exception as e:
                 return SolrStatus(is_up=False, response_time=None, checked_at=time.time(), error=str(e))
@@ -63,8 +65,10 @@ class SolrHealthCache:
             start = time.time()
             with urllib.request.urlopen(ping_url, timeout=self._config.solr_timeout_seconds) as presp:
                 elapsed = time.time() - start
-                if presp.status == 200:
-                    return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time())
+                # Consider any HTTP response < 500 as reachable (some cores return 4xx for malformed ping but Solr is alive)
+                if presp.status < 500:
+                    err = None if presp.status == 200 else f"HTTP {presp.status}"
+                    return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time(), error=err)
                 return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {presp.status}")
         except Exception as e:
             return SolrStatus(is_up=False, response_time=None, checked_at=time.time(), error=str(e))

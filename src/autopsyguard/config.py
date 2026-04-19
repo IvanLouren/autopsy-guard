@@ -125,10 +125,10 @@ class MonitorConfig:
         """
         values: dict[str, Any] = {}
         if yaml_path is not None:
-                values.update(_load_yaml_config(yaml_path))
+            values.update(_load_yaml_config(yaml_path))
 
-            # Apply environment-based overrides for secrets and sensitive fields
-            values = _apply_env_overrides(values)
+        # Apply environment-based overrides for secrets and sensitive fields
+        values = _apply_env_overrides(values)
 
         if overrides:
             values.update({k: v for k, v in overrides.items() if v is not None})

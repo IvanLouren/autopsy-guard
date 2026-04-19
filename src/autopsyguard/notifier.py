@@ -452,6 +452,9 @@ class EmailNotifier:
         metrics = _get_system_metrics(self.config.case_dir)
         autopsy_pid = _get_autopsy_pid()
 
+        # Human-readable or anonymised case label for emails
+        case_label = _get_case_label(self.config)
+
         # System metrics bar
         metrics_html = ""
         if metrics:
@@ -913,22 +916,22 @@ class EmailNotifier:
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                    logger.debug("Connecting to SMTP %s:%d (attempt %d)", self.config.smtp_host, self.config.smtp_port, attempt)
-                    smtp_cls = smtplib.SMTP_SSL if getattr(self.config, "smtp_use_ssl", False) else smtplib.SMTP
-                    with smtp_cls(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
-                        # EHLO/STARTTLS handling: only start TLS for non-SSL connections
-                        try:
+                logger.debug("Connecting to SMTP %s:%d (attempt %d)", self.config.smtp_host, self.config.smtp_port, attempt)
+                smtp_cls = smtplib.SMTP_SSL if getattr(self.config, "smtp_use_ssl", False) else smtplib.SMTP
+                with smtp_cls(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
+                    # EHLO/STARTTLS handling: only start TLS for non-SSL connections
+                    try:
+                        server.ehlo()
+                        if not getattr(self.config, "smtp_use_ssl", False) and server.has_extn('STARTTLS'):
+                            server.starttls()
                             server.ehlo()
-                            if not getattr(self.config, "smtp_use_ssl", False) and server.has_extn('STARTTLS'):
-                                server.starttls()
-                                server.ehlo()
-                        except Exception:
-                            # Some servers may not respond to EHLO; proceed to auth/send and let exceptions surface
-                            logger.debug("SMTP server did not respond to EHLO/STARTTLS probe; continuing")
+                    except Exception:
+                        # Some servers may not respond to EHLO; proceed to auth/send and let exceptions surface
+                        logger.debug("SMTP server did not respond to EHLO/STARTTLS probe; continuing")
 
-                        if self.config.smtp_password:
-                            server.login(self.config.smtp_user, self.config.smtp_password)
-                        server.send_message(msg)
+                    if self.config.smtp_password:
+                        server.login(self.config.smtp_user, self.config.smtp_password)
+                    server.send_message(msg)
 
                 logger.info("📧 Email enviado: %s", subject[:60])
                 return True
