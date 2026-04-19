@@ -25,9 +25,9 @@ from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifier import EmailNotifier
 from autopsyguard.platform_utils import (
-    find_autopsy_process,
     get_case_lock_file,
 )
+from autopsyguard.utils.process_utils import find_autopsy_pid
 from autopsyguard.utils.metrics_store import MetricsStore
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class Monitor:
 
     def _is_case_active(self) -> bool:
         """Check if Autopsy is running and the case is open."""
-        pid = find_autopsy_process()
+        pid = find_autopsy_pid()
         lock_exists = get_case_lock_file(self.config.case_dir).exists()
         return pid is not None and lock_exists
 
@@ -119,7 +119,7 @@ class Monitor:
             self._state = MonitorState.ACTIVE
             logger.info("✅ Autopsy detected — monitoring active")
         else:
-            pid = find_autopsy_process()
+            pid = find_autopsy_pid()
             lock = get_case_lock_file(self.config.case_dir).exists()
             logger.debug(
                 "Waiting... (process: %s, lock: %s)",
@@ -162,7 +162,7 @@ class Monitor:
             self._report_count += 1
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
-        pid = find_autopsy_process()
+        pid = find_autopsy_pid()
         lock_exists = get_case_lock_file(self.config.case_dir).exists()
 
         if pid is None and not lock_exists:

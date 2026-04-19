@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+import os
 
 import yaml
 
@@ -63,6 +64,8 @@ class MonitorConfig:
     # --- Email / Notifications ---
     smtp_host: str = ""
     smtp_port: int = 587
+    # Use implicit SSL (SMTP over SSL, typically port 465) instead of STARTTLS
+    smtp_use_ssl: bool = False
     smtp_user: str = ""
     smtp_password: str = ""
     email_sender: str = "autopsyguard@example.com"
@@ -88,6 +91,14 @@ class MonitorConfig:
     def global_log_dir(self) -> Path:
         return get_autopsy_log_dir()
 
+    def __repr__(self) -> str:
+        masked = "***" if self.smtp_password else ""
+        return (
+            f"MonitorConfig(case_dir={self.case_dir!r}, smtp_host={self.smtp_host!r}, "
+            f"smtp_user={self.smtp_user!r}, smtp_password={masked!r}, "
+            f"email_recipient={self.email_recipient!r})"
+        )
+
     @classmethod
     def from_sources(
         cls,
@@ -104,7 +115,10 @@ class MonitorConfig:
         """
         values: dict[str, Any] = {}
         if yaml_path is not None:
-            values.update(_load_yaml_config(yaml_path))
+                values.update(_load_yaml_config(yaml_path))
+
+            # Apply environment-based overrides for secrets and sensitive fields
+            values = _apply_env_overrides(values)
 
         if overrides:
             values.update({k: v for k, v in overrides.items() if v is not None})
@@ -164,6 +178,7 @@ _SUPPORTED_CONFIG_KEYS = {
     "error_patterns",
     "smtp_host",
     "smtp_port",
+    "smtp_use_ssl",
     "smtp_user",
     "smtp_password",
     "email_sender",
@@ -203,6 +218,25 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
         else:
             values[key] = value
 
+    return values
+
+
+_ENV_OVERRIDES = {
+    "smtp_password": "AUTOPSYGUARD_SMTP_PASSWORD",
+    "smtp_user": "AUTOPSYGUARD_SMTP_USER",
+}
+
+
+def _apply_env_overrides(values: dict[str, Any]) -> dict[str, Any]:
+    """Override config values from environment variables when present.
+
+    This keeps secrets out of disk-backed YAML files and allows secure
+    injection in deployment environments.
+    """
+    for field, env_var in _ENV_OVERRIDES.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            values[field] = val
     return values
 
 
