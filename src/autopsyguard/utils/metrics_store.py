@@ -11,6 +11,7 @@ from typing import Any
 import psutil
 
 from autopsyguard.utils.process_utils import find_autopsy_pid
+from autopsyguard.platform_utils import get_autopsyguard_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,8 @@ class MetricsStore:
     @staticmethod
     def default_db_path(case_dir: Path) -> Path:
         """Return default metrics DB path under the case directory."""
-        return case_dir / ".autopsyguard_state" / "metrics.db"
+        state_dir = get_autopsyguard_state_dir(case_dir)
+        return state_dir / "metrics.db"
 
     def _ensure_schema(self) -> None:
         # Create base metrics table if missing

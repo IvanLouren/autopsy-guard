@@ -15,7 +15,7 @@ from pathlib import Path
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file
+from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file, get_autopsyguard_state_dir
 from autopsyguard.utils.log_tracker import LogFileTracker
 
 logger = logging.getLogger(__name__)
@@ -32,8 +32,8 @@ class LogDetector(BaseDetector):
     def __init__(self, config: MonitorConfig) -> None:
         super().__init__(config)
         
-        # Initialize log file tracker with persistence
-        state_dir = config.case_dir / ".autopsyguard_state"
+        # Initialize log file tracker with persistence (stored outside case)
+        state_dir = get_autopsyguard_state_dir(config.case_dir)
         state_file = state_dir / "log_positions.json"
         self._log_tracker = LogFileTracker(state_file=state_file)
         self._log_tracker.load_positions()

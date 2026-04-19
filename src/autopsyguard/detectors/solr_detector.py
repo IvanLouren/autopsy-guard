@@ -24,7 +24,7 @@ from itertools import chain
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.platform_utils import get_autopsy_user_dir
+from autopsyguard.platform_utils import get_autopsy_user_dir, get_autopsyguard_state_dir
 from autopsyguard.utils.log_tracker import LogFileTracker
 
 logger = logging.getLogger(__name__)
@@ -73,8 +73,8 @@ class SolrDetector(BaseDetector):
         self._reported_log_errors: set[str] = set()
         self._initialized = False
         
-        # Initialize log file tracker with persistence
-        state_dir = config.case_dir / ".autopsyguard_state"
+        # Initialize log file tracker with persistence (stored outside case)
+        state_dir = get_autopsyguard_state_dir(config.case_dir)
         state_file = state_dir / "solr_log_positions.json"
         self._log_tracker = LogFileTracker(state_file=state_file)
         self._log_tracker.load_positions()

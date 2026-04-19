@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+import hashlib
 
 
 def is_windows() -> bool:
@@ -76,6 +77,18 @@ def get_hs_err_search_dirs(autopsy_install_dir: Path | None = None) -> list[Path
         dirs.append(autopsy_install_dir)
         dirs.append(autopsy_install_dir / "bin")
     return dirs
+
+
+def get_autopsyguard_state_dir(case_dir: Path) -> Path:
+    """Return a state directory outside the case, namespaced by a hash of the case path.
+
+    This avoids writing state files into the evidence case directory which
+    could contaminate forensic evidence or fail on read-only mounts.
+    """
+    case_hash = hashlib.sha256(str(case_dir.resolve()).encode()).hexdigest()[:16]
+    path = get_autopsy_user_dir() / "autopsyguard" / case_hash
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def validate_case_dir(case_dir: Path) -> bool:
