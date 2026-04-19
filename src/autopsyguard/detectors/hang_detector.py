@@ -99,8 +99,8 @@ class HangDetector(BaseDetector):
                 self._reset_hang_state()
             self._last_known_pid = current_pid
 
-        # Collect signals
-        cpu_signal = self._check_cpu_signal(now)
+        # Collect signals (fetch PID once and pass through)
+        cpu_signal = self._check_cpu_signal(now, current_pid)
         log_signal = self._check_log_signal(now)
         solr_signal = self._check_solr_signal(now)
         
@@ -148,25 +148,13 @@ class HangDetector(BaseDetector):
 
         return events
 
-    def _check_cpu_signal(self, now: float) -> CpuSignal | None:
-        """Check if CPU usage is suspiciously low, indicating a possible hang.
-        
-        Args:
-            now: Current timestamp to compare against.
-            
-        Returns:
-            CpuSignal dict with pid, cpu percentage, and duration if hang detected.
-            None if no hang or if Autopsy process not found.
-            
-        Side effects:
-            Updates self._low_cpu_start timestamp and self._last_known_pid.
-            Resets hang state when process PID changes (process restart).
+    def _check_cpu_signal(self, now: float, pid: int | None) -> CpuSignal | None:
+        """Check if CPU usage is suspiciously low.
+
+        The PID is supplied by the caller to avoid performing multiple
+        expensive process scans per poll cycle. If `pid` is None the
+        method clears internal CPU-tracking state and returns None.
         """
-        """Check if CPU is suspiciously low.
-        
-        Returns signal dict if CPU has been below threshold for timeout period.
-        """
-        pid = find_autopsy_pid()
         if pid is None:
             self._low_cpu_start = None
             self._last_cpu_value = None
