@@ -189,21 +189,8 @@ class HangDetector(BaseDetector):
         return None
 
     def _check_log_signal(self, now: float) -> LogSignal | None:
-        """Check if log files have stopped being written for an extended period.
-        
-        Args:
-            now: Current timestamp to compare modification times against.
-            
-        Returns:
-            LogSignal dict with stale_seconds and last_mtime if logs are stale.
-            None if logs are recent or if no log files found.
-            
-        Note:
-            Only considers logs stale if they haven't been modified for more than 
-            self.config.hang_log_stale_threshold_minutes.
-        """
         """Check if log files have stopped being written.
-        
+
         Returns signal dict if logs haven't been updated for timeout period.
         """
         log_files = self._get_monitored_logs()
