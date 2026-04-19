@@ -24,6 +24,25 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.utils.metrics_chart import render_system_chart_png
 
+
+def _get_case_label(config: MonitorConfig) -> str:
+    """Return an anonymised, human-friendly case label for emails.
+
+    Uses `config.email_case_label` when set; otherwise returns a short
+    hashed identifier to avoid exposing filesystem paths or identifiable
+    case names in email subjects/bodies.
+    """
+    if getattr(config, "email_case_label", None):
+        return config.email_case_label
+    try:
+        path = str(config.case_dir) if config.case_dir is not None else ""
+    except Exception:
+        path = ""
+    h = hashlib.sha1()
+    h.update(path.encode("utf-8"))
+    short = h.hexdigest()[:4].upper()
+    return f"Case #{short}"
+
 logger = logging.getLogger(__name__)
 
 # Track when AutopsyGuard started for uptime calculation
@@ -508,13 +527,13 @@ class EmailNotifier:
         
         <div style="margin-top:12px; padding:12px 16px; background-color:#f3f4f6; border-radius:8px;">
             <p style="color:#6b7280; font-size:12px; margin:0;">
-                📁 <strong>Logs:</strong> {self.config.case_dir / "Log" if self.config.case_dir else "N/A"}
+                📁 <strong>Logs:</strong> {case_label}
             </p>
         </div>
         """
 
         # Build full HTML
-        case_name = self.config.case_dir.name if self.config.case_dir else "N/A"
+        case_label = _get_case_label(self.config)
         html_body = BASE_TEMPLATE.format(
             header_color_start="#dc2626" if critical_count > 0 else "#d97706",
             header_color_end="#991b1b" if critical_count > 0 else "#b45309",
@@ -522,7 +541,7 @@ class EmailNotifier:
             header_title="Alerta de Sistema",
             header_subtitle="Foram detetadas anomalias que requerem atenção",
             timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
-            case_name=f"📁 {case_name}",
+            case_name=f"📁 {case_label}",
             body_content=body_content,
         )
 
@@ -772,8 +791,8 @@ class EmailNotifier:
         </div>
         """
 
-        # Build full HTML
-        case_name = self.config.case_dir.name if self.config.case_dir else "N/A"
+        # Build full HTML for report
+        case_label = _get_case_label(self.config)
         html_body = BASE_TEMPLATE.format(
             header_color_start="#3b82f6",
             header_color_end="#1d4ed8",
@@ -781,7 +800,7 @@ class EmailNotifier:
             header_title="Relatório de Status",
             header_subtitle="Resumo periódico do sistema de monitorização",
             timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
-            case_name=f"📁 {case_name}",
+            case_name=f"📁 {case_label}",
             body_content=body_content,
         )
 

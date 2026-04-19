@@ -70,6 +70,8 @@ class MonitorConfig:
     smtp_password: str = ""
     email_sender: str = "autopsyguard@example.com"
     email_recipient: str = ""
+    # Optional human-readable label to show in emails instead of the case directory name
+    email_case_label: str = ""
 
     # --- Periodic Reporting ---
     report_interval_hours: float = 12.0
@@ -191,6 +193,7 @@ _SUPPORTED_CONFIG_KEYS = {
     "smtp_password",
     "email_sender",
     "email_recipient",
+    "email_case_label",
     "report_interval_hours",
 }
 
