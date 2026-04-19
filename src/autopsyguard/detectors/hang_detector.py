@@ -278,22 +278,30 @@ class HangDetector(BaseDetector):
             # Fall back to direct probe on unexpected errors
             pass
 
-        # Fallback: perform a direct probe if cache missing/failed
-        solr_url = f"http://localhost:{self.config.solr_port}/solr/admin/info/system"
+        # Fallback: perform a direct lightweight ping probe if cache missing/failed
         try:
-            start = time.time()
-            with urllib.request.urlopen(solr_url, timeout=self.config.solr_ping_timeout) as response:
-                elapsed = time.time() - start
-                if response.status == 200:
-                    if elapsed > self.config.solr_ping_slow_threshold:
-                        if self._solr_unresponsive_start is None:
-                            self._solr_unresponsive_start = now
-                        if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
-                            return {"status": "slow", "response_time": elapsed}
-                    else:
-                        self._solr_unresponsive_start = None
-                    return None
-        except urllib.error.URLError:
+            cores_url = f"http://localhost:{self.config.solr_port}/solr/admin/cores?action=STATUS&wt=json"
+            with urllib.request.urlopen(cores_url, timeout=self.config.solr_ping_timeout) as cresp:
+                import json
+                data = json.loads(cresp.read())
+                cores = list(data.get("status", {}).keys())
+                if not cores:
+                    raise ValueError("no cores")
+                core = cores[0]
+                ping_url = f"http://localhost:{self.config.solr_port}/solr/{core}/admin/ping?wt=json"
+                start = time.time()
+                with urllib.request.urlopen(ping_url, timeout=self.config.solr_ping_timeout) as presp:
+                    elapsed = time.time() - start
+                    if presp.status == 200:
+                        if elapsed > self.config.solr_ping_slow_threshold:
+                            if self._solr_unresponsive_start is None:
+                                self._solr_unresponsive_start = now
+                            if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
+                                return {"status": "slow", "response_time": elapsed}
+                        else:
+                            self._solr_unresponsive_start = None
+                        return None
+        except Exception:
             if self._solr_unresponsive_start is None:
                 self._solr_unresponsive_start = now
             if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:

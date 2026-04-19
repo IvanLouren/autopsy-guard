@@ -109,30 +109,39 @@ class SolrDetector(BaseDetector):
 
         # If cached elapsed is available, use it for slow-check; otherwise do direct probe
         if elapsed is None:
-            solr_url = f"{self._solr_base_url}/solr/admin/info/system"
+            # Discover a core and perform a lightweight ping for liveness
+            cores_url = f"{self._solr_base_url}/solr/admin/cores?action=STATUS&wt=json"
             start_time = time.time()
             try:
-                with urllib.request.urlopen(solr_url, timeout=self.config.solr_timeout_seconds) as response:
-                    elapsed = time.time() - start_time
-                    if response.status == 200:
-                        if self._solr_down_reported:
-                            logger.info(
-                                "Solr service has recovered and is responding on port %d.",
-                                self.config.solr_port,
-                            )
-                        self._solr_down_reported = False
-                    # proceed to checks below
+                with urllib.request.urlopen(cores_url, timeout=self.config.solr_timeout_seconds) as cresp:
+                    import json
+                    parsed = json.loads(cresp.read())
+                    cores = list(parsed.get("status", {}).keys())
+                    if not cores:
+                        raise ValueError("no cores")
+                    core = cores[0]
+                    ping_url = f"{self._solr_base_url}/solr/{core}/admin/ping?wt=json"
+                    start_ping = time.time()
+                    with urllib.request.urlopen(ping_url, timeout=self.config.solr_timeout_seconds) as presp:
+                        elapsed = time.time() - start_ping
+                        if presp.status == 200:
+                            if self._solr_down_reported:
+                                logger.info(
+                                    "Solr service has recovered and is responding on port %d.",
+                                    self.config.solr_port,
+                                )
+                            self._solr_down_reported = False
             except urllib.error.URLError as e:
                 elapsed = time.time() - start_time
                 if self._is_timeout_error(e):
                     events.extend(self._handle_timeout(elapsed))
                 else:
-                    events.extend(self._handle_connection_error(e, solr_url))
-                # Always check logs even on failure
+                    # Use a generic ping-ish URL for reporting if cores discovery failed
+                    events.extend(self._handle_connection_error(e, f"{self._solr_base_url}/solr/admin/ping"))
                 events.extend(self._check_logs())
                 return events
-            except ConnectionError as e:
-                events.extend(self._handle_connection_error(e, solr_url))
+            except Exception as e:
+                events.extend(self._handle_connection_error(e, f"{self._solr_base_url}/solr/admin/ping"))
                 events.extend(self._check_logs())
                 return events
 
