@@ -115,17 +115,11 @@ def main() -> int:
         logger.error(str(exc))
         return 1
 
-    case_dir = config.case_dir.resolve()
     if not args.skip_validation:
-        if not case_dir.exists():
-            logger.error("Case directory does not exist: %s", case_dir)
-            return 1
-        if not validate_case_dir(case_dir):
-            logger.error(
-                "Invalid Autopsy case directory: %s\n"
-                "Expected to find a .aut file and autopsy.db",
-                case_dir,
-            )
+        try:
+            config.validate_filesystem()
+        except ValueError as exc:
+            logger.error(str(exc))
             return 1
     
     # Clean startup banner
