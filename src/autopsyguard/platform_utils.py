@@ -21,14 +21,23 @@ def get_autopsy_process_names() -> list[str]:
 def find_autopsy_process() -> int | None:
     """Scan running processes for an Autopsy launcher. Returns PID or None."""
     import psutil
+    target_names = {n.lower() for n in get_autopsy_process_names()}
+    java_names = {n.lower() for n in get_java_process_names()}
 
-    target_names = [n.lower() for n in get_autopsy_process_names()]
-    for proc in psutil.process_iter(["pid", "name"]):
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
-            if proc.info["name"] and proc.info["name"].lower() in target_names:
+            name = (proc.info.get("name") or "").lower()
+            if name in target_names:
                 return proc.info["pid"]
+
+            # Fallback: if a Java process was launched by Autopsy, detect via cmdline
+            if name in java_names:
+                cmdline = proc.info.get("cmdline") or []
+                if any("autopsy" in str(arg).lower() for arg in cmdline):
+                    return proc.info["pid"]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+
     return None
 
 

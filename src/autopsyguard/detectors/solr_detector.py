@@ -19,6 +19,7 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import chain
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
@@ -409,7 +410,7 @@ class SolrDetector(BaseDetector):
             (re.compile(r"WARN.*(?:corrupt|failed|exception)", re.IGNORECASE), Severity.WARNING),
         ]
 
-        for log_file in log_dir.glob("solr*.log"):
+        for log_file in chain(log_dir.glob("solr*.log"), log_dir.glob("solr*.log.*")):
             try:
                 # On first run, seek to end to ignore pre-existing errors
                 if not self._initialized and self._log_tracker.get_position(log_file) == 0:
