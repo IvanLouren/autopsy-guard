@@ -40,3 +40,9 @@ def setup_logging(log_dir: Path | None = None, level: int = logging.INFO) -> Non
         )
         file_handler.setFormatter(file_format)
         root_logger.addHandler(file_handler)
+
+    # Matplotlib's font manager can be very noisy at DEBUG level (it scans system
+    # fonts and logs scores). Bump its log level to WARNING so our app's DEBUG
+    # output stays useful without flooding the console with font entries.
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)

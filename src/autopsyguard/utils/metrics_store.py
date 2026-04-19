@@ -47,6 +47,18 @@ class MetricsStore:
             """
         )
         self._conn.commit()
+        # Ensure disk I/O columns exist for backward-compatible schema migration
+        try:
+            self._conn.execute(
+                "ALTER TABLE metrics ADD COLUMN disk_read_bytes INTEGER DEFAULT 0"
+            )
+            self._conn.execute(
+                "ALTER TABLE metrics ADD COLUMN disk_write_bytes INTEGER DEFAULT 0"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            # Column already exists or other benign error — ignore
+            pass
 
     def record_sample(self) -> None:
         """Capture a metrics sample and persist it."""
@@ -55,6 +67,7 @@ class MetricsStore:
             cpu_percent = psutil.cpu_percent(interval=0.1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage(str(self._case_dir))
+            disk_io = psutil.disk_io_counters()
 
             autopsy_pid = find_autopsy_pid()
             autopsy_rss = None
@@ -66,33 +79,43 @@ class MetricsStore:
                     autopsy_pid = None
                     autopsy_rss = None
 
-            self._conn.execute(
-                """
-                INSERT INTO metrics (
-                    ts,
-                    cpu_percent,
-                    memory_percent,
-                    memory_used_bytes,
-                    memory_total_bytes,
-                    disk_free_bytes,
-                    disk_total_bytes,
-                    autopsy_pid,
-                    autopsy_rss_bytes
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    timestamp,
-                    cpu_percent,
-                    memory.percent,
-                    int(memory.used),
-                    int(memory.total),
-                    int(disk.free),
-                    int(disk.total),
-                    autopsy_pid,
-                    int(autopsy_rss) if autopsy_rss is not None else None,
-                ),
-            )
+            # Desired mapping of column -> value (covers both old and new schemas)
+            value_map = {
+                "ts": timestamp,
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory.percent,
+                "memory_used_bytes": int(memory.used),
+                "memory_total_bytes": int(memory.total),
+                "disk_free_bytes": int(disk.free),
+                "disk_total_bytes": int(disk.total),
+                "disk_read_bytes": int(disk_io.read_bytes) if disk_io is not None else 0,
+                "disk_write_bytes": int(disk_io.write_bytes) if disk_io is not None else 0,
+                "autopsy_pid": autopsy_pid,
+                "autopsy_rss_bytes": int(autopsy_rss) if autopsy_rss is not None else None,
+            }
+
+            # Inspect current table columns and insert only those present
+            cols_info = self._conn.execute("PRAGMA table_info(metrics)").fetchall()
+            existing_cols = [row[1] for row in cols_info]
+            insert_cols = [c for c in [
+                "ts",
+                "cpu_percent",
+                "memory_percent",
+                "memory_used_bytes",
+                "memory_total_bytes",
+                "disk_free_bytes",
+                "disk_total_bytes",
+                "disk_read_bytes",
+                "disk_write_bytes",
+                "autopsy_pid",
+                "autopsy_rss_bytes",
+            ] if c in existing_cols]
+
+            placeholders = ",".join(["?" for _ in insert_cols])
+            sql = f"INSERT INTO metrics ({','.join(insert_cols)}) VALUES ({placeholders})"
+            values = [value_map[c] for c in insert_cols]
+
+            self._conn.execute(sql, tuple(values))
             self._conn.commit()
         except Exception as exc:
             logger.debug("Metrics sample failed: %s", exc)
@@ -102,7 +125,7 @@ class MetricsStore:
         rows = self._conn.execute(
             """
             SELECT ts, cpu_percent, memory_percent, memory_used_bytes,
-                   memory_total_bytes, autopsy_pid, autopsy_rss_bytes
+                   memory_total_bytes, disk_read_bytes, disk_write_bytes, autopsy_pid, autopsy_rss_bytes
             FROM metrics
             WHERE ts >= ?
             ORDER BY ts ASC
@@ -117,8 +140,10 @@ class MetricsStore:
                 "memory_percent": row[2],
                 "memory_used_bytes": row[3],
                 "memory_total_bytes": row[4],
-                "autopsy_pid": row[5],
-                "autopsy_rss_bytes": row[6],
+                "disk_read_bytes": row[5],
+                "disk_write_bytes": row[6],
+                "autopsy_pid": row[7],
+                "autopsy_rss_bytes": row[8],
             }
             for row in rows
         ]

@@ -1,4 +1,8 @@
-"""Render a memory chart for email reports."""
+"""Render a compact system chart (CPU, memory, disk I/O) for email reports.
+
+Provides a two-row PNG: top row shows CPU% and Memory%, bottom row shows
+disk read/write rates (MB/s). Expects samples sorted by timestamp ascending.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,20 @@ import io
 import math
 from typing import Any
 
+import matplotlib
 
-def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
-    """Render a memory chart as PNG bytes.
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+from matplotlib.patches import Patch
 
-    Expects samples sorted by timestamp in ascending order.
-    Returns empty bytes when there is not enough data.
+
+def render_system_chart_png(
+    samples: list[dict[str, Any]],
+    alert_windows: list[tuple[float, float]] | None = None,
+) -> bytes:
+    """Render a system chart as PNG bytes.
+
+    Returns empty bytes when there is not enough data (fewer than 2 samples).
     """
     if len(samples) < 2:
         return b""
@@ -19,59 +31,102 @@ def render_memory_chart_png(samples: list[dict[str, Any]]) -> bytes:
     times = [sample.get("ts", 0.0) for sample in samples]
     t0 = times[0]
     x_minutes = [(ts - t0) / 60.0 for ts in times]
-    memory_percent = [sample.get("memory_percent", 0.0) for sample in samples]
-    smooth_window = 5 if len(memory_percent) >= 5 else max(1, len(memory_percent))
-    memory_smoothed = _moving_average(memory_percent, smooth_window)
 
+    cpu = [sample.get("cpu_percent", 0.0) for sample in samples]
+    memory = [sample.get("memory_percent", 0.0) for sample in samples]
+    smooth_w = 5 if len(cpu) >= 5 else max(1, len(cpu))
+    cpu_s = _moving_average(cpu, smooth_w)
+    mem_s = _moving_average(memory, smooth_w)
+
+    # Autopsy RSS (optional)
     rss_values = [sample.get("autopsy_rss_bytes") for sample in samples]
     has_rss = any(value is not None for value in rss_values)
-    rss_gb = [
-        (value / (1024 ** 3)) if value is not None else math.nan
-        for value in rss_values
-    ]
+    rss_gb = [(v / (1024 ** 3)) if v is not None else math.nan for v in rss_values]
 
-    import matplotlib
+    # Compute disk I/O rates (bytes/sec) from cumulative counters
+    read_bytes = [sample.get("disk_read_bytes") for sample in samples]
+    write_bytes = [sample.get("disk_write_bytes") for sample in samples]
+    read_bps = [0.0] * len(samples)
+    write_bps = [0.0] * len(samples)
+    for i in range(1, len(samples)):
+        dt = max(1e-6, times[i] - times[i - 1])
+        try:
+            read_bps[i] = ( (read_bytes[i] or 0) - (read_bytes[i - 1] or 0) ) / dt
+        except Exception:
+            read_bps[i] = 0.0
+        try:
+            write_bps[i] = ( (write_bytes[i] or 0) - (write_bytes[i - 1] or 0) ) / dt
+        except Exception:
+            write_bps[i] = 0.0
+    # Convert to MB/s
+    read_mbps = [v / (1024 ** 2) for v in read_bps]
+    write_mbps = [v / (1024 ** 2) for v in write_bps]
 
-    matplotlib.use("Agg")
-    from matplotlib import pyplot as plt
+    fig, (ax_top, ax_bot) = plt.subplots(nrows=2, ncols=1, figsize=(6.2, 4.2), dpi=120,
+                                         gridspec_kw={"height_ratios": [2, 1]})
 
-    fig, ax1 = plt.subplots(figsize=(6.2, 2.8), dpi=120)
-    ax1.plot(
-        x_minutes,
-        memory_smoothed,
-        color="#2563eb",
-        linewidth=1.6,
-        label="System memory (%)",
-    )
-    ax1.set_xlabel("Minutes since last email")
-    ax1.set_ylabel("Memory (%)")
-    ax1.set_ylim(0, 100)
-    ax1.grid(True, alpha=0.2)
+    # If alert windows were provided (list of (start_ts, end_ts) epoch seconds),
+    # convert them to minutes relative to t0 and shade those regions on the CPU plot.
+    if alert_windows:
+        # choose a gentle red/pink shade and modest opacity so the plot remains readable
+        alert_color = "#fee2e2"
+        alert_alpha = 0.25
+        alert_patch = Patch(facecolor=alert_color, alpha=alert_alpha, label="Período de alerta")
+        for start_ts, end_ts in alert_windows:
+            # skip invalid windows
+            if end_ts <= start_ts:
+                continue
+            start_min = (start_ts - t0) / 60.0
+            end_min = (end_ts - t0) / 60.0
+            # Only draw if overlaps the plotted range
+            if end_min < x_minutes[0] or start_min > x_minutes[-1]:
+                continue
+            ax_top.axvspan(start_min, end_min, color=alert_color, alpha=alert_alpha, zorder=0)
+            # annotate window
+            mid = max(start_min, x_minutes[0]) + (min(end_min, x_minutes[-1]) - max(start_min, x_minutes[0])) / 2
+            try:
+                y = 95
+                ax_top.text(mid, y, "ALERTA", color="#7f1d1d", fontsize=8, fontweight="600",
+                            ha="center", va="top", backgroundcolor=(1,1,1,0.6))
+            except Exception:
+                pass
 
-    lines = ax1.get_lines()
-    labels = [line.get_label() for line in lines]
+    # Top: CPU% and Memory%
+    ax_top.plot(x_minutes, cpu_s, color="#e11d48", linewidth=1.6, label="CPU (%)")
+    ax_top.plot(x_minutes, mem_s, color="#2563eb", linewidth=1.6, label="Memory (%)")
+    ax_top.set_ylabel("Percent (%)")
+    ax_top.set_ylim(0, 100)
+    ax_top.grid(True, alpha=0.15)
+    lines = ax_top.get_lines()
+    labels = [l.get_label() for l in lines]
 
     if has_rss:
-        ax2 = ax1.twinx()
-        ax2.plot(
-            x_minutes,
-            rss_gb,
-            color="#d97706",
-            linewidth=1.4,
-            label="Autopsy RSS (GB)",
-        )
-        ax2.set_ylabel("Autopsy RSS (GB)")
-        lines += ax2.get_lines()
-        labels += [line.get_label() for line in ax2.get_lines()]
+        ax_rss = ax_top.twinx()
+        ax_rss.plot(x_minutes, rss_gb, color="#d97706", linewidth=1.2, linestyle="--", label="Autopsy RSS (GB)")
+        ax_rss.set_ylabel("RSS (GB)")
+        lines += ax_rss.get_lines()
+        labels += [l.get_label() for l in ax_rss.get_lines()]
 
-    ax1.legend(lines, labels, loc="upper right", fontsize=8)
+    # Add alert legend patch if any alert windows were drawn
+    if alert_windows:
+        lines.append(alert_patch)
+        labels.append(alert_patch.get_label())
+    ax_top.legend(lines, labels, loc="upper right", fontsize=8)
+    ax_top.set_xlabel("Minutes since last email")
+
+    # Bottom: Disk I/O MB/s
+    ax_bot.plot(x_minutes, read_mbps, color="#10b981", linewidth=1.4, label="Read (MB/s)")
+    ax_bot.plot(x_minutes, write_mbps, color="#6366f1", linewidth=1.4, label="Write (MB/s)")
+    ax_bot.set_ylabel("MB/s")
+    ax_bot.set_xlabel("Minutes since last email")
+    ax_bot.grid(True, alpha=0.15)
+    ax_bot.legend(loc="upper right", fontsize=8)
 
     fig.tight_layout()
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
     plt.close(fig)
-
-    return buffer.getvalue()
+    return buf.getvalue()
 
 
 def _moving_average(values: list[float], window: int) -> list[float]:

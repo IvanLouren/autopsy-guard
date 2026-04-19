@@ -146,11 +146,12 @@ class Monitor:
         now = time.time()
         elapsed_hours = (now - self._last_report_time) / 3600.0
         if elapsed_hours >= self.config.report_interval_hours:
-            metrics_samples = None
-            if self._report_count > 0:
-                metrics_samples = self._metrics_store.fetch_samples(
-                    since_ts=self._last_report_time
-                )
+            # Fetch a small buffer before the last report time to ensure
+            # we have enough samples for chart rendering even on the
+            # first/short-interval reports.
+            buffer_seconds = max(60, int(self.config.poll_interval * 3))
+            since_ts = max(0.0, self._last_report_time - buffer_seconds)
+            metrics_samples = self._metrics_store.fetch_samples(since_ts=since_ts)
             self.notifier.send_report(
                 system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
                 events_last_period=self._events_since_last_report,

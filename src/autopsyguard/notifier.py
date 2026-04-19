@@ -9,13 +9,17 @@ from __future__ import annotations
 import logging
 import smtplib
 import psutil
+import base64
+import csv
+import io
+import json
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
-from autopsyguard.utils.metrics_chart import render_memory_chart_png
+from autopsyguard.utils.metrics_chart import render_system_chart_png
 
 logger = logging.getLogger(__name__)
 
@@ -210,13 +214,15 @@ def _format_details(details: dict[str, Any] | None) -> str:
     """Format event details dict into HTML rows."""
     if not details:
         return ""
-    
     html_parts = []
-    
+
     # Priority order for display
-    priority_keys = ["log_line", "log_file", "pid", "exit_code", "error", "cpu_percent", 
-                     "memory_percent", "duration", "crash_summary"]
-    
+    priority_keys = [
+        "log_line", "log_file", "pid", "exit_code", "error",
+        "cpu_percent", "cores_used", "cpu_per_core_percent", "cpu_count",
+        "memory_percent", "duration_seconds", "duration", "crash_summary"
+    ]
+
     # User-friendly labels
     labels = {
         "log_line": "📋 Log",
@@ -225,36 +231,60 @@ def _format_details(details: dict[str, Any] | None) -> str:
         "exit_code": "⚠️ Exit Code",
         "error": "❌ Erro",
         "cpu_percent": "💻 CPU",
+        "cores_used": "⚙️ Núcleos usados",
+        "cpu_per_core_percent": "📊 % por núcleo",
+        "cpu_count": "🔢 Núcleos (totais)",
         "memory_percent": "🧠 Memória",
         "duration": "⏱️ Duração",
+        "duration_seconds": "⏱️ Duração",
         "crash_summary": "💥 Resumo",
         "core_name": "📦 Core",
         "timeout_seconds": "⏰ Timeout",
         "elapsed": "⏱️ Tempo",
     }
-    
+
+    def _fmt_value(k: str, v: Any) -> str:
+        if v is None:
+            return "N/A"
+        # Numbers: format with sensible units/precision
+        if isinstance(v, float):
+            if k in ("cpu_percent", "cpu_per_core_percent", "memory_percent", "disk_percent", "usage_percent"):
+                return f"{v:.1f}%"
+            if k in ("cores_used",):
+                return f"{v:.1f}"
+            if k in ("duration_seconds", "elapsed"):
+                return f"{v:.0f}s"
+            if k.endswith("_gb") or k in ("memory_used_gb", "memory_total_gb", "disk_free_gb", "disk_total_gb"):
+                return f"{v:.1f} GB"
+            if k.endswith("_bytes"):
+                # show MB for readability
+                return f"{v / (1024**2):.1f} MB"
+            return f"{v}"
+        if isinstance(v, int):
+            if k in ("pid", "exit_code", "cpu_count"):
+                return str(v)
+            return str(v)
+        # Fallback for other types
+        s = str(v)
+        if len(s) > 200:
+            s = s[:200] + "..."
+        return s
+
     # Show priority keys first, then others
     shown_keys = set()
     for key in priority_keys:
         if key in details:
             value = details[key]
-            # Truncate long values
-            str_value = str(value)
-            if len(str_value) > 200:
-                str_value = str_value[:200] + "..."
             label = labels.get(key, key.replace("_", " ").title())
-            html_parts.append(DETAIL_ROW.format(key=label, value=str_value))
+            html_parts.append(DETAIL_ROW.format(key=label, value=_fmt_value(key, value)))
             shown_keys.add(key)
-    
+
     # Show remaining keys
     for key, value in details.items():
         if key not in shown_keys:
-            str_value = str(value)
-            if len(str_value) > 200:
-                str_value = str_value[:200] + "..."
             label = labels.get(key, key.replace("_", " ").title())
-            html_parts.append(DETAIL_ROW.format(key=label, value=str_value))
-    
+            html_parts.append(DETAIL_ROW.format(key=label, value=_fmt_value(key, value)))
+
     return "".join(html_parts)
 
 
@@ -264,9 +294,14 @@ def _get_system_metrics() -> dict[str, Any]:
         cpu_percent = psutil.cpu_percent(interval=0.1)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/") if not psutil.WINDOWS else psutil.disk_usage("C:\\")
-        
+        cpu_count = psutil.cpu_count(logical=True) or 1
+        # Convert aggregate percent into approximate cores used
+        cpu_cores_used = (cpu_percent / 100.0) * cpu_count
+
         return {
             "cpu_percent": cpu_percent,
+            "cpu_count": cpu_count,
+            "cpu_cores_used": cpu_cores_used,
             "memory_percent": memory.percent,
             "memory_used_gb": memory.used / (1024**3),
             "memory_total_gb": memory.total / (1024**3),
@@ -364,7 +399,16 @@ class EmailNotifier:
             cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
             mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
             disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
-            
+
+            # Compose CPU display with cores used when available
+            cpu_pct = metrics.get("cpu_percent", 0)
+            cpu_count = metrics.get("cpu_count")
+            if cpu_count:
+                cores_used = metrics.get("cpu_cores_used", 0.0)
+                cpu_display = f"{cpu_pct:.1f}% (≈{cores_used:.1f}/{cpu_count})"
+            else:
+                cpu_display = f"{cpu_pct:.1f}%"
+
             metrics_html = f"""
             <div style="margin-bottom:20px; padding:16px; background-color:#f8f9fa; border-radius:8px;">
                 <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">
@@ -372,13 +416,16 @@ class EmailNotifier:
                 </div>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                     <tr>
-                        {METRIC_BOX.format(icon="💻", value=f"{metrics.get('cpu_percent', 0):.1f}%", label="CPU", color=cpu_color)}
+                        {METRIC_BOX.format(icon="💻", value=cpu_display, label="CPU", color=cpu_color)}
                         {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label="Memória", color=mem_color)}
                         {METRIC_BOX.format(icon="💾", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label="Disco Livre", color=disk_color)}
                         {METRIC_BOX.format(icon="🔍", value=str(autopsy_pid or 'N/A'), label="Autopsy PID", color="#3b82f6")}
                     </tr>
                 </table>
-            </div>
+                    <div style="font-size:11px; color:#6b7280; margin-top:8px;">
+                        Nota: 'Process %' pode exceder 100% — conta núcleos usados.
+                    </div>
+                </div>
             """
         summary = f"""
         <div style="margin-bottom:24px;">
@@ -438,7 +485,16 @@ class EmailNotifier:
             body_content=body_content,
         )
 
-        return self._dispatch_email(subject, html_body)
+        # Plain-text fallback summary
+        plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {get_uptime()}"]
+        # Include short messages for events
+        for ev in events[:5]:
+            plain_lines.append(f"- {ev.severity.name}: {ev.message}")
+        plain_lines.append("")
+        plain_lines.append("Nota: 'Process %' pode exceder 100% — conta núcleos usados.")
+        plain_text = "\n".join(plain_lines)
+
+        return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
     def send_report(
         self,
@@ -484,7 +540,15 @@ class EmailNotifier:
             cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
             mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
             disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
-            
+
+            cpu_pct = metrics.get("cpu_percent", 0)
+            cpu_count = metrics.get("cpu_count")
+            if cpu_count:
+                cores_used = metrics.get("cpu_cores_used", 0.0)
+                cpu_display = f"{cpu_pct:.1f}% (≈{cores_used:.1f}/{cpu_count})"
+            else:
+                cpu_display = f"{cpu_pct:.1f}%"
+
             metrics_html = f"""
             <div style="margin-bottom:20px; padding:16px; background-color:#f8f9fa; border-radius:8px;">
                 <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">
@@ -492,26 +556,53 @@ class EmailNotifier:
                 </div>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                     <tr>
-                        {METRIC_BOX.format(icon="💻", value=f"{metrics.get('cpu_percent', 0):.1f}%", label="CPU", color=cpu_color)}
+                        {METRIC_BOX.format(icon="💻", value=cpu_display, label="CPU", color=cpu_color)}
                         {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label="Memória", color=mem_color)}
                         {METRIC_BOX.format(icon="💾", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label="Disco Livre", color=disk_color)}
                     </tr>
                 </table>
+                <div style="font-size:11px; color:#6b7280; margin-top:8px;">
+                    Nota: 'Process %' pode exceder 100% — conta núcleos usados.
+                </div>
             </div>
             """
 
         chart_html = ""
         inline_images: list[tuple[str, bytes, str]] = []
+        # Build alert windows from recent events (use duration if present)
+        alert_windows: list[tuple[float, float]] = []
+        for ts, ev in recent_events:
+            try:
+                dur = float(ev.details.get("duration_seconds") or ev.details.get("duration") or 0)
+            except Exception:
+                dur = 0.0
+            end_ts = ts.timestamp()
+            start_ts = end_ts - dur if dur > 0 else end_ts
+            alert_windows.append((start_ts, end_ts))
+
         if metrics_samples:
-            chart_png = render_memory_chart_png(metrics_samples)
+            chart_png = render_system_chart_png(metrics_samples, alert_windows=alert_windows)
             if chart_png:
-                inline_images.append(("memory_chart", chart_png, "png"))
-                chart_html = """
+                # Attach as inline image (Content-ID) for clients that support it
+                inline_images.append(("system_chart", chart_png, "png"))
+
+                # ALSO embed as a data URI fallback so web previews and browsers
+                # that don't resolve cid: URLs can still render the chart.
+                b64 = base64.b64encode(chart_png).decode("ascii")
+                # Use Outlook conditional comments: show the CID image only to MSO (Outlook),
+                # and show the data-URI image to other clients. This avoids displaying a
+                # broken icon + duplicate image in clients that can't resolve cid: URLs.
+                chart_html = f"""
                 <div style="margin-bottom:20px;">
                     <div style="font-size:12px; color:#6b7280; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">
-                        📈 Evolucao de Memoria (desde o ultimo email)
+                        📈 Tendências de Sistema (desde o último email)
                     </div>
-                    <img src="cid:memory_chart" alt="Memory chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb;">
+                    <!--[if mso]>
+                        <img src="cid:system_chart" alt="System chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb; display:block;">
+                    <![endif]-->
+                    <!--[if !mso]><!-- -->
+                        <img src="data:image/png;base64,{b64}" alt="System chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb; display:block;">
+                    <!--<![endif]-->
                 </div>
                 """
 
@@ -648,7 +739,43 @@ class EmailNotifier:
             body_content=body_content,
         )
 
-        return self._dispatch_email(subject, html_body, inline_images=inline_images)
+        # Prepare attachments with raw metrics (CSV + JSON) for offline analysis
+        attachments: list[tuple[str, bytes, str]] = []
+        try:
+            # JSON
+            json_b = json.dumps(metrics_samples, default=str, ensure_ascii=False, indent=2).encode("utf-8")
+            attachments.append(("metrics.json", json_b, "application/json"))
+
+            # CSV: derive header from union of keys in samples
+            if metrics_samples:
+                fieldnames = []
+                seen = set()
+                for s in metrics_samples:
+                    for k in s.keys():
+                        if k not in seen:
+                            seen.add(k)
+                            fieldnames.append(k)
+                sio = io.StringIO()
+                writer = csv.DictWriter(sio, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for row in metrics_samples:
+                    # Coerce non-serializable values to strings
+                    safe_row = {k: (v if isinstance(v, (str, int, float, bool)) or v is None else str(v)) for k, v in row.items()}
+                    writer.writerow(safe_row)
+                csv_b = sio.getvalue().encode("utf-8")
+                attachments.append(("metrics.csv", csv_b, "text/csv"))
+        except Exception:
+            attachments = []
+
+        # Plain-text fallback summary for reports
+        plain_lines = [subject, "", f"Estado: {status_text}", f"Eventos no período: {events_last_period}", f"Uptime: {uptime}", f"Autopsy PID: {autopsy_pid or 'N/A'}"]
+        if metrics_samples:
+            plain_lines.append("Inclui anexos: metrics.csv, metrics.json")
+        plain_lines.append("")
+        plain_lines.append("Nota: 'Process %' pode exceder 100% — conta núcleos usados.")
+        plain_text = "\n".join(plain_lines)
+
+        return self._dispatch_email(subject, html_body, inline_images=inline_images, attachments=attachments, plain_text=plain_text)
 
     def _dispatch_email(
         self,
@@ -656,16 +783,32 @@ class EmailNotifier:
         html_body: str,
         *,
         inline_images: list[tuple[str, bytes, str]] | None = None,
+        attachments: list[tuple[str, bytes, str]] | None = None,
+        plain_text: str | None = None,
     ) -> bool:
         """Core function that constructs the MIME and talks to the SMTP server."""
         msg = EmailMessage()
-        msg.set_content("O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno.")
+        if plain_text:
+            msg.set_content(plain_text)
+        else:
+            msg.set_content("O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno.")
         msg.add_alternative(html_body, subtype='html')
 
         if inline_images:
             html_part = msg.get_payload()[1]
             for cid, data, subtype in inline_images:
-                html_part.add_related(data, maintype="image", subtype=subtype, cid=cid)
+                # Email Content-ID headers should be enclosed in angle brackets.
+                # Use '<cid>' here so the MIME part's Content-ID header matches 'cid:NAME' in HTML.
+                html_part.add_related(data, maintype="image", subtype=subtype, cid=f"<{cid}>")
+
+        # Add binary/text attachments (CSV/JSON etc.)
+        if attachments:
+            for filename, data, mime in attachments:
+                try:
+                    maintype, subtype = mime.split('/', 1)
+                except Exception:
+                    maintype, subtype = 'application', 'octet-stream'
+                msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
         
         msg['Subject'] = subject
         msg['From'] = self.config.email_sender

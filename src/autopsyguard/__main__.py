@@ -17,6 +17,7 @@ from pathlib import Path
 from autopsyguard.config import MonitorConfig
 from autopsyguard.logger import setup_logging
 from autopsyguard.monitor import Monitor
+from autopsyguard.notifier import set_start_time
 from autopsyguard.platform_utils import validate_case_dir
 
 
@@ -137,6 +138,9 @@ def main() -> int:
     print("─" * 61)
     
     # Create and run monitor
+    # Set notifier uptime start
+    set_start_time()
+
     monitor = Monitor(config)
     
     try:

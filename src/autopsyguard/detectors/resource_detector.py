@@ -61,22 +61,34 @@ class ResourceDetector(BaseDetector):
             self._high_cpu_since = None
             return []
 
+        # Interpret psutil's process CPU percent: can exceed 100% when
+        # the process uses multiple logical cores (e.g. 250% ~= 2.5 cores).
+        cpu_count = psutil.cpu_count(logical=True) or 1
+        cores_used = cpu / 100.0
+        per_core_percent = (cpu / cpu_count) if cpu_count else cpu
+
         if cpu >= self.config.cpu_warning_percent:
             if self._high_cpu_since is None:
                 self._high_cpu_since = now
             elapsed = now - self._high_cpu_since
             if elapsed >= self.config.cpu_warning_duration and not self._cpu_warning_reported:
                 self._cpu_warning_reported = True
+                # Build a clearer message including cores used and per-core percent
+                message = (
+                    f"Autopsy (PID {pid}) sustained CPU at {cpu:.1f}% "
+                    f"(≈{cores_used:.1f} cores; ≈{per_core_percent:.1f}% per core) "
+                    f"for {elapsed:.0f}s"
+                )
                 return [CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
                     severity=Severity.WARNING,
-                    message=(
-                        f"Autopsy (PID {pid}) sustained CPU at {cpu:.1f}% "
-                        f"for {elapsed:.0f}s"
-                    ),
+                    message=message,
                     details={
                         "pid": pid,
                         "cpu_percent": cpu,
+                        "cores_used": cores_used,
+                        "cpu_count": cpu_count,
+                        "cpu_per_core_percent": per_core_percent,
                         "duration_seconds": elapsed,
                     },
                 )]
