@@ -82,10 +82,38 @@ def get_hs_err_search_dirs(autopsy_install_dir: Path | None = None) -> list[Path
     The JVM writes these to the process working directory or user home
     on a fatal crash (SIGSEGV, SIGBUS, etc.).
     """
-    dirs = [Path.home()]
+    dirs: list[Path] = [Path.home()]
     if autopsy_install_dir is not None:
         dirs.append(autopsy_install_dir)
         dirs.append(autopsy_install_dir / "bin")
+
+    # Try to include the running Autopsy process working directory, if available.
+    try:
+        from autopsyguard.utils.process_utils import find_autopsy_pid
+
+        pid = find_autopsy_pid()
+        if pid is not None:
+            try:
+                import psutil
+
+                try:
+                    proc_cwd = Path(psutil.Process(pid).cwd())
+                    if proc_cwd.exists():
+                        dirs.append(proc_cwd)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    # Can't read process cwd - skip
+                    pass
+            except Exception:
+                # psutil not available or other error - skip adding CWD
+                pass
+    except Exception:
+        # process utilities not available - ignore
+        pass
+
+    # JVM fallback location on Unix-like systems
+    if not is_windows():
+        dirs.append(Path("/tmp"))
+
     return dirs
 
 
