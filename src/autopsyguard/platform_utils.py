@@ -124,9 +124,9 @@ def get_autopsyguard_state_dir(case_dir: Path) -> Path:
     could contaminate forensic evidence or fail on read-only mounts.
     """
     case_hash = hashlib.sha256(str(case_dir.resolve()).encode()).hexdigest()[:16]
-    path = get_autopsy_user_dir() / "autopsyguard" / case_hash
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    # Return the computed path without creating directories as a side effect.
+    # Callers that need to write should create the directory explicitly.
+    return get_autopsy_user_dir() / "autopsyguard" / case_hash
 
 
 def validate_case_dir(case_dir: Path) -> bool:

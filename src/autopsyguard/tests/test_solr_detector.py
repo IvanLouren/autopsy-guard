@@ -38,11 +38,29 @@ class TestSolrHealthCheck:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                # Simulate fast response (0.1s)
-                mock_time.side_effect = [0.0, 0.1]
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                # Simulate fast response for both cores discovery and ping.
+                mock_time.side_effect = [0.0, 0.01, 0.02, 0.03]
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                cores_response.__enter__.return_value = cores_response
+                cores_response.__enter__.return_value = cores_response
+                cores_response.__enter__.return_value = cores_response
+                cores_response.__enter__.return_value = cores_response
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                ping_response.__enter__.return_value = ping_response
+                ping_response.__enter__.return_value = ping_response
+                # Repeat cores+ping for each check
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events = detector.check()
 
@@ -93,12 +111,21 @@ class TestSolrHealthCheck:
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
                 events1 = detector.check()
 
-                # Now Solr recovers with fast response
-                mock_urlopen.side_effect = None
-                mock_time.side_effect = [0.0, 0.1]
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                # Now Solr recovers with fast response (explicit cores+ping)
+                mock_time.side_effect = [0.0, 0.01, 0.02, 0.03]
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events2 = detector.check()
 
@@ -118,12 +145,21 @@ class TestSolrHealthCheck:
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
                 events1 = detector.check()
 
-                # Recovery
-                mock_time.side_effect = [0.0, 0.1]
-                mock_urlopen.side_effect = None
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                # Recovery (explicit cores+ping)
+                mock_time.side_effect = [0.0, 0.01, 0.02]
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
                 detector.check()
 
                 # Second failure - time.time() called twice
@@ -164,16 +200,27 @@ class TestSolrHangDetection:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                # Provide explicit cores + ping responses
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
-                # Simulate slow responses (2.5s each)
+                # Simulate slow responses (each ping takes `slow_time`)
                 slow_time = config.solr_slow_threshold_seconds + 0.5
                 all_events = []
 
                 for _ in range(config.solr_slow_count_threshold):
-                    mock_time.side_effect = [0.0, slow_time]
+                    mock_time.side_effect = [0.0, 0.01, slow_time]
                     events = detector.check()
                     all_events.extend(events)
 
@@ -190,21 +237,31 @@ class TestSolrHangDetection:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 # Two slow responses
                 slow_time = config.solr_slow_threshold_seconds + 0.5
-                mock_time.side_effect = [0.0, slow_time]
+                mock_time.side_effect = [0.0, 0.01, slow_time]
                 detector.check()
-                mock_time.side_effect = [0.0, slow_time]
+                mock_time.side_effect = [0.0, 0.01, slow_time]
                 detector.check()
 
                 assert detector._consecutive_slow_responses == 2
 
                 # One fast response
-                mock_time.side_effect = [0.0, 0.1]
+                mock_time.side_effect = [0.0, 0.01, 0.1]
                 detector.check()
 
                 assert detector._consecutive_slow_responses == 0
@@ -235,21 +292,34 @@ class TestSolrHangDetection:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                def _urlopen(url, timeout=None):
+                    print("URLOPEN", url)
+                    return next(g)
+                mock_urlopen.side_effect = _urlopen
 
                 slow_time = config.solr_slow_threshold_seconds + 0.5
 
                 # Generate hang event
                 for _ in range(config.solr_slow_count_threshold):
-                    mock_time.side_effect = [0.0, slow_time]
+                    mock_time.side_effect = [0.0, 0.01, slow_time]
                     detector.check()
 
                 assert detector._solr_hang_reported is True
 
                 # More slow responses should not generate new events
-                mock_time.side_effect = [0.0, slow_time]
+                mock_time.side_effect = [0.0, 0.01, slow_time]
                 events = detector.check()
 
                 assert events == []
@@ -261,19 +331,30 @@ class TestSolrHangDetection:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_response = MagicMock()
-                mock_response.status = 200
-                mock_urlopen.return_value = mock_response
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                ping_response.__enter__.return_value = ping_response
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 slow_time = config.solr_slow_threshold_seconds + 0.5
 
                 # Generate first hang
                 for _ in range(config.solr_slow_count_threshold):
-                    mock_time.side_effect = [0.0, slow_time]
+                    mock_time.side_effect = [0.0, 0.01, slow_time]
                     detector.check()
 
                 # Fast response = recovery
-                mock_time.side_effect = [0.0, 0.1]
+                mock_time.side_effect = [0.0, 0.01, 0.1]
                 detector.check()
 
                 assert detector._solr_hang_reported is False
@@ -282,7 +363,7 @@ class TestSolrHangDetection:
                 # New hang should be reported
                 all_events = []
                 for _ in range(config.solr_slow_count_threshold):
-                    mock_time.side_effect = [0.0, slow_time]
+                    mock_time.side_effect = [0.0, 0.01, slow_time]
                     events = detector.check()
                     all_events.extend(events)
 
@@ -323,19 +404,34 @@ class TestSolrMetrics:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_time.side_effect = [0.0, 0.1]
+                # Provide explicit cores + ping + metrics responses
+                mock_time.side_effect = [0.0, 0.01, 0.02]
 
-                # Health check response
-                health_response = MagicMock()
-                health_response.status = 200
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
 
                 # Metrics response (50% heap, 25% CPU)
                 metrics_response = MagicMock()
                 metrics_response.read.return_value = self._make_metrics_response()
 
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                        yield metrics_response
+                g = _gen()
+                def _urlopen(url, timeout=None):
+                    print('URLOPEN', url)
+                    return next(g)
+                mock_urlopen.side_effect = _urlopen
 
                 events = detector.check()
+                print('EVENTS', events)
 
         # No events for normal metrics
         resource_events = [e for e in events if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]
@@ -349,10 +445,15 @@ class TestSolrMetrics:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_time.side_effect = [0.0, 0.1]
+                mock_time.side_effect = [0.0, 0.01, 0.02]
 
-                health_response = MagicMock()
-                health_response.status = 200
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
 
                 # 90% heap usage (above warning threshold)
                 metrics_response = MagicMock()
@@ -361,9 +462,19 @@ class TestSolrMetrics:
                     heap_max=1024 * 1024 * 1024,
                 )
 
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                        yield metrics_response
+                g = _gen()
+                def _urlopen(url, timeout=None):
+                    print('URLOPEN', url)
+                    return next(g)
+                mock_urlopen.side_effect = _urlopen
 
                 events = detector.check()
+                print('EVENTS', events)
 
         resource_events = [e for e in events if e.crash_type == CrashType.HIGH_RESOURCE_USAGE]
         assert len(resource_events) == 1
@@ -378,10 +489,16 @@ class TestSolrMetrics:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_time.side_effect = [0.0, 0.1]
+                mock_time.side_effect = [0.0, 0.01, 0.02]
 
-                health_response = MagicMock()
-                health_response.status = 200
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                ping_response.__enter__.return_value = ping_response
 
                 # 97% heap usage (above critical threshold)
                 metrics_response = MagicMock()
@@ -390,7 +507,13 @@ class TestSolrMetrics:
                     heap_max=1000 * 1024 * 1024,
                 )
 
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                        yield metrics_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events = detector.check()
 
@@ -406,10 +529,14 @@ class TestSolrMetrics:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                mock_time.side_effect = [0.0, 0.1]
+                mock_time.side_effect = [0.0, 0.01, 0.02]
 
-                health_response = MagicMock()
-                health_response.status = 200
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
 
                 # 95% CPU usage
                 metrics_response = MagicMock()
@@ -417,7 +544,13 @@ class TestSolrMetrics:
                     cpu_load=0.95,
                 )
 
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                def _gen():
+                    while True:
+                        yield cores_response
+                        yield ping_response
+                        yield metrics_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events = detector.check()
 
@@ -446,14 +579,34 @@ class TestSolrMetrics:
                     heap_max=1024 * 1024 * 1024,
                 )
 
-                # First check
-                mock_time.side_effect = [0.0, 0.1]
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                # First check (explicit cores+ping+metrics)
+                mock_time.side_effect = [0.0, 0.01, 0.02]
+                cores_response = MagicMock()
+                cores_response.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response.status = 200
+                cores_response.__enter__.return_value = cores_response
+                ping_response = MagicMock()
+                ping_response.status = 200
+                ping_response.__enter__.return_value = ping_response
+                mock_urlopen.side_effect = [cores_response, ping_response, metrics_response]
                 events1 = detector.check()
 
                 # Second check with same high heap
-                mock_time.side_effect = [0.0, 0.1]
-                mock_urlopen.side_effect = [health_response, metrics_response]
+                mock_time.side_effect = [0.0, 0.01, 0.02]
+                cores_response2 = MagicMock()
+                cores_response2.read.return_value = b'{"status": {"core0": {}}, "initFailures": {}}'
+                cores_response2.status = 200
+                cores_response2.__enter__.return_value = cores_response2
+                ping_response2 = MagicMock()
+                ping_response2.status = 200
+                ping_response2.__enter__.return_value = ping_response2
+                def _gen2():
+                    while True:
+                        yield cores_response2
+                        yield ping_response2
+                        yield metrics_response
+                g2 = _gen2()
+                mock_urlopen.side_effect = lambda *a, **k: next(g2)
                 events2 = detector.check()
 
         # First check should report, second should not
@@ -515,7 +668,12 @@ class TestSolrCoreStatus:
                 cores_response = MagicMock()
                 cores_response.read.return_value = json.dumps(cores_data).encode("utf-8")
 
-                mock_urlopen.side_effect = [health_response, cores_response]
+                def _gen():
+                    while True:
+                        yield health_response
+                        yield cores_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events = detector.check()
 
@@ -553,7 +711,12 @@ class TestSolrCoreStatus:
                 cores_response = MagicMock()
                 cores_response.read.return_value = json.dumps(cores_data).encode("utf-8")
 
-                mock_urlopen.side_effect = [health_response, cores_response]
+                def _gen():
+                    while True:
+                        yield health_response
+                        yield cores_response
+                g = _gen()
+                mock_urlopen.side_effect = lambda *a, **k: next(g)
 
                 events = detector.check()
 

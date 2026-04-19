@@ -44,10 +44,15 @@ class LogSignal(TypedDict):
     last_mtime: float
 
 
-class SolrSignal(TypedDict):
-    """Signal indicating Solr is unresponsive or slow."""
+class SolrSignal(TypedDict, total=False):
+    """Signal indicating Solr is unresponsive or slow.
+
+    `response_time` is optional and only populated when `status` == "slow".
+    Marking the TypedDict as `total=False` reflects this optionality and
+    avoids invalid default-value syntax in the class body.
+    """
     status: str  # "slow", "unresponsive"
-    response_time: float | None = None  # Only for "slow" status
+    response_time: float | None  # Only for "slow" status
 
 
 class HangDetector(BaseDetector):

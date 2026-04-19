@@ -118,23 +118,30 @@ class SolrDetector(BaseDetector):
             start_time = time.time()
             try:
                 with urllib.request.urlopen(cores_url, timeout=self.config.solr_timeout_seconds) as cresp:
-                    import json
                     # Be resilient to test mocks where `read()` may be a MagicMock.
                     try:
                         raw = cresp.read()
                         if isinstance(raw, bytes):
                             parsed = json.loads(raw)
                         else:
+                            # Non-bytes from tests: treat as empty cores list
                             parsed = {}
-                    except Exception:
-                        parsed = {}
-                    cores = list(parsed.get("status", {}).keys())
-                    # If cores cannot be parsed but the response status is 200,
-                    # treat Solr as responsive (tests often mock responses).
+                        cores = list(parsed.get("status", {}).keys())
+                    except (json.JSONDecodeError, Exception) as e:
+                        # Malformed response — treat as connection error so we don't
+                        # silently mark previously-down Solr as recovered when the
+                        # response body cannot be parsed.
+                        elapsed = time.time() - start_time
+                        events.extend(self._handle_connection_error(
+                            ValueError("Malformed Solr response: %s" % e), cores_url
+                        ))
+                        events.extend(self._check_logs())
+                        return events
+
+                    # If cores list is empty but parsing succeeded, treat Solr as
+                    # responsive (empty core lists can be valid for a freshly
+                    # started instance).
                     if not cores:
-                        # If cores cannot be parsed, but the HTTP probe returned,
-                        # treat Solr as responsive for health/hang detection. Tests
-                        # often mock the HTTP response without full JSON bodies.
                         elapsed = time.time() - start_time
                         if self._solr_down_reported:
                             logger.info(
@@ -453,9 +460,13 @@ class SolrDetector(BaseDetector):
             for core_name, core_info in status.items():
                 # Check for index errors
                 index_info = core_info.get("index", {})
-                has_deletions = index_info.get("hasDeletions", False)
-                num_docs = index_info.get("numDocs", 0)
-                size_bytes = index_info.get("sizeInBytes", 0)
+                # The following fields are intentionally read for future alerting
+                # and to keep parsing logic explicit. They are currently unused
+                # by alerts; prefix with underscore to avoid linter warnings.
+                # TODO: emit alerts when num_docs drops unexpectedly (possible core corruption)
+                _has_deletions = index_info.get("hasDeletions", False)
+                _num_docs = index_info.get("numDocs", 0)
+                _size_bytes = index_info.get("sizeInBytes", 0)
 
                 # Check for initialization failures
                 init_failures = data.get("initFailures", {})

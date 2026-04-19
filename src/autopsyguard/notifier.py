@@ -23,6 +23,7 @@ from typing import Any
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.utils.metrics_chart import render_system_chart_png
+from autopsyguard.utils.process_utils import find_autopsy_pid as _get_autopsy_pid
 
 
 def _get_case_label(config: MonitorConfig) -> str:
@@ -373,16 +374,8 @@ def _get_system_metrics(case_dir: Path | None = None) -> dict[str, Any]:
         return {}
 
 
-def _get_autopsy_pid() -> int | None:
-    """Find Autopsy process PID."""
-    try:
-        for proc in psutil.process_iter(['pid', 'name']):
-            name = proc.info['name'].lower()
-            if 'autopsy' in name and 'java' not in name:
-                return proc.info['pid']
-    except Exception:
-        pass
-    return None
+# `_get_autopsy_pid` delegated to shared utility `find_autopsy_pid` to avoid
+# duplicate implementations and divergence between modules.
 
 
 class EmailNotifier:

@@ -9,6 +9,7 @@ import pytest
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.process_detector import ProcessDetector
+from autopsyguard.utils.process_utils import find_autopsy_pid
 from autopsyguard.models import CrashType, Severity
 
 
@@ -17,7 +18,7 @@ class TestProcessDisappearance:
 
     def test_no_process_no_lock_returns_empty(self, config: MonitorConfig) -> None:
         """When no Autopsy is running and no stale lock, nothing to report."""
-        detector = ProcessDetector(config)
+        detector = ProcessDetector(config, _pid_finder=lambda: None)
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
             mock_psutil.process_iter.return_value = []
             events = detector.check()
@@ -28,7 +29,7 @@ class TestProcessDisappearance:
         lock_file = config.case_dir / "Log" / "autopsy.log.0.lck"
         lock_file.write_text("", encoding="utf-8")
 
-        detector = ProcessDetector(config)
+        detector = ProcessDetector(config, _pid_finder=lambda: None)
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
             mock_psutil.process_iter.return_value = []
             events = detector.check()
@@ -41,7 +42,7 @@ class TestProcessDisappearance:
         """Simulate: process is discovered, then vanishes on next check."""
         import psutil as real_psutil
 
-        detector = ProcessDetector(config)
+        detector = ProcessDetector(config, _pid_finder=find_autopsy_pid)
 
         # First check: process is alive
         fake_proc = MagicMock()

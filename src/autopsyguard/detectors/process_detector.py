@@ -19,8 +19,10 @@ from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_java_process_names,
     get_autopsy_process_names,
+    get_global_lock_file,
 )
-from autopsyguard.platform_utils import get_global_lock_file
+from typing import Callable
+
 from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 class ProcessDetector(BaseDetector):
     """Monitors the Autopsy process tree for disappearance and crashes."""
 
-    def __init__(self, config: MonitorConfig) -> None:
+    def __init__(self, config: MonitorConfig, *, _pid_finder: Callable[[], int | None] | None = None) -> None:
         super().__init__(config)
         # PID of the tracked Autopsy launcher process (set on first discovery)
         self._tracked_pid: int | None = None
@@ -39,6 +41,8 @@ class ProcessDetector(BaseDetector):
         self._process_lost_reported = False
         # Whether we already reported zombie state
         self._zombie_reported = False
+        # PID finder function (injectable for tests). Default uses shared utility.
+        self._pid_finder: Callable[[], int | None] = _pid_finder or find_autopsy_pid
 
     @property
     def name(self) -> str:
@@ -51,11 +55,10 @@ class ProcessDetector(BaseDetector):
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
         if self._tracked_pid is None:
-            # Try to discover the Autopsy process. Use a local scanner that
-            # respects the module-level `psutil` so tests that patch
-            # `autopsyguard.detectors.process_detector.psutil` will control
-            # discovery.
-            self._tracked_pid = self._local_find_autopsy_pid()
+            # Try to discover the Autopsy process via the injected finder.
+            # Default implementation delegates to the shared utility
+            # `autopsyguard.utils.process_utils.find_autopsy_pid`.
+            self._tracked_pid = self._pid_finder()
             if self._tracked_pid is not None:
                 logger.debug("Tracking Autopsy PID %d", self._tracked_pid)
                 self._process_lost_reported = False
@@ -133,72 +136,10 @@ class ProcessDetector(BaseDetector):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return set()
 
-    def _local_find_autopsy_pid(self) -> int | None:
-        """Local process scan using this module's `psutil` reference.
-
-        This mirrors `utils.process_utils.find_autopsy_pid` but uses the
-        `psutil` object imported into this module so tests can patch it.
-        """
-        # First, try a local scan using this module's `psutil` so tests that
-        # patch `autopsyguard.detectors.process_detector.psutil` control discovery.
-        target_names = {n.lower() for n in get_autopsy_process_names()}
-        java_names = {n.lower() for n in get_java_process_names()}
-
-        # First, try a scan using this module's psutil (this is what many tests
-        # patch via `autopsyguard.detectors.process_detector.psutil`). If that
-        # yields results, use it directly.
-        try:
-            local_iter = list(psutil.process_iter(["pid", "name", "cmdline"]))
-        except Exception:
-            local_iter = []
-
-        if local_iter:
-            for proc in local_iter:
-                try:
-                    name = (proc.info.get("name") or "").lower()
-                    if name in target_names:
-                        return proc.info["pid"]
-
-                    if name in java_names:
-                        cmdline = proc.info.get("cmdline") or []
-                        if any("autopsy" in str(arg).lower() for arg in cmdline):
-                            return proc.info["pid"]
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-        # No local matches — try the shared utility which uses its own psutil
-        # instance (tests may patch that). Only accept the PID if the utils'
-        # psutil iterator also exposes the same PID (ensures we're honoring
-        # test-side mocks rather than accidentally matching a host process).
-        try:
-            pid = find_autopsy_pid()
-            if pid is None:
-                return None
-            try:
-                import autopsyguard.utils.process_utils as pu
-                # Only accept the utils fallback if the utils.psutil object
-                # appears to be patched (i.e. not the real system psutil).
-                try:
-                    import psutil as real_psutil
-                    utils_psutil = getattr(pu, "psutil", None)
-                    if utils_psutil is real_psutil:
-                        # utils.psutil is the real module (not patched) - do not
-                        # accept the fallback to avoid matching host processes
-                        return None
-                except Exception:
-                    return None
-
-                for p in pu.psutil.process_iter(["pid", "name"]):
-                    try:
-                        if p.info.get("pid") == pid:
-                            return pid
-                    except Exception:
-                        continue
-            except Exception:
-                return None
-            return None
-        except Exception:
-            return None
+    # NOTE: PID discovery is delegated to an injectable finder (`self._pid_finder`).
+    # The previous implementation attempted to detect test mocks at runtime
+    # which is not appropriate for production code. Tests should inject a
+    # custom finder when they need to control discovery.
 
     def _handle_process_gone(self) -> list[CrashEvent]:
         """React to the main Autopsy process no longer being present."""
@@ -331,11 +272,22 @@ class ProcessDetector(BaseDetector):
         try:
             if not psutil.pid_exists(child_pid):
                 return True
-            # If the PID still exists, attempt to verify parent. If verification
-            # fails or indicates it's no longer our child, treat it as disappeared
-            # to avoid missing real crashes due to PID recycling.
+
+            # First check the parent's child list — many tests mock
+            # `psutil.Process(parent).children()` so this is a reliable
+            # way to see if the PID was actually a child.
+            try:
+                parent_proc = psutil.Process(parent_pid)
+                parent_children = {c.pid for c in parent_proc.children(recursive=True)}
+                if child_pid not in parent_children:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # If we can't inspect the parent, fall back to inspecting the child
+                pass
+
+            # If the parent appears to still list the child, verify via ppid()
             child_proc = psutil.Process(child_pid)
             actual_parent_pid = child_proc.ppid()
-            return actual_parent_pid == parent_pid or True
+            return actual_parent_pid == parent_pid
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return True
