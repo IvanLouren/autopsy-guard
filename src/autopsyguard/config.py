@@ -99,6 +99,14 @@ class MonitorConfig:
             f"email_recipient={self.email_recipient!r})"
         )
 
+    def validate_filesystem(self) -> None:
+        """Validate filesystem-dependent config values.
+
+        Call this at application start-up when filesystem checks should be
+        enforced (for example when `--skip-validation` is not set).
+        """
+        _validate_config_filesystem(self)
+
     @classmethod
     def from_sources(
         cls,
@@ -144,10 +152,10 @@ class MonitorConfig:
                 raise ValueError("'error_patterns' must be a list of strings")
 
         config = cls(**values)
-        
-        # Validate the final config
-        _validate_config(config)
-        
+
+        # Validate syntactic and semantic (non-filesystem) aspects of the config
+        _validate_config_types(config)
+
         return config
 
 
@@ -240,19 +248,17 @@ def _apply_env_overrides(values: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def _validate_config(config: MonitorConfig) -> None:
-    """Validate configuration values for consistency and correctness."""
-    
-    # Validate case directory
-    if not config.case_dir.exists():
-        raise ValueError(f"Case directory does not exist: {config.case_dir}")
-    if not config.case_dir.is_dir():
-        raise ValueError(f"Case directory is not a directory: {config.case_dir}")
-        
+def _validate_config_types(config: MonitorConfig) -> None:
+    """Validate non-filesystem configuration values for consistency and correctness.
+
+    This function checks types, ranges and inter-field logic but does NOT
+    access the filesystem. Filesystem checks should be performed explicitly
+    at runtime by calling `MonitorConfig.validate_filesystem()`.
+    """
     # Validate Solr port
     if not (1 <= config.solr_port <= 65535):
         raise ValueError(f"Invalid solr_port: {config.solr_port} (must be 1-65535)")
-        
+
     # Validate percentage thresholds
     percentage_fields = [
         ("cpu_warning_percent", config.cpu_warning_percent),
@@ -263,11 +269,11 @@ def _validate_config(config: MonitorConfig) -> None:
         ("solr_heap_usage_critical", config.solr_heap_usage_critical),
         ("solr_cpu_warning", config.solr_cpu_warning),
     ]
-    
+
     for field_name, value in percentage_fields:
         if not (0 <= value <= 100):
             raise ValueError(f"Invalid {field_name}: {value} (must be 0-100)")
-            
+
     # Validate timeout values
     timeout_fields = [
         ("poll_interval", config.poll_interval),
@@ -282,19 +288,19 @@ def _validate_config(config: MonitorConfig) -> None:
         ("solr_ping_slow_duration", config.solr_ping_slow_duration),
         ("solr_unresponsive_duration", config.solr_unresponsive_duration),
     ]
-    
+
     for field_name, value in timeout_fields:
         if value <= 0:
             raise ValueError(f"Invalid {field_name}: {value} (must be > 0)")
-            
+
     # Validate count thresholds
     if config.solr_slow_count_threshold <= 0:
         raise ValueError(f"Invalid solr_slow_count_threshold: {config.solr_slow_count_threshold} (must be > 0)")
-        
+
     # Validate disk space
     if config.disk_min_free_gb < 0:
         raise ValueError(f"Invalid disk_min_free_gb: {config.disk_min_free_gb} (must be >= 0)")
-        
+
     # Validate email settings only if email_recipient is configured
     # (email_sender has a default, so we check recipient as the trigger)
     if config.email_recipient:
@@ -302,14 +308,31 @@ def _validate_config(config: MonitorConfig) -> None:
             raise ValueError("smtp_host is required when email_recipient is configured")
         if not (1 <= config.smtp_port <= 65535):
             raise ValueError(f"Invalid smtp_port: {config.smtp_port} (must be 1-65535)")
-            
+
     # Validate report interval
     if config.report_interval_hours <= 0:
         raise ValueError(f"Invalid report_interval_hours: {config.report_interval_hours} (must be > 0)")
-        
+
     # Validate heap thresholds are logical
     if config.solr_heap_usage_warning >= config.solr_heap_usage_critical:
         raise ValueError(
             f"solr_heap_usage_warning ({config.solr_heap_usage_warning}) must be less than "
             f"solr_heap_usage_critical ({config.solr_heap_usage_critical})"
         )
+
+
+def _validate_config_filesystem(config: MonitorConfig) -> None:
+    """Validate filesystem-dependent configuration (case dir presence)."""
+    if not config.case_dir.exists():
+        raise ValueError(f"Case directory does not exist: {config.case_dir}")
+    if not config.case_dir.is_dir():
+        raise ValueError(f"Case directory is not a directory: {config.case_dir}")
+
+
+def _validate_config(config: MonitorConfig) -> None:  # pragma: no cover - kept for compatibility
+    """Backward-compatible wrapper (validates everything)."""
+    _validate_config_types(config)
+    _validate_config_filesystem(config)
+
+
+
