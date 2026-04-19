@@ -19,6 +19,7 @@ from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_java_process_names,
 )
+from autopsyguard.platform_utils import get_global_lock_file
 from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
@@ -158,13 +159,20 @@ class ProcessDetector(BaseDetector):
                     details=details,
                 ))
 
-            # Check for stale lock file as corroborating evidence
-            lock_file = get_case_lock_file(self.config.case_dir)
-            if lock_file.exists():
-                details["stale_lock_file"] = str(lock_file)
+            # Check for stale lock files (case-level or global)
+            case_lock = get_case_lock_file(self.config.case_dir)
+            global_lock = get_global_lock_file()
+            if case_lock.exists():
+                details["stale_lock_file"] = str(case_lock)
                 logger.warning(
-                    "Stale lock file found at %s — confirms ungraceful shutdown",
-                    lock_file,
+                    "Stale case lock file found at %s — confirms ungraceful shutdown",
+                    case_lock,
+                )
+            elif global_lock.exists():
+                details["stale_lock_file"] = str(global_lock)
+                logger.warning(
+                    "Global messages lock found at %s — corroborates ungraceful shutdown",
+                    global_lock,
                 )
 
             self._process_lost_reported = True

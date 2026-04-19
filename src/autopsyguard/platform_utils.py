@@ -61,6 +61,16 @@ def get_case_lock_file(case_dir: Path) -> Path:
     return get_case_log_dir(case_dir) / "autopsy.log.0.lck"
 
 
+def get_global_lock_file() -> Path:
+    """Return the global NetBeans/messages lock file used by Autopsy.
+
+    On Linux this is typically `~/.autopsy/var/log/messages.log.lck` and
+    can indicate Autopsy is actively running even if case log files are
+    not yet present.
+    """
+    return get_autopsy_log_dir() / "messages.log.lck"
+
+
 def get_case_log_file(case_dir: Path) -> Path:
     """Return the path to the main case log file."""
     return get_case_log_dir(case_dir) / "autopsy.log.0"

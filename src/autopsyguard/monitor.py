@@ -26,6 +26,7 @@ from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifier import EmailNotifier
 from autopsyguard.platform_utils import (
     get_case_lock_file,
+    get_global_lock_file,
 )
 from autopsyguard.utils.process_utils import find_autopsy_pid
 from autopsyguard.utils.metrics_store import MetricsStore
@@ -67,7 +68,11 @@ class Monitor:
     def _is_case_active(self) -> bool:
         """Check if Autopsy is running and the case is open."""
         pid = find_autopsy_pid()
-        lock_exists = get_case_lock_file(self.config.case_dir).exists()
+        # Consider either a case-level lock or the global NetBeans messages lock
+        lock_exists = (
+            get_case_lock_file(self.config.case_dir).exists()
+            or get_global_lock_file().exists()
+        )
         return pid is not None and lock_exists
 
     def run_once(self) -> list[CrashEvent]:
@@ -120,7 +125,10 @@ class Monitor:
             logger.info("✅ Autopsy detected — monitoring active")
         else:
             pid = find_autopsy_pid()
-            lock = get_case_lock_file(self.config.case_dir).exists()
+            lock = (
+                get_case_lock_file(self.config.case_dir).exists()
+                or get_global_lock_file().exists()
+            )
             logger.debug(
                 "Waiting... (process: %s, lock: %s)",
                 pid if pid else "no",
@@ -163,7 +171,10 @@ class Monitor:
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         pid = find_autopsy_pid()
-        lock_exists = get_case_lock_file(self.config.case_dir).exists()
+        lock_exists = (
+            get_case_lock_file(self.config.case_dir).exists()
+            or get_global_lock_file().exists()
+        )
 
         if pid is None and not lock_exists:
             # Graceful shutdown: process exited and lock file was cleaned up
