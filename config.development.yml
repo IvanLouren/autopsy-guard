@@ -1,0 +1,49 @@
+# Development config for AutopsyGuard - safe for local testing
+# Points to a local example case directory inside the repo.
+case_dir: example_case
+
+# Poll frequently for quick feedback while developing
+poll_interval: 5.0
+
+# Hang detection (shorter for dev)
+hang_cpu_threshold: 1.0
+hang_timeout: 120.0
+hang_confirmation_duration: 30.0
+log_stale_timeout: 300.0
+
+# Resource thresholds (conservative for dev testing)
+cpu_warning_percent: 95.0
+cpu_warning_duration: 60.0
+memory_warning_percent: 90.0
+disk_min_free_gb: 1.0
+
+# Solr settings (if not used, these are benign defaults)
+solr_port: 23232
+solr_timeout_seconds: 5.0
+solr_ping_timeout: 3.0
+solr_ping_slow_threshold: 3.0
+solr_ping_slow_duration: 30.0
+solr_slow_threshold_seconds: 2.0
+solr_slow_count_threshold: 3
+solr_heap_usage_warning: 85.0
+solr_heap_usage_critical: 95.0
+solr_cpu_warning: 90.0
+
+# Log patterns to detect
+error_patterns:
+  - java.lang.OutOfMemoryError
+  - SEVERE
+  - Exception
+  - FATAL
+  - StackOverflowError
+
+# Local SMTP server for development/testing (e.g., smtp4dev, mailhog, or local Python SMTP)
+smtp_host: "localhost"
+smtp_port: 1025
+smtp_user: ""
+smtp_password: ""
+email_sender: "AutopsyGuard <autopsyguard-dev@local>"
+email_recipient: "devops+autopsy@example.local"
+
+# Faster reporting while developing
+report_interval_hours: 0.02  # ≈1.2 minutes

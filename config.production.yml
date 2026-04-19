@@ -1,0 +1,42 @@
+# Production config for AutopsyGuard — update secrets before deployment
+# IMPORTANT: Replace SMTP credentials and case_dir with real production values.
+
+case_dir: C:\Cases\Autopsy\MainCase
+
+# Production polling: balance responsiveness vs load
+poll_interval: 30.0
+
+# Hang detection (longer, to avoid false positives in production)
+hang_cpu_threshold: 1.0
+hang_timeout: 600.0
+hang_confirmation_duration: 120.0
+log_stale_timeout: 1800.0
+
+# Resource thresholds tuned for production environments
+cpu_warning_percent: 90.0
+cpu_warning_duration: 300.0
+memory_warning_percent: 90.0
+disk_min_free_gb: 5.0
+
+# Solr settings (adjust to your Solr instance)
+solr_port: 23232
+solr_timeout_seconds: 5.0
+solr_ping_timeout: 3.0
+solr_ping_slow_threshold: 2.0
+solr_ping_slow_duration: 60.0
+solr_slow_threshold_seconds: 2.0
+solr_slow_count_threshold: 3
+solr_heap_usage_warning: 80.0
+solr_heap_usage_critical: 95.0
+solr_cpu_warning: 85.0
+
+# Email settings — replace with your real SMTP server and credentials
+smtp_host: "smtp.example.com"
+smtp_port: 587
+smtp_user: "autopsy-notify@example.com"
+smtp_password: "REPLACE_WITH_SECURE_PASSWORD"
+email_sender: "AutopsyGuard <alerts@example.com>"
+email_recipient: "ops@example.com"
+
+# Regular status reports
+report_interval_hours: 12.0
