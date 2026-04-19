@@ -46,7 +46,9 @@ def get_solr_log_dir() -> Path:
 
     Autopsy stores Solr logs in the var/log/solr directory.
     """
-    return get_autopsy_user_dir() / "var" / "log" / "solr"
+    # In Autopsy 4.22.x the Solr logs are placed directly in the global
+    # Autopsy log directory (var/log), not in a `solr/` subdirectory.
+    return get_autopsy_log_dir()
 
 
 class SolrDetector(BaseDetector):

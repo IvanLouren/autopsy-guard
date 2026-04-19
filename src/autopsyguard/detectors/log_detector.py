@@ -40,6 +40,17 @@ class LogDetector(BaseDetector):
         self._initialised = False
         self._recent_duplicate_window = 300.0  # seconds
         self._recent_lines: dict[Path, tuple[str, float]] = {}
+        # Compile pattern list from built-in constants and operator-configured patterns
+        self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
+            (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
+            (_STACK_OVERFLOW_PATTERN, CrashType.LOG_ERROR, Severity.CRITICAL),
+            (_FATAL_PATTERN, CrashType.LOG_ERROR, Severity.CRITICAL),
+        ]
+        for raw in getattr(config, "error_patterns", []) or []:
+            try:
+                self._patterns.append((re.compile(raw, re.IGNORECASE), CrashType.LOG_ERROR, Severity.WARNING))
+            except re.error as exc:
+                logger.warning("Invalid error_pattern %r: %s", raw, exc)
 
     @property
     def name(self) -> str:
@@ -113,32 +124,15 @@ class LogDetector(BaseDetector):
 
     def _classify_line(self, line: str, source: Path) -> CrashEvent | None:
         """Check a single log line against known error patterns."""
-        # OutOfMemoryError — critical
-        if _OOM_PATTERN.search(line):
-            return CrashEvent(
-                crash_type=CrashType.OUT_OF_MEMORY,
-                severity=Severity.CRITICAL,
-                message=f"OutOfMemoryError detected in {source.name}",
-                details={"file": str(source), "line": line.strip()},
-            )
-
-        # StackOverflowError — critical
-        if _STACK_OVERFLOW_PATTERN.search(line):
-            return CrashEvent(
-                crash_type=CrashType.LOG_ERROR,
-                severity=Severity.CRITICAL,
-                message=f"StackOverflowError detected in {source.name}",
-                details={"file": str(source), "line": line.strip()},
-            )
-
-        # FATAL — critical
-        if _FATAL_PATTERN.search(line):
-            return CrashEvent(
-                crash_type=CrashType.LOG_ERROR,
-                severity=Severity.CRITICAL,
-                message=f"FATAL error in {source.name}",
-                details={"file": str(source), "line": line.strip()},
-            )
+        # Check against configured patterns first
+        for pat, ctype, sev in self._patterns:
+            if pat.search(line):
+                return CrashEvent(
+                    crash_type=ctype,
+                    severity=sev,
+                    message=f"{ctype.name.replace('_',' ').title()} detected in {source.name}",
+                    details={"file": str(source), "line": line.strip()},
+                )
 
         # SEVERE — warning
         if "SEVERE" in line:

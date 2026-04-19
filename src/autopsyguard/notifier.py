@@ -10,6 +10,7 @@ import logging
 import time
 import smtplib
 import psutil
+from pathlib import Path
 import base64
 import hashlib
 import csv
@@ -318,12 +319,21 @@ def _suggestion_for_event(event: CrashEvent) -> str:
     return "Verificar logs e estado do sistema para mais detalhes."
 
 
-def _get_system_metrics() -> dict[str, Any]:
-    """Get current system metrics."""
+def _get_system_metrics(case_dir: Path | None = None) -> dict[str, Any]:
+    """Get current system metrics.
+
+    Prefer disk usage of the monitored `case_dir` when available; fall back
+    to the system root partition otherwise.
+    """
     try:
         cpu_percent = psutil.cpu_percent(interval=0.1)
         memory = psutil.virtual_memory()
-        disk = psutil.disk_usage("/") if not psutil.WINDOWS else psutil.disk_usage("C:\\")
+        # Determine disk path: prefer the case directory's mount if provided
+        if case_dir is not None and case_dir.exists():
+            disk_path = str(case_dir)
+        else:
+            disk_path = "/" if not psutil.WINDOWS else "C:\\"
+        disk = psutil.disk_usage(disk_path)
         cpu_count = psutil.cpu_count(logical=True) or 1
         # Convert aggregate percent into approximate cores used
         cpu_cores_used = (cpu_percent / 100.0) * cpu_count
@@ -419,8 +429,8 @@ class EmailNotifier:
                 details_html=details_html,
             )
 
-        # Get current system state
-        metrics = _get_system_metrics()
+        # Get current system state (prefer case_dir for disk stats)
+        metrics = _get_system_metrics(self.config.case_dir)
         autopsy_pid = _get_autopsy_pid()
 
         # System metrics bar
@@ -543,8 +553,8 @@ class EmailNotifier:
 
         subject = "📊 [AutopsyGuard] Relatório de Status"
         
-        # Get system metrics and autopsy info
-        metrics = _get_system_metrics()
+        # Get system metrics and autopsy info (prefer case_dir for disk stats)
+        metrics = _get_system_metrics(self.config.case_dir)
         autopsy_pid = _get_autopsy_pid()
         uptime = get_uptime()
         recent_events = self.get_recent_events(self.config.report_interval_hours)
