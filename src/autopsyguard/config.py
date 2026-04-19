@@ -45,6 +45,8 @@ class MonitorConfig:
 
     # --- Resource thresholds ---
     cpu_warning_percent: float = 95.0
+    # Per-core CPU percent threshold (e.g., 90.0 means a single core at 90% will trigger)
+    cpu_per_core_warning_percent: float = 90.0
     cpu_warning_duration: float = 300.0  # sustained for 5 min
     memory_warning_percent: float = 90.0  # of system RAM
     disk_min_free_gb: float = 1.0
@@ -148,6 +150,7 @@ _SUPPORTED_CONFIG_KEYS = {
     "solr_unresponsive_duration",
     "log_stale_timeout",
     "cpu_warning_percent",
+    "cpu_per_core_warning_percent",
     "cpu_warning_duration",
     "memory_warning_percent",
     "disk_min_free_gb",
@@ -219,6 +222,7 @@ def _validate_config(config: MonitorConfig) -> None:
     # Validate percentage thresholds
     percentage_fields = [
         ("cpu_warning_percent", config.cpu_warning_percent),
+        ("cpu_per_core_warning_percent", config.cpu_per_core_warning_percent),
         ("memory_warning_percent", config.memory_warning_percent),
         ("hang_cpu_threshold", config.hang_cpu_threshold),
         ("solr_heap_usage_warning", config.solr_heap_usage_warning),

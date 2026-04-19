@@ -7,9 +7,11 @@ Initially implemented: SMTP Email notifications.
 from __future__ import annotations
 
 import logging
+import time
 import smtplib
 import psutil
 import base64
+import hashlib
 import csv
 import io
 import json
@@ -288,6 +290,34 @@ def _format_details(details: dict[str, Any] | None) -> str:
     return "".join(html_parts)
 
 
+def _short_event_id(event: CrashEvent) -> str:
+    """Return a short 8-char hex id for an event based on timestamp and message."""
+    h = hashlib.sha1()
+    seed = f"{event.timestamp.isoformat()}|{event.crash_type.value}|{event.message}"
+    h.update(seed.encode("utf-8"))
+    return h.hexdigest()[:8]
+
+
+def _suggestion_for_event(event: CrashEvent) -> str:
+    """Return a very brief suggestion in Portuguese for common event types."""
+    t = event.crash_type
+    if t.name == "HANG":
+        return "Verifique CPU/RAM e logs; considere reiniciar o processo Autopsy se necessário."
+    if t.name == "JVM_CRASH":
+        return "Rever o ficheiro hs_err_pid; reiniciar Autopsy e recolher heap/core."
+    if t.name == "OUT_OF_MEMORY":
+        return "Analisar uso de memória; aumentar heap do Solr/Java ou reduzir carga."
+    if t.name == "PROCESS_DISAPPEARED":
+        return "Confirmar se o processo foi terminado; verificar logs e sistema de operacional."
+    if t.name == "HIGH_RESOURCE_USAGE":
+        return "Identificar processos consumidores; considerar limitar ou reiniciar."
+    if t.name == "SOLR_CRASH":
+        return "Verificar saúde do Solr, arquivos de log e configuração de heap."
+    if t.name == "LOG_ERROR":
+        return "Investigar mensagens de erro no ficheiro de logs indicado."
+    return "Verificar logs e estado do sistema para mais detalhes."
+
+
 def _get_system_metrics() -> dict[str, Any]:
     """Get current system metrics."""
     try:
@@ -405,7 +435,8 @@ class EmailNotifier:
             cpu_count = metrics.get("cpu_count")
             if cpu_count:
                 cores_used = metrics.get("cpu_cores_used", 0.0)
-                cpu_display = f"{cpu_pct:.1f}% (≈{cores_used:.1f}/{cpu_count})"
+                # Compact single-line representation to save space in the metric box
+                cpu_display = f"{cpu_pct:.1f}% • {cores_used:.1f}/{cpu_count} núcleos"
             else:
                 cpu_display = f"{cpu_pct:.1f}%"
 
@@ -485,11 +516,15 @@ class EmailNotifier:
             body_content=body_content,
         )
 
-        # Plain-text fallback summary
+        # Plain-text fallback summary with short event IDs and brief suggestions
         plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {get_uptime()}"]
-        # Include short messages for events
-        for ev in events[:5]:
-            plain_lines.append(f"- {ev.severity.name}: {ev.message}")
+        plain_lines.append("")
+        # List up to first 10 events with short id, severity and suggestion
+        for ev in events[:10]:
+            eid = _short_event_id(ev)
+            suggestion = _suggestion_for_event(ev)
+            plain_lines.append(f"[{eid}] {ev.severity.name}: {ev.message}")
+            plain_lines.append(f"    Sugestão: {suggestion}")
         plain_lines.append("")
         plain_lines.append("Nota: 'Process %' pode exceder 100% — conta núcleos usados.")
         plain_text = "\n".join(plain_lines)
@@ -545,7 +580,8 @@ class EmailNotifier:
             cpu_count = metrics.get("cpu_count")
             if cpu_count:
                 cores_used = metrics.get("cpu_cores_used", 0.0)
-                cpu_display = f"{cpu_pct:.1f}% (≈{cores_used:.1f}/{cpu_count})"
+                # Compact single-line representation to save space in the metric box
+                cpu_display = f"{cpu_pct:.1f}% • {cores_used:.1f}/{cpu_count} núcleos"
             else:
                 cpu_display = f"{cpu_pct:.1f}%"
 
@@ -772,6 +808,16 @@ class EmailNotifier:
         if metrics_samples:
             plain_lines.append("Inclui anexos: metrics.csv, metrics.json")
         plain_lines.append("")
+        # Include brief recent events summary with short IDs and suggestions
+        if recent_events:
+            plain_lines.append("Eventos recentes:")
+            for ts, ev in recent_events[-10:]:
+                eid = _short_event_id(ev)
+                suggestion = _suggestion_for_event(ev)
+                plain_lines.append(f"[{eid}] {ts.strftime('%Y-%m-%d %H:%M:%S')} {ev.severity.name}: {ev.message}")
+                plain_lines.append(f"    Sugestão: {suggestion}")
+            plain_lines.append("")
+
         plain_lines.append("Nota: 'Process %' pode exceder 100% — conta núcleos usados.")
         plain_text = "\n".join(plain_lines)
 
@@ -795,11 +841,29 @@ class EmailNotifier:
         msg.add_alternative(html_body, subtype='html')
 
         if inline_images:
-            html_part = msg.get_payload()[1]
-            for cid, data, subtype in inline_images:
-                # Email Content-ID headers should be enclosed in angle brackets.
-                # Use '<cid>' here so the MIME part's Content-ID header matches 'cid:NAME' in HTML.
-                html_part.add_related(data, maintype="image", subtype=subtype, cid=f"<{cid}>")
+            # Prefer to get the HTML body via EmailMessage API; fall back to iterating parts.
+            html_part = None
+            try:
+                html_part = msg.get_body(preferencelist=("html",))
+            except Exception:
+                html_part = None
+
+            if html_part is None:
+                for part in msg.iter_parts():
+                    if part.get_content_type() == "text/html":
+                        html_part = part
+                        break
+
+            if html_part is not None:
+                for cid, data, subtype in inline_images:
+                    # Email Content-ID headers should be enclosed in angle brackets.
+                    try:
+                        html_part.add_related(data, maintype="image", subtype=subtype, cid=f"<{cid}>")
+                    except Exception:
+                        # Some EmailMessage parts may not support add_related; skip gracefully
+                        logger.debug("Could not add related image %s", cid)
+            else:
+                logger.debug("No HTML body found to attach inline images; skipping related images")
 
         # Add binary/text attachments (CSV/JSON etc.)
         if attachments:
@@ -814,20 +878,31 @@ class EmailNotifier:
         msg['From'] = self.config.email_sender
         msg['To'] = self.config.email_recipient
 
-        try:
-            logger.debug("A conectar ao servidor SMTP %s:%d...", 
-                        self.config.smtp_host, self.config.smtp_port)
-            with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
-                server.ehlo()
-                if server.has_extn('STARTTLS'):
-                    server.starttls()
+        # Send with retry/backoff
+        max_attempts = 3
+        base_backoff = 1.0
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.debug("Connecting to SMTP %s:%d (attempt %d)", self.config.smtp_host, self.config.smtp_port, attempt)
+                with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
                     server.ehlo()
-                if self.config.smtp_password:
-                    server.login(self.config.smtp_user, self.config.smtp_password)
-                server.send_message(msg)
-                
-            logger.info("📧 Email enviado: %s", subject[:60])
-            return True
-        except (smtplib.SMTPException, OSError, TimeoutError) as e:
-            logger.error("❌ Falha ao enviar email: %s", e)
-            return False
+                    if server.has_extn('STARTTLS'):
+                        server.starttls()
+                        server.ehlo()
+                    if self.config.smtp_password:
+                        server.login(self.config.smtp_user, self.config.smtp_password)
+                    server.send_message(msg)
+
+                logger.info("📧 Email enviado: %s", subject[:60])
+                return True
+            except (smtplib.SMTPException, OSError, TimeoutError) as e:
+                last_exc = e
+                logger.warning("Falha ao enviar email (attempt %d/%d): %s", attempt, max_attempts, e)
+                if attempt < max_attempts:
+                    backoff = base_backoff * (2 ** (attempt - 1))
+                    logger.debug("Aguardando %.1fs antes da próxima tentativa...", backoff)
+                    time.sleep(backoff)
+
+        logger.error("❌ Falha ao enviar email após %d tentativas: %s", max_attempts, last_exc)
+        return False

@@ -67,18 +67,31 @@ class ResourceDetector(BaseDetector):
         cores_used = cpu / 100.0
         per_core_percent = (cpu / cpu_count) if cpu_count else cpu
 
-        if cpu >= self.config.cpu_warning_percent:
+        # Trigger if either total process CPU percentage exceeds the configured
+        # process-wide threshold OR the per-core average exceeds the per-core threshold.
+        per_core_percent = (cpu / cpu_count) if cpu_count else cpu
+        triggers_total = cpu >= self.config.cpu_warning_percent
+        triggers_per_core = per_core_percent >= getattr(self.config, "cpu_per_core_warning_percent", 100.0)
+
+        if triggers_total or triggers_per_core:
             if self._high_cpu_since is None:
                 self._high_cpu_since = now
             elapsed = now - self._high_cpu_since
             if elapsed >= self.config.cpu_warning_duration and not self._cpu_warning_reported:
                 self._cpu_warning_reported = True
                 # Build a clearer message including cores used and per-core percent
-                message = (
-                    f"Autopsy (PID {pid}) sustained CPU at {cpu:.1f}% "
-                    f"(≈{cores_used:.1f} cores; ≈{per_core_percent:.1f}% per core) "
-                    f"for {elapsed:.0f}s"
-                )
+                message_parts = [
+                    f"Autopsy (PID {pid}) sustained CPU at {cpu:.1f}%",
+                    f"(≈{cores_used:.1f} cores; ≈{per_core_percent:.1f}% per core)",
+                ]
+                if triggers_total and not triggers_per_core:
+                    message_parts.append(f"exceeding total threshold {self.config.cpu_warning_percent:.0f}%")
+                elif triggers_per_core and not triggers_total:
+                    message_parts.append(f"exceeding per-core threshold {self.config.cpu_per_core_warning_percent:.0f}%")
+                else:
+                    message_parts.append("exceeding both total and per-core thresholds")
+                message_parts.append(f"for {elapsed:.0f}s")
+                message = " ".join(message_parts)
                 return [CrashEvent(
                     crash_type=CrashType.HIGH_RESOURCE_USAGE,
                     severity=Severity.WARNING,
@@ -89,6 +102,7 @@ class ResourceDetector(BaseDetector):
                         "cores_used": cores_used,
                         "cpu_count": cpu_count,
                         "cpu_per_core_percent": per_core_percent,
+                        "cpu_per_core_warning_percent": getattr(self.config, "cpu_per_core_warning_percent", None),
                         "duration_seconds": elapsed,
                     },
                 )]
