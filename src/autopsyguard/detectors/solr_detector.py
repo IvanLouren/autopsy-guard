@@ -574,8 +574,31 @@ class SolrDetector(BaseDetector):
 
         for log_file in uniq_candidates:
             try:
+                # If we have a stored position and the file has been
+                # rotated/truncated since that position (file_size < last_pos),
+                # reading from the beginning can reprocess historical data.
+                # When the rotated file's modification time predates monitor
+                # startup, treat it as pre-existing and seek-to-EOF instead
+                # to avoid floods of past errors.
+                last_pos = self._log_tracker.get_position(log_file)
+                try:
+                    file_size = log_file.stat().st_size
+                except OSError:
+                    file_size = None
+
+                if last_pos and file_size is not None and file_size < last_pos:
+                    try:
+                        mtime = log_file.stat().st_mtime
+                    except OSError:
+                        mtime = None
+                    if self._monitor_start is not None and mtime is not None and mtime <= self._monitor_start:
+                        # Treat rotated file as pre-existing: set offset to EOF
+                        if log_file.exists():
+                            self._log_tracker._file_offsets[log_file] = file_size
+                        continue
+
                 # On first run, seek to end to ignore pre-existing errors
-                if self._log_tracker.get_position(log_file) == 0:
+                if last_pos == 0:
                     if not self._initialized:
                         # Set position to end of file on first run
                         if log_file.exists():
@@ -597,6 +620,7 @@ class SolrDetector(BaseDetector):
                             if log_file.exists():
                                 self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
                             continue
+
                 events.extend(self._scan_log_file(log_file, log_patterns))
             except OSError as e:
                 logger.debug("Failed to read Solr log %s: %s", log_file, e)
@@ -636,6 +660,30 @@ class SolrDetector(BaseDetector):
                 
             for pattern, severity in patterns:
                 if pattern.search(line):
+                    # If the line contains a leading timestamp, parse it and
+                    # ignore the line if it predates the monitor start time.
+                    # This avoids alerting on historical log entries that are
+                    # re-emitted or present in newly-rotated files.
+                    if self._monitor_start is not None:
+                        m = re.match(r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)', line)
+                        if m:
+                            ts_str = m.group('ts')
+                            try:
+                                # Parse optional fractional seconds
+                                if '.' in ts_str:
+                                    from datetime import datetime
+                                    dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
+                                else:
+                                    from datetime import datetime
+                                    dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                                # Convert naive local datetime to epoch seconds
+                                parsed_ts = time.mktime(dt.timetuple()) + (dt.microsecond / 1e6)
+                                if parsed_ts <= self._monitor_start:
+                                    # Skip historical line
+                                    break
+                            except Exception:
+                                # If parsing fails, fall back to normal processing
+                                pass
                     # Create unique key using stable hash to survive process restarts
                     # Use first 100 chars of the line for deduplication
                     line_hash = hashlib.md5(line[:100].encode('utf-8')).hexdigest()[:16]
