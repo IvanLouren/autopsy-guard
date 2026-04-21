@@ -17,7 +17,6 @@ from pathlib import Path
 from autopsyguard.config import MonitorConfig
 from autopsyguard.logger import setup_logging
 from autopsyguard.monitor import Monitor
-from autopsyguard.notifier import set_start_time
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,10 +130,13 @@ def main() -> int:
     print("─" * 61)
     
     # Create and run monitor
-    # Set notifier uptime start
-    set_start_time()
-
     monitor = Monitor(config)
+    # Set notifier uptime start on the monitor's EmailNotifier instance
+    try:
+        monitor.notifier.set_start_time()
+    except Exception:
+        # If something unexpected happens, continue without uptime set
+        pass
     
     try:
         monitor.run()

@@ -54,27 +54,6 @@ def _get_case_label(config: MonitorConfig) -> str:
 
 logger = logging.getLogger(__name__)
 
-# Track when AutopsyGuard started for uptime calculation
-_start_time: datetime | None = None
-
-def set_start_time() -> None:
-    """Set the start time for uptime tracking. Call once at startup."""
-    global _start_time
-    _start_time = datetime.now()
-
-def get_uptime() -> str:
-    """Get formatted uptime string."""
-    if _start_time is None:
-        return "N/A"
-    delta = datetime.now() - _start_time
-    hours, remainder = divmod(int(delta.total_seconds()), 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours > 0:
-        return f"{hours}h {minutes}m {seconds}s"
-    elif minutes > 0:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTML Email Templates
@@ -402,10 +381,30 @@ class EmailNotifier:
         self._async_send = bool(getattr(self.config, "smtp_async", False))
         self._event_history: list[tuple[datetime, CrashEvent]] = []
         self._max_history = 50  # Keep last 50 events
+        # Instance uptime tracking (avoid module-level singleton so multiple
+        # EmailNotifier instances can have independent clocks).
+        self._start_time: datetime | None = None
 
     def is_enabled(self) -> bool:
         """Check if the email notifier has the minimum necessary configuration to run."""
         return self._enabled
+
+    def set_start_time(self) -> None:
+        """Set the notifier's start time for uptime tracking."""
+        self._start_time = datetime.now()
+
+    def get_uptime(self) -> str:
+        """Return formatted uptime relative to this notifier's start time."""
+        if self._start_time is None:
+            return "N/A"
+        delta = datetime.now() - self._start_time
+        hours, remainder = divmod(int(delta.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
     
     def record_event(self, event: CrashEvent) -> None:
         """Record an event for history tracking."""
@@ -555,7 +554,7 @@ class EmailNotifier:
         )
 
         # Plain-text fallback summary with short event IDs and brief suggestions
-        plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {get_uptime()}"]
+        plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {self.get_uptime()}"]
         plain_lines.append("")
         # List up to first 10 events with short id, severity and suggestion
         for ev in events[:10]:
@@ -584,7 +583,7 @@ class EmailNotifier:
         # Get system metrics and autopsy info (prefer case_dir for disk stats)
         metrics = _get_system_metrics(self.config.case_dir)
         autopsy_pid = _get_autopsy_pid()
-        uptime = get_uptime()
+        uptime = self.get_uptime()
         recent_events = self.get_recent_events(self.config.report_interval_hours)
         
         # Status card
