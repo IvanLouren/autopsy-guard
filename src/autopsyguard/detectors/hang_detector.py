@@ -168,8 +168,11 @@ class HangDetector(BaseDetector):
 
         try:
             proc = psutil.Process(pid)
-            # Use interval=0.1 for a quick but meaningful measurement
-            cpu = proc.cpu_percent(interval=0.1)
+            # Use non-blocking measurement to avoid adding 100ms blocking
+            # per detector call. `interval=None` returns percent since the
+            # last call for this process; the first call may return 0.0.
+            # This trade-off reduces latency at short `poll_interval` values.
+            cpu = proc.cpu_percent(interval=None)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._low_cpu_start = None
             return None

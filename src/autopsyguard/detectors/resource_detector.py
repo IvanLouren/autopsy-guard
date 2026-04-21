@@ -56,7 +56,13 @@ class ResourceDetector(BaseDetector):
         now = time.time()
         try:
             proc = psutil.Process(pid)
-            cpu = proc.cpu_percent(interval=0.1)
+            # Use non-blocking measurement: `interval=None` returns the
+            # percentage since the last call to `cpu_percent()` for this
+            # process. This avoids blocking the monitoring loop for 100ms
+            # per detector call. Note: the first call after process start
+            # may return 0.0; we accept this trade-off to keep the loop
+            # responsive at short poll intervals.
+            cpu = proc.cpu_percent(interval=None)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._high_cpu_since = None
             return []
