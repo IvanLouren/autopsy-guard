@@ -29,6 +29,9 @@ class MetricsStore:
         # Configure pragmatic PRAGMAs and run idempotent migrations
         self._configure_db()
         self._ensure_schema()
+        # Track consecutive sample failures to surface initial problems
+        # at WARNING level but avoid flooding logs for persistent errors.
+        self._sample_failure_count = 0
 
     def _configure_db(self) -> None:
         """Apply pragma settings that improve durability and reduce locking."""
@@ -201,7 +204,11 @@ class MetricsStore:
             self._conn.execute(sql, tuple(values))
             self._conn.commit()
         except Exception as exc:
-            logger.debug("Metrics sample failed: %s", exc)
+            # Increase failure counter and log at WARNING for the first
+            # few occurrences so operators notice problems like a full disk.
+            self._sample_failure_count = getattr(self, "_sample_failure_count", 0) + 1
+            level = logging.WARNING if self._sample_failure_count <= 5 else logging.DEBUG
+            logger.log(level, "Metrics sample failed: %s", exc)
 
     def fetch_samples(self, *, since_ts: float) -> list[dict[str, Any]]:
         """Fetch samples since a Unix timestamp."""
