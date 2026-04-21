@@ -27,7 +27,11 @@ def get_java_process_names() -> list[str]:
     """Return Java process names that Autopsy spawns as children."""
     if is_windows():
         return ["java.exe", "javaw.exe"]
-    return ["java"]
+    # On some Linux installs (snap/AppImage) the embedded Solr is started
+    # via a launcher script named `autopsy-solr`. That script briefly
+    # appears in process listings before exec'ing the JVM. Include it
+    # defensively so transient launcher processes are tracked.
+    return ["java", "autopsy-solr"]
 
 
 def get_autopsy_user_dir() -> Path:
