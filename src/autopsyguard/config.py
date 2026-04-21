@@ -66,6 +66,7 @@ class MonitorConfig:
     smtp_port: int = 587
     # Use implicit SSL (SMTP over SSL, typically port 465) instead of STARTTLS
     smtp_use_ssl: bool = False
+    smtp_async: bool = False
     smtp_user: str = ""
     smtp_password: str = ""
     email_sender: str = "autopsyguard@example.com"
@@ -189,6 +190,7 @@ _SUPPORTED_CONFIG_KEYS = {
     "smtp_host",
     "smtp_port",
     "smtp_use_ssl",
+    "smtp_async",
     "smtp_user",
     "smtp_password",
     "email_sender",
