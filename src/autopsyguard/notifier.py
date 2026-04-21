@@ -37,7 +37,14 @@ def _get_case_label(config: MonitorConfig) -> str:
     if getattr(config, "email_case_label", None):
         return config.email_case_label
     try:
-        path = str(config.case_dir) if config.case_dir is not None else ""
+        if config.case_dir is not None:
+            # Normalize path across platforms (resolve and use POSIX style)
+            try:
+                path = config.case_dir.resolve().as_posix()
+            except Exception:
+                path = str(config.case_dir)
+        else:
+            path = ""
     except Exception:
         path = ""
     h = hashlib.sha1()
