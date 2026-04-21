@@ -50,6 +50,9 @@ class Monitor:
 
     def __init__(self, config: MonitorConfig) -> None:
         self.config = config
+        # Record monitor start time for heuristics used by detectors
+        monitor_start = time.time()
+
         # Shared Solr health cache to avoid duplicate probes per cycle
         solr_cache = SolrHealthCache(config)
 
@@ -59,7 +62,7 @@ class Monitor:
             LogDetector(config),
             HangDetector(config, solr_cache=solr_cache),
             ResourceDetector(config),
-            SolrDetector(config, solr_cache=solr_cache),
+            SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start),
         ]
         self.notifier = EmailNotifier(config)
         self._metrics_store = MetricsStore(case_dir=config.case_dir)

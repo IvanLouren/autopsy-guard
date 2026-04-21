@@ -101,7 +101,7 @@ class SolrDetector(BaseDetector):
       5. Log Errors — errors detected in Solr log files
     """
 
-    def __init__(self, config: MonitorConfig, solr_cache=None) -> None:
+    def __init__(self, config: MonitorConfig, solr_cache=None, monitor_start: float | None = None) -> None:
         super().__init__(config)
         self._solr_cache = solr_cache
         self._solr_down_reported = False
@@ -111,6 +111,9 @@ class SolrDetector(BaseDetector):
         self._cpu_warning_reported = False
         self._reported_log_errors: set[str] = set()
         self._initialized = False
+        # Timestamp when the monitor started. If provided, used to
+        # heuristic-ignore log files that predate monitor startup.
+        self._monitor_start = monitor_start
         
         # Initialize log file tracker with persistence (stored outside case)
         state_dir = get_autopsyguard_state_dir(config.case_dir)
@@ -572,11 +575,28 @@ class SolrDetector(BaseDetector):
         for log_file in uniq_candidates:
             try:
                 # On first run, seek to end to ignore pre-existing errors
-                if not self._initialized and self._log_tracker.get_position(log_file) == 0:
-                    # Set position to end of file on first run
-                    if log_file.exists():
-                        self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
-                    continue
+                if self._log_tracker.get_position(log_file) == 0:
+                    if not self._initialized:
+                        # Set position to end of file on first run
+                        if log_file.exists():
+                            self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
+                        continue
+                    else:
+                        # If the file appears after initialization but its
+                        # modification time predates the monitor start time,
+                        # treat it as pre-existing (seek to EOF) to avoid
+                        # reprocessing historical content that existed before
+                        # the monitor started. If no monitor_start is
+                        # available or the file is newer, fall back to
+                        # reading from the beginning (current behaviour).
+                        try:
+                            mtime = log_file.stat().st_mtime
+                        except OSError:
+                            mtime = None
+                        if self._monitor_start is not None and mtime is not None and mtime <= self._monitor_start:
+                            if log_file.exists():
+                                self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
+                            continue
                 events.extend(self._scan_log_file(log_file, log_patterns))
             except OSError as e:
                 logger.debug("Failed to read Solr log %s: %s", log_file, e)
