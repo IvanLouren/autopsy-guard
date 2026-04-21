@@ -49,10 +49,44 @@ class SolrMetrics:
 def get_solr_log_dir() -> Path:
     """Return the Solr log directory for Autopsy's embedded instance.
 
-    Autopsy stores Solr logs in the var/log/solr directory.
+    Try to determine the Solr log directory from the running Java process
+    (`-Dsolr.log.dir` JVM argument). Fallback order:
+      1. `-Dsolr.log.dir` value from process args (preferred)
+      2. `<autopsy_user_dir>/var/log/solr/` if it exists
+      3. `<autopsy_user_dir>/var/log/`
     """
-    # In Autopsy 4.22.x the Solr logs are placed directly in the global
-    # Autopsy log directory (var/log), not in a `solr/` subdirectory.
+    # Try to read the running Autopsy/Java process command-line for the
+    # `-Dsolr.log.dir` argument which is authoritative when present.
+    try:
+        # Import locally to avoid hard dependency if psutil isn't installed
+        import psutil
+        from autopsyguard.utils.process_utils import find_autopsy_pid
+
+        pid = find_autopsy_pid()
+        if pid is not None:
+            try:
+                proc = psutil.Process(pid)
+                cmdline = proc.cmdline() or []
+                joined = " ".join(cmdline)
+                m = re.search(r'-Dsolr\.log\.dir=(?:"(?P<q>[^"]+)"|(?P<u>[^\s]+))', joined)
+                if m:
+                    val = m.group("q") or m.group("u")
+                    if val:
+                        p = Path(val)
+                        if p.exists():
+                            return p
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                # Can't inspect process — fall back to defaults
+                pass
+    except Exception:
+        # psutil or process utils not available — fall back
+        pass
+
+    # Fallback locations
+    candidate = get_autopsy_log_dir() / "solr"
+    if candidate.exists():
+        return candidate
+
     return get_autopsy_log_dir()
 
 
@@ -493,12 +527,13 @@ class SolrDetector(BaseDetector):
         """Monitor Solr log files for errors."""
         events: list[CrashEvent] = []
         log_dir = get_solr_log_dir()
+        aut_log_dir = get_autopsy_log_dir()
 
-        if not log_dir.exists():
-            logger.debug("Solr log directory does not exist: %s", log_dir)
+        if not log_dir.exists() and not aut_log_dir.exists():
+            logger.debug("Neither Solr log dir nor Autopsy log dir exist: %s, %s", log_dir, aut_log_dir)
             return events
 
-        # Check the main solr.log file
+        # Check the main solr.log file(s) and also stdout/stderr files
         log_patterns = [
             (re.compile(r"ERROR", re.IGNORECASE), Severity.CRITICAL),
             (re.compile(r"SEVERE", re.IGNORECASE), Severity.CRITICAL),
@@ -506,7 +541,35 @@ class SolrDetector(BaseDetector):
             (re.compile(r"WARN.*(?:corrupt|failed|exception)", re.IGNORECASE), Severity.WARNING),
         ]
 
-        for log_file in chain(log_dir.glob("solr*.log"), log_dir.glob("solr*.log.*")):
+        # Collect candidate log files from the Solr-specific dir and the global
+        # Autopsy log dir (for solr.log.stdout / solr.log.stderr).
+        candidates = []
+        if log_dir.exists():
+            candidates.extend(list(log_dir.glob("solr*.log")))
+            candidates.extend(list(log_dir.glob("solr*.log.*")))
+
+        if aut_log_dir.exists():
+            # Common console redirection files
+            for name in ("solr.log.stdout", "solr.log.stderr"):
+                f = aut_log_dir / name
+                if f.exists():
+                    candidates.append(f)
+            # Also include any solr*.log files accidentally placed at top-level
+            candidates.extend(list(aut_log_dir.glob("solr*.log")))
+
+        # Deduplicate while preserving Path type
+        seen = set()
+        uniq_candidates = []
+        for p in candidates:
+            try:
+                r = p.resolve()
+            except Exception:
+                r = p
+            if str(r) not in seen:
+                seen.add(str(r))
+                uniq_candidates.append(p)
+
+        for log_file in uniq_candidates:
             try:
                 # On first run, seek to end to ignore pre-existing errors
                 if not self._initialized and self._log_tracker.get_position(log_file) == 0:

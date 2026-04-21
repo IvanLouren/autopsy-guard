@@ -37,8 +37,14 @@ def get_autopsy_user_dir() -> Path:
     Linux:   ~/.autopsy
     """
     if is_windows():
-        appdata = os.environ.get("APPDATA", "")
-        return Path(appdata) / "autopsy"
+        # Prefer the APPDATA environment variable which typically points
+        # to the Roaming profile (e.g. C:\Users\<user>\AppData\Roaming).
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "autopsy"
+        # Fallback: construct the usual Roaming path from the user home.
+        # This handles rare cases where APPDATA is not set in the environment.
+        return Path.home() / "AppData" / "Roaming" / "autopsy"
     return Path.home() / ".autopsy"
 
 
