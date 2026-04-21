@@ -33,8 +33,17 @@ def find_autopsy_pid() -> int | None:
 
             if name in java_names:
                 cmdline = proc.info.get("cmdline") or []
-                if any("autopsy" in str(arg).lower() for arg in cmdline):
-                    return proc.info["pid"]
+                # Require a more specific indicator than a bare substring
+                # to avoid false positives (e.g., developer IDEs with
+                # classpaths referencing an "autopsy" source tree). Match
+                # either the Autopsy package name or a netbeans.user path
+                # that mentions 'autopsy'.
+                for arg in cmdline:
+                    s = str(arg).lower()
+                    if "org.sleuthkit.autopsy" in s:
+                        return proc.info["pid"]
+                    if "netbeans.user" in s and "autopsy" in s:
+                        return proc.info["pid"]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
