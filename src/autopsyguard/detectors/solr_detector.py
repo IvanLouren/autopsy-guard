@@ -643,9 +643,11 @@ class SolrDetector(BaseDetector):
                         # Limit to first matching pattern per line
                         break
 
-        # Save positions after processing
-        if events:
-            self._log_tracker.save_positions()
+        # Always save positions after reading new content so offsets are
+        # persisted even when no events are generated. This prevents
+        # duplicate alerts on restart when previously-read lines were
+        # only held in memory.
+        self._log_tracker.save_positions()
 
         return events
 

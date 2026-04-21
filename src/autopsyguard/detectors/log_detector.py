@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import hashlib
 from pathlib import Path
 
 from autopsyguard.config import MonitorConfig
@@ -39,7 +40,8 @@ class LogDetector(BaseDetector):
         self._log_tracker.load_positions()
         self._initialised = False
         self._recent_duplicate_window = 300.0  # seconds
-        self._recent_lines: dict[Path, tuple[str, float]] = {}
+        # Map of source -> {line_hash -> last_seen_timestamp}
+        self._recent_lines: dict[Path, dict[str, float]] = {}
         # Compile pattern list from built-in constants and operator-configured patterns
         self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
             (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
@@ -160,14 +162,21 @@ class LogDetector(BaseDetector):
     def _is_recent_duplicate(self, line: str, source: Path) -> bool:
         """Suppress repeated identical lines within a short window."""
         now = time.time()
-        last_entry = self._recent_lines.get(source)
-        if last_entry is None:
-            self._recent_lines[source] = (line, now)
-            return False
+        # Use a short stable hash of the line as the key to avoid storing
+        # full lines and to speed up lookups.
+        line_key = hashlib.md5(line[:200].encode("utf-8")).hexdigest()[:16]
 
-        last_line, last_ts = last_entry
-        if line == last_line and (now - last_ts) <= self._recent_duplicate_window:
+        seen = self._recent_lines.setdefault(source, {})
+        last_ts = seen.get(line_key)
+        if last_ts is not None and (now - last_ts) <= self._recent_duplicate_window:
             return True
 
-        self._recent_lines[source] = (line, now)
+        # Record current timestamp for this line
+        seen[line_key] = now
+
+        # Prune expired entries to bound memory growth
+        cutoff = now - self._recent_duplicate_window
+        pruned = {k: v for k, v in seen.items() if v > cutoff}
+        self._recent_lines[source] = pruned
+
         return False
