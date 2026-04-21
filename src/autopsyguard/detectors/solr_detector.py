@@ -677,6 +677,13 @@ class SolrDetector(BaseDetector):
                                     from datetime import datetime
                                     dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
                                 # Convert naive local datetime to epoch seconds
+                                # Note: parsed_ts truncates to the second if the log
+                                # timestamp format lacks sub-second precision. A
+                                # line logged in the same second as monitor startup
+                                # may be incorrectly classified as historical
+                                # (false-negative). This is an acceptable trade-off
+                                # to avoid spurious alerts from pre-existing log
+                                # entries.
                                 parsed_ts = time.mktime(dt.timetuple()) + (dt.microsecond / 1e6)
                                 if parsed_ts <= self._monitor_start:
                                     # Skip historical line
