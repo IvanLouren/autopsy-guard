@@ -70,14 +70,35 @@ class Monitor:
         self._report_count = 0
 
     def _is_case_active(self) -> bool:
-        """Check if Autopsy is running and the case is open."""
-        pid = find_autopsy_pid()
-        # Consider either a case-level lock or the global NetBeans messages lock
-        lock_exists = (
-            get_case_lock_file(self.config.case_dir).exists()
-            or get_global_lock_file().exists()
-        )
-        return pid is not None and lock_exists
+                """Check if Autopsy is running and the case is open.
+
+                Rationale:
+                - Autopsy creates a per-case lock file inside the case `Log/` directory
+                    when a case is opened.  However, on startup NetBeans/Autopsy also
+                    creates a global `messages.log.lck` under the user var/log tree
+                    shortly after the JVM starts.  We treat either lock as evidence the
+                    application is active because the global lock is a reliable early
+                    indicator that Autopsy has started its runtime and may soon open a
+                    case.
+
+                Notes on behaviour:
+                - This can cause the monitor to enter `ACTIVE` briefly while the
+                    Autopsy UI is still showing the "Open Case" dialog (global lock is
+                    created ~2–3s after process start).  This is intentional and benign:
+                    detectors initialize by seeking to EOF on first run so they won't
+                    reprocess historical log data, and active monitoring will correctly
+                    pick up once a case is actually opened.
+                - The global lock is used as a pragmatic early proxy to avoid missing
+                    short-lived case activity; it reduces race conditions when the
+                    monitor starts before Autopsy has finished initialization.
+                """
+                pid = find_autopsy_pid()
+                # Consider either a case-level lock or the global NetBeans messages lock
+                lock_exists = (
+                        get_case_lock_file(self.config.case_dir).exists()
+                        or get_global_lock_file().exists()
+                )
+                return pid is not None and lock_exists
 
     def run_once(self) -> list[CrashEvent]:
         """Execute a single detection cycle across all detectors."""
