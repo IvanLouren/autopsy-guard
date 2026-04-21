@@ -330,6 +330,14 @@ def _validate_config_filesystem(config: MonitorConfig) -> None:
         raise ValueError(f"Case directory does not exist: {config.case_dir}")
     if not config.case_dir.is_dir():
         raise ValueError(f"Case directory is not a directory: {config.case_dir}")
+    # Verify the path looks like an Autopsy case directory (has .aut or Log/)
+    from autopsyguard.platform_utils import validate_case_dir
+
+    if not validate_case_dir(config.case_dir):
+        raise ValueError(
+            f"'{config.case_dir}' does not look like a valid Autopsy case directory "
+            f"(missing .aut file or Log/ directory)."
+        )
 
 
 def _validate_config(config: MonitorConfig) -> None:  # pragma: no cover - kept for compatibility
