@@ -206,7 +206,7 @@ class MetricsStore:
         except Exception as exc:
             # Increase failure counter and log at WARNING for the first
             # few occurrences so operators notice problems like a full disk.
-            self._sample_failure_count = getattr(self, "_sample_failure_count", 0) + 1
+            self._sample_failure_count += 1
             level = logging.WARNING if self._sample_failure_count <= 5 else logging.DEBUG
             logger.log(level, "Metrics sample failed: %s", exc)
 
