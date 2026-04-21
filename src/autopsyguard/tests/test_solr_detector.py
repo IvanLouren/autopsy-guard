@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import time
+import os
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.solr_detector import (
@@ -819,6 +821,91 @@ class TestSolrLogMonitoring:
 
         assert len([e for e in events1 if e.crash_type == CrashType.LOG_ERROR]) == 1
         assert len([e for e in events2 if e.crash_type == CrashType.LOG_ERROR]) == 1
+
+    def test_solr_log_ignores_preexisting_rotated_file(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """Rotated file predating monitor start should be skipped."""
+        # Prepare log and state directories
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "solr.log.1"
+
+        # Write small file content and set mtime to an old time
+        log_file.write_text("Old content\n")
+        old_mtime = 1000000000.0  # 2001-09-09
+        import os
+        os.utime(log_file, (old_mtime, old_mtime))
+
+        # Create state file indicating a previous read position larger than current file size
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        state_file = state_dir / "solr_log_positions.json"
+        # Large offset to simulate previous position beyond current file size
+        state_file.write_text(str({str(log_file): 9999}).replace("'", '"'))
+
+        # Monitor started after the file mtime so rotated file is considered historical
+        monitor_start = old_mtime + 1000.0
+
+        detector = SolrDetector(config, monitor_start=monitor_start)
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = log_dir
+            with patch("autopsyguard.detectors.solr_detector.get_autopsyguard_state_dir") as mock_state_dir:
+                mock_state_dir.return_value = state_dir
+                with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                    mock_urlopen.side_effect = urllib.error.URLError("x")
+
+                    # First check should load positions and skip rotated historical file
+                    events = detector.check()
+
+        # No log events should be produced and the tracker should have set the offset to EOF
+        log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
+        assert len(log_events) == 0
+        # Verify tracker recorded EOF position
+        pos = detector._log_tracker.get_position(log_file)
+        assert pos == log_file.stat().st_size
+
+    def test_solr_log_filters_lines_before_monitor_start(self, config: MonitorConfig, tmp_path: Path) -> None:
+        """Log lines timestamped before monitor_start should not generate events."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "solr.log"
+
+        # Compose timestamps relative to now
+        from datetime import datetime, timedelta
+        now = time.time()
+        old_dt = datetime.fromtimestamp(now - 5)
+        new_dt = datetime.fromtimestamp(now + 5)
+        old_ts = old_dt.strftime("%Y-%m-%d %H:%M:%S")
+        new_ts = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Write two lines: one before monitor_start, one after
+        log_file.write_text(f"{old_ts} ERROR Old error\n{new_ts} ERROR New error\n")
+
+        # Ensure file mtime is newer than monitor_start so file is read
+        os.utime(log_file, None)
+
+        monitor_start = now
+
+        detector = SolrDetector(config, monitor_start=monitor_start)
+        detector._initialized = True
+        detector._check_metrics = lambda: []
+        detector._check_cores = lambda: []
+
+        with patch("autopsyguard.detectors.solr_detector.get_solr_log_dir") as mock_log_dir:
+            mock_log_dir.return_value = log_dir
+            with patch("autopsyguard.detectors.solr_detector.get_autopsyguard_state_dir") as mock_state_dir:
+                mock_state_dir.return_value = tmp_path / "state"
+                with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+                    mock_urlopen.side_effect = urllib.error.URLError("x")
+
+                    events = detector.check()
+
+        log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
+        # Only the new line should generate an event
+        assert len(log_events) == 1
+        assert "New error" in log_events[0].details.get("log_line", "")
 
     def test_missing_log_dir_no_error(self, config: MonitorConfig, tmp_path: Path) -> None:
         """Missing log directory should not cause errors."""
