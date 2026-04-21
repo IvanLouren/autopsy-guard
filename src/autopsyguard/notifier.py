@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import smtplib
+import threading
 import psutil
 from pathlib import Path
 import base64
@@ -387,6 +388,11 @@ class EmailNotifier:
             self.config.smtp_host and 
             self.config.email_recipient
         )
+        # Async send: when True, email dispatch happens in a daemon thread
+        # and retries/backoff run in background. Default False to preserve
+        # synchronous behavior expected by unit tests; operators can enable
+        # by setting `config.smtp_async = True`.
+        self._async_send = bool(getattr(self.config, "smtp_async", False))
         self._event_history: list[tuple[datetime, CrashEvent]] = []
         self._max_history = 50  # Keep last 50 events
 
@@ -903,38 +909,62 @@ class EmailNotifier:
         msg['From'] = self.config.email_sender
         msg['To'] = self.config.email_recipient
 
-        # Send with retry/backoff
-        max_attempts = 3
-        base_backoff = 1.0
-        last_exc: Exception | None = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                logger.debug("Connecting to SMTP %s:%d (attempt %d)", self.config.smtp_host, self.config.smtp_port, attempt)
-                smtp_cls = smtplib.SMTP_SSL if getattr(self.config, "smtp_use_ssl", False) else smtplib.SMTP
-                with smtp_cls(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
-                    # EHLO/STARTTLS handling: only start TLS for non-SSL connections
-                    try:
-                        server.ehlo()
-                        if not getattr(self.config, "smtp_use_ssl", False) and server.has_extn('STARTTLS'):
-                            server.starttls()
+        # Encapsulate the synchronous send logic so we can run it in a thread
+        def _send_sync() -> bool:
+            max_attempts = 3
+            base_backoff = 1.0
+            last_exc: Exception | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.debug("Connecting to SMTP %s:%d (attempt %d)", self.config.smtp_host, self.config.smtp_port, attempt)
+                    smtp_cls = smtplib.SMTP_SSL if getattr(self.config, "smtp_use_ssl", False) else smtplib.SMTP
+                    with smtp_cls(self.config.smtp_host, self.config.smtp_port, timeout=30) as server:
+                        # EHLO/STARTTLS handling: only start TLS for non-SSL connections
+                        try:
                             server.ehlo()
-                    except Exception:
-                        # Some servers may not respond to EHLO; proceed to auth/send and let exceptions surface
-                        logger.debug("SMTP server did not respond to EHLO/STARTTLS probe; continuing")
+                            if not getattr(self.config, "smtp_use_ssl", False) and server.has_extn('STARTTLS'):
+                                server.starttls()
+                                server.ehlo()
+                        except Exception:
+                            # Some servers may not respond to EHLO; proceed to auth/send and let exceptions surface
+                            logger.debug("SMTP server did not respond to EHLO/STARTTLS probe; continuing")
 
-                    if self.config.smtp_password:
-                        server.login(self.config.smtp_user, self.config.smtp_password)
-                    server.send_message(msg)
+                        if self.config.smtp_password:
+                            server.login(self.config.smtp_user, self.config.smtp_password)
+                        server.send_message(msg)
 
-                logger.info("📧 Email enviado: %s", subject[:60])
-                return True
-            except (smtplib.SMTPException, OSError, TimeoutError) as e:
-                last_exc = e
-                logger.warning("Falha ao enviar email (attempt %d/%d): %s", attempt, max_attempts, e)
-                if attempt < max_attempts:
-                    backoff = base_backoff * (2 ** (attempt - 1))
-                    logger.debug("Aguardando %.1fs antes da próxima tentativa...", backoff)
-                    time.sleep(backoff)
+                    logger.info("📧 Email enviado: %s", subject[:60])
+                    return True
+                except (smtplib.SMTPException, OSError, TimeoutError) as e:
+                    last_exc = e
+                    logger.warning("Falha ao enviar email (attempt %d/%d): %s", attempt, max_attempts, e)
+                    if attempt < max_attempts:
+                        backoff = base_backoff * (2 ** (attempt - 1))
+                        logger.debug("Aguardando %.1fs antes da próxima tentativa...", backoff)
+                        time.sleep(backoff)
 
-        logger.error("❌ Falha ao enviar email após %d tentativas: %s", max_attempts, last_exc)
-        return False
+            logger.error("❌ Falha ao enviar email após %d tentativas: %s", max_attempts, last_exc)
+            return False
+
+        # If async send requested, run in background thread and return immediately
+        if self._async_send:
+            def _thread_target():
+                start = time.time()
+                ok = _send_sync()
+                duration = time.time() - start
+                # Warn if dispatch took a significant fraction of poll_interval
+                try:
+                    poll = float(self.config.poll_interval)
+                except Exception:
+                    poll = 0.0
+                if poll > 0 and duration > 0.1 * poll:
+                    logger.warning("Email dispatch took %.2fs (>10%% of poll_interval %.1fs)", duration, poll)
+                if not ok:
+                    logger.debug("Async email dispatch failed (see earlier logs)")
+
+            t = threading.Thread(target=_thread_target, daemon=True)
+            t.start()
+            return True
+
+        # Default: synchronous send for compatibility with existing behaviour/tests
+        return _send_sync()

@@ -252,8 +252,8 @@ class HangDetector(BaseDetector):
             from responsive to unresponsive state.
             
         Note:
-            Uses self.config.solr_ping_timeout for connection timeout.
-            Considers response slow if > self.config.hang_solr_slow_threshold_seconds.
+            Uses `self.config.solr_ping_timeout` for connection timeout.
+            Considers response slow if > `self.config.solr_ping_slow_threshold`.
         """
         # Use shared solr cache if provided to avoid duplicate probes
         try:
