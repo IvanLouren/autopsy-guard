@@ -13,7 +13,8 @@ from typing import Any
 import matplotlib
 
 matplotlib.use("Agg")
-from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.patches import Patch
 
 
@@ -62,8 +63,8 @@ def render_system_chart_png(
     read_mbps = [v / (1024 ** 2) for v in read_bps]
     write_mbps = [v / (1024 ** 2) for v in write_bps]
 
-    fig, (ax_top, ax_bot) = plt.subplots(nrows=2, ncols=1, figsize=(6.2, 4.2), dpi=120,
-                                         gridspec_kw={"height_ratios": [2, 1]})
+    fig = Figure(figsize=(6.2, 4.2), dpi=120)
+    ax_top, ax_bot = fig.subplots(2, 1, gridspec_kw={"height_ratios": [2, 1]})
 
     # If alert windows were provided (list of (start_ts, end_ts) epoch seconds),
     # convert them to minutes relative to t0 and shade those regions on the CPU plot.
@@ -124,8 +125,10 @@ def render_system_chart_png(
 
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png")
-    plt.close(fig)
+    canvas = FigureCanvasAgg(fig)
+    canvas.print_png(buf)
+    # Clear the figure to free memory
+    fig.clear()
     return buf.getvalue()
 
 
