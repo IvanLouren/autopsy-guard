@@ -132,11 +132,7 @@ def main() -> int:
     # Create and run monitor
     monitor = Monitor(config)
     # Set notifier uptime start on the monitor's EmailNotifier instance
-    try:
-        monitor.notifier.set_start_time()
-    except Exception:
-        # If something unexpected happens, continue without uptime set
-        pass
+    monitor.notifier.set_start_time()
     
     try:
         monitor.run()
