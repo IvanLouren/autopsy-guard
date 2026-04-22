@@ -598,15 +598,15 @@ class SolrDetector(BaseDetector):
                 # to avoid floods of past errors.
                 last_pos = self._log_tracker.get_position(log_file)
                 try:
-                    file_size = log_file.stat().st_size
+                    st = log_file.stat()
+                    file_size = st.st_size
+                    mtime = st.st_mtime
                 except OSError:
-                    file_size = None
+                    # File disappeared/rotated between discovery and stat; skip
+                    # this file for now and let the tracker pick it up on next cycle.
+                    continue
 
                 if last_pos and file_size is not None and file_size < last_pos:
-                    try:
-                        mtime = log_file.stat().st_mtime
-                    except OSError:
-                        mtime = None
                     if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
                         # Treat rotated file as pre-existing: set offset to EOF
                         if log_file.exists():
@@ -617,8 +617,8 @@ class SolrDetector(BaseDetector):
                 if last_pos == 0:
                     if not self._initialized:
                         # Set position to end of file on first run
-                        if log_file.exists():
-                            self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
+                        if log_file.exists() and file_size is not None:
+                            self._log_tracker._file_offsets[log_file] = file_size
                         continue
                     else:
                         # If the file appears after initialization but its
@@ -628,13 +628,9 @@ class SolrDetector(BaseDetector):
                         # the monitor started. If no monitor_start is
                         # available or the file is newer, fall back to
                         # reading from the beginning (current behaviour).
-                        try:
-                            mtime = log_file.stat().st_mtime
-                        except OSError:
-                            mtime = None
                         if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
-                            if log_file.exists():
-                                self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
+                            if log_file.exists() and file_size is not None:
+                                self._log_tracker._file_offsets[log_file] = file_size
                             continue
 
                 events.extend(self._scan_log_file(log_file, log_patterns))
