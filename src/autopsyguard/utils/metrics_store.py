@@ -32,6 +32,9 @@ class MetricsStore:
         # Track consecutive sample failures to surface initial problems
         # at WARNING level but avoid flooding logs for persistent errors.
         self._sample_failure_count = 0
+        # Cache of columns to insert for the current DB schema to avoid
+        # running PRAGMA table_info on every sample (filesystem op).
+        self._insert_cols: list[str] | None = None
 
     def _configure_db(self) -> None:
         """Apply pragma settings that improve durability and reduce locking."""
@@ -180,22 +183,26 @@ class MetricsStore:
                 "autopsy_rss_bytes": int(autopsy_rss) if autopsy_rss is not None else None,
             }
 
-            # Inspect current table columns and insert only those present
-            cols_info = self._conn.execute("PRAGMA table_info(metrics)").fetchall()
-            existing_cols = [row[1] for row in cols_info]
-            insert_cols = [c for c in [
-                "ts",
-                "cpu_percent",
-                "memory_percent",
-                "memory_used_bytes",
-                "memory_total_bytes",
-                "disk_free_bytes",
-                "disk_total_bytes",
-                "disk_read_bytes",
-                "disk_write_bytes",
-                "autopsy_pid",
-                "autopsy_rss_bytes",
-            ] if c in existing_cols]
+            # Inspect current table columns once and cache for subsequent samples
+            if self._insert_cols is None:
+                cols_info = self._conn.execute("PRAGMA table_info(metrics)").fetchall()
+                existing_cols = {row[1] for row in cols_info}
+                desired = [
+                    "ts",
+                    "cpu_percent",
+                    "memory_percent",
+                    "memory_used_bytes",
+                    "memory_total_bytes",
+                    "disk_free_bytes",
+                    "disk_total_bytes",
+                    "disk_read_bytes",
+                    "disk_write_bytes",
+                    "autopsy_pid",
+                    "autopsy_rss_bytes",
+                ]
+                self._insert_cols = [c for c in desired if c in existing_cols]
+
+            insert_cols = self._insert_cols
 
             placeholders = ",".join(["?" for _ in insert_cols])
             sql = f"INSERT INTO metrics ({','.join(insert_cols)}) VALUES ({placeholders})"
