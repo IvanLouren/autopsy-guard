@@ -1,6 +1,6 @@
 # Development config for AutopsyGuard - safe for local testing
 # Points to a local example case directory inside the repo.
-case_dir: example_case
+case_dir: C:\Users\francisco\Desktop\Universidade\PROJETO\TestCase
 
 # Poll frequently for quick feedback while developing
 poll_interval: 5.0
@@ -46,4 +46,4 @@ email_sender: "AutopsyGuard <autopsyguard-dev@local>"
 email_recipient: "devops+autopsy@example.local"
 
 # Faster reporting while developing
-report_interval_hours: 0.02  # ≈1.2 minutes
+report_interval_hours: 0.04 # ≈2.4 minutes

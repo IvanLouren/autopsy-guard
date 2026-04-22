@@ -1,42 +1,245 @@
-# Production config for AutopsyGuard — update secrets before deployment
-# IMPORTANT: Replace SMTP credentials and case_dir with real production values.
+# =============================================================================
+# AutopsyGuard — Production Configuration
+# Autopsy 4.22.1
+# =============================================================================
+#
+# PURPOSE: Conservative thresholds calibrated for real forensic casework.
+# Autopsy ingest can run unattended for days, legitimately saturating CPU,
+# writing hundreds of GB to Solr, and going quiet for long stretches while
+# hashing or exporting. Thresholds must distinguish genuine crashes from
+# normal heavy processing.
+#
+# Usage:
+#   python -m autopsyguard --config config.production.yml
+#
+# BEFORE RUNNING — set credentials as environment variables, never in this file:
+#   Linux / macOS:
+#     export AUTOPSYGUARD_SMTP_USER="autopsyguard@yourdomain.com"
+#     export AUTOPSYGUARD_SMTP_PASSWORD="your-app-password"
+#
+#   Windows (PowerShell):
+#     $Env:AUTOPSYGUARD_SMTP_USER = "autopsyguard@yourdomain.com"
+#     $Env:AUTOPSYGUARD_SMTP_PASSWORD = "your-app-password"
+#
+# Recommended: run AutopsyGuard as a systemd service (Linux) or a Windows
+# Service so environment variables persist across reboots.
+# =============================================================================
 
-case_dir: C:\Cases\Autopsy\MainCase
 
-# Production polling: balance responsiveness vs load
+# -----------------------------------------------------------------------------
+# Case directory
+# Full absolute path to the Autopsy case being monitored.
+# Windows: C:/Cases/Evidence-2025-001
+# The directory must contain a .aut descriptor file and either autopsy.db
+# (single-user) or a Log/ subdirectory (multi-user / PostgreSQL).
+# -----------------------------------------------------------------------------
+case_dir: /cases/active/Evidence-2025-001
+
+# Autopsy 4.22.1 installation directory.
+# Used to locate hs_err_pid*.log files on a JVM crash.
+# Windows: C:/Program Files/Autopsy-4.22.1
+autopsy_install_dir: /opt/autopsy-4.22.1
+
+
+# -----------------------------------------------------------------------------
+# Polling
+# 30 s is a good balance: responsive enough to catch crashes promptly,
+# low enough overhead to run indefinitely alongside Autopsy.
+# Reduce to 15 s on fast hardware if sub-minute crash detection is required.
+# -----------------------------------------------------------------------------
 poll_interval: 30.0
 
-# Hang detection (longer, to avoid false positives in production)
+
+# -----------------------------------------------------------------------------
+# Hang detection
+# Real Autopsy sessions have long legitimate quiet periods:
+#   • Hash calculation on a 1 TB image can take 20–40 min (near-zero CPU).
+#   • Photo EXIF extraction stalls while waiting on slow USB 2.0 media.
+#   • Solr commit / optimize runs while main JVM appears idle.
+# All three thresholds below are deliberately generous to avoid false positives.
+# -----------------------------------------------------------------------------
+
+# CPU % below which Autopsy is considered "idle". 1% is the right floor —
+# the JVM GC and background threads always consume slightly more than this.
 hang_cpu_threshold: 1.0
-hang_timeout: 600.0
-hang_confirmation_duration: 120.0
+
+# Seconds of near-zero CPU before the CPU signal activates.
+# 900 s = 15 min. Covers the longest legitimate quiet phases (hashing, export).
+hang_timeout: 900.0
+
+# Seconds correlated signals must persist before the hang alert fires.
+# 180 s = 3 min of CPU + log silence + Solr problems together.
+hang_confirmation_duration: 180.0
+
+# Solr ping timeout for the hang detector's own probe (seconds).
+# Generous to accommodate Solr commit/optimize cycles on large indexes.
+solr_ping_timeout: 8.0
+
+# Ping response time considered "slow" for hang purposes (seconds).
+# Solr under heavy indexing can legitimately take 3–4 s to respond to pings.
+solr_ping_slow_threshold: 4.0
+
+# Seconds Solr must stay slow before the slow signal activates.
+# 2 min of consistent slowness before counting it as a correlated signal.
+solr_ping_slow_duration: 120.0
+
+# Seconds Solr must be completely unresponsive before the signal activates.
+# 60 s accounts for a Solr commit/checkpoint that temporarily blocks pings.
+solr_unresponsive_duration: 60.0
+
+# Seconds without any log file write before the log-stale signal activates.
+# 1800 s = 30 min. Autopsy stops logging during long hash/export operations.
 log_stale_timeout: 1800.0
 
-# Resource thresholds tuned for production environments
-cpu_warning_percent: 90.0
-cpu_warning_duration: 300.0
-memory_warning_percent: 90.0
-disk_min_free_gb: 5.0
 
-# Solr settings (adjust to your Solr instance)
+# -----------------------------------------------------------------------------
+# Resource thresholds
+# Calibrated for a dedicated forensic workstation (recommended spec:
+# 8+ core CPU, 32 GB RAM, NVMe SSD for OS + case, separate evidence drive).
+# -----------------------------------------------------------------------------
+
+# Process-level CPU % (psutil). On an 8-core system Autopsy can legitimately
+# show 700–800% during parallel ingest. Because the config validator caps
+# this at 100, this threshold triggers as soon as Autopsy is active (>95% of
+# one core). The real guard is cpu_warning_duration below.
+cpu_warning_percent: 95.0
+
+# Per-core average CPU % = (process %) / logical_cpu_count.
+# 88% average across all cores for 15+ minutes indicates genuine saturation.
+cpu_per_core_warning_percent: 88.0
+
+# Seconds above threshold before alerting. 900 s = 15 min sustained.
+# Autopsy routinely pegs CPU for hours during keyword search indexing,
+# so alerting too early generates noise. 15 min continuous is meaningful.
+cpu_warning_duration: 900.0
+
+# Percentage of system RAM consumed by Autopsy.
+# On a 32 GB workstation: 88% ≈ 28 GB — leaves 4 GB for OS and Solr.
+# Raise to 92% if Autopsy is the only application on the machine.
+memory_warning_percent: 88.0
+
+# Minimum free disk space (GB) on the case partition before CRITICAL alert.
+# Forensic cases generate large derivative files (thumbnails, extracted text,
+# Solr indexes). 20 GB guarantees room for at least one more full report export.
+# Raise to 50 GB if evidence files are written to the same partition.
+disk_min_free_gb: 20.0
+
+
+# -----------------------------------------------------------------------------
+# Solr health checks (SolrDetector)
+# Autopsy 4.22.1 always binds Solr to port 23232 on localhost.
+# Changing this value will break monitoring unless you have patched Autopsy.
+# -----------------------------------------------------------------------------
 solr_port: 23232
-solr_timeout_seconds: 5.0
-solr_ping_timeout: 3.0
-solr_ping_slow_threshold: 2.0
-solr_ping_slow_duration: 60.0
-solr_slow_threshold_seconds: 2.0
-solr_slow_count_threshold: 3
-solr_heap_usage_warning: 80.0
+
+# HTTP request timeout for SolrDetector's core/ping probes (seconds).
+# 10 s accounts for a Solr GC pause or index commit on a large case.
+solr_timeout_seconds: 10.0
+
+# Consecutive ping response time above this value counts as "slow" (seconds).
+# 3 s is acceptable latency during heavy Solr indexing.
+solr_slow_threshold_seconds: 3.0
+
+# Number of consecutive slow pings before a HANG warning fires.
+# 5 consecutive slow pings (= 5 × poll_interval apart) = ~2.5 min of slowness.
+solr_slow_count_threshold: 5
+
+# Solr JVM heap usage (%) for WARNING. Default Autopsy Solr heap is 512 MB;
+# most production deployments raise it to 2–8 GB via autopsy.l4j.ini.
+# 85% is a meaningful early warning regardless of configured heap size.
+solr_heap_usage_warning: 85.0
+
+# Solr JVM heap usage (%) for CRITICAL. Above 95% the GC is in "death spiral"
+# territory and an OutOfMemoryError is imminent.
 solr_heap_usage_critical: 95.0
-solr_cpu_warning: 85.0
 
-# Email settings — replace with your real SMTP server and credentials
-smtp_host: "smtp.example.com"
+# Solr JVM process CPU % (os.processCpuLoad × 100) for WARNING.
+# 90% of all CPU time inside the Solr JVM is unusual even during indexing.
+solr_cpu_warning: 90.0
+
+
+# -----------------------------------------------------------------------------
+# Notifications
+# smtp_user and smtp_password are NEVER stored here — use environment variables:
+#   AUTOPSYGUARD_SMTP_USER    and    AUTOPSYGUARD_SMTP_PASSWORD
+#
+# Gmail example (requires a 16-character App Password, not your account password):
+#   https://myaccount.google.com → Security → App passwords
+#   smtp_host: smtp.gmail.com  smtp_port: 587  smtp_use_ssl: false
+#
+# Microsoft 365 / Exchange Online:
+#   smtp_host: smtp.office365.com  smtp_port: 587  smtp_use_ssl: false
+#
+# Self-hosted Postfix relay (no auth, LAN only):
+#   smtp_host: 192.168.1.10  smtp_port: 25  smtp_use_ssl: false
+#   (leave AUTOPSYGUARD_SMTP_USER and PASSWORD unset)
+# -----------------------------------------------------------------------------
+smtp_host: smtp.gmail.com
 smtp_port: 587
-smtp_user: "autopsy-notify@example.com"
-smtp_password: "REPLACE_WITH_SECURE_PASSWORD"
-email_sender: "AutopsyGuard <alerts@example.com>"
-email_recipient: "ops@example.com"
+smtp_use_ssl: false    # false = STARTTLS on port 587 (correct for Gmail/O365)
+                       # true  = implicit SSL on port 465
 
-# Regular status reports
+# Async SMTP dispatch: email is sent in a background daemon thread so a slow
+# or unreachable mail server never delays the monitoring loop.
+smtp_async: true
+
+# smtp_user / smtp_password: omitted — read from environment variables only.
+
+# The From address visible to recipients. Use a monitored shared mailbox so
+# alerts are visible to the whole forensic team, not just one analyst.
+email_sender: autopsyguard@forensics.yourdomain.com
+
+# Alert destination. For a team, use a distribution list.
+email_recipient: forensic-team@yourdomain.com
+
+# Short human-readable case label for email subjects.
+# Avoid full filesystem paths — they can reveal sensitive directory structures.
+email_case_label: "Evidence Case 2025-001"
+
+
+# -----------------------------------------------------------------------------
+# Periodic status reports
+# A heartbeat email confirming the monitor is alive and showing resource trends.
+# 12 h = twice per day: once during the working day, once overnight.
+# For long-running unattended cases, reduce to 8 h.
+# -----------------------------------------------------------------------------
 report_interval_hours: 12.0
+
+
+# -----------------------------------------------------------------------------
+# Log error patterns
+# Lines containing any pattern trigger a LOG_ERROR event (case-insensitive).
+# The five built-in patterns are always active:
+#   java.lang.OutOfMemoryError | SEVERE | Exception | FATAL | StackOverflowError
+#
+# The entries below add Autopsy-specific error signatures observed in 4.22.1.
+# Remove "Exception" from this list if your case generates many benign
+# stack traces in the log (e.g., from cancelled user operations) — the
+# built-in SEVERE and FATAL filters still cover the critical cases.
+# -----------------------------------------------------------------------------
+error_patterns:
+  - "java.lang.OutOfMemoryError"
+  - "StackOverflowError"
+  - "FATAL"
+  - "SEVERE"
+
+  # Autopsy 4.22.1 ingest pipeline
+  - "IngestJobStartException"
+  - "TskCoreException"
+  - "TskDataException"
+
+  # Case database (SQLite single-user or PostgreSQL multi-user)
+  - "org.sqlite.SQLiteException"
+  - "org.postgresql.util.PSQLException"
+
+  # Solr indexing failures surfaced in Autopsy log (not Solr's own log)
+  - "SolrServerException"
+  - "org.apache.solr.common.SolrException"
+
+  # JVM / Netbeans platform errors
+  - "java.lang.NullPointerException"
+  - "java.io.IOException"
+
+  # Deliberate omission: generic "Exception" is excluded in production.
+  # Autopsy logs benign "ModuleInstall cancelled" stack traces that match it.
+  # Re-add it during active troubleshooting if needed.
