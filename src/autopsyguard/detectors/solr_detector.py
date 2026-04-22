@@ -129,6 +129,7 @@ class SolrDetector(BaseDetector):
         events: list[CrashEvent] = []
         # Use shared solr cache if available for the health probe
         elapsed: float | None = None
+        solr_is_down = False
         try:
             if self._solr_cache is not None:
                 status = self._solr_cache.get_status()
@@ -141,12 +142,25 @@ class SolrDetector(BaseDetector):
                         )
                     self._solr_down_reported = False
                 else:
-                    # Treat as connection error
-                    return self._handle_connection_error(Exception(status.error or "solr down"), f"{self._solr_base_url}/solr/admin/info/system")
+                    # Mark as down but do NOT return early — _check_logs() must
+                    # still run so log errors are captured while Solr is crashed.
+                    events.extend(
+                        self._handle_connection_error(
+                            Exception(status.error or "solr down"),
+                            f"{self._solr_base_url}/solr/admin/info/system",
+                        )
+                    )
+                    solr_is_down = True
 
         except Exception:
             # If cache fails, fall back to original direct probe below
             elapsed = None
+
+        # If Solr was confirmed down via cache, skip HTTP probes but still
+        # check logs so we don't miss log-level events during an outage.
+        if solr_is_down:
+            events.extend(self._check_logs())
+            return events
 
         # If cached elapsed is available, use it for slow-check; otherwise do direct probe
         if elapsed is None:
