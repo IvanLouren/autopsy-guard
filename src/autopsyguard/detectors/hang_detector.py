@@ -215,13 +215,24 @@ class HangDetector(BaseDetector):
         if not log_files:
             return None
 
-        try:
-            latest_mtime = max(
-                (f.stat().st_mtime for f in log_files if f.is_file()),
-                default=None,
-            )
-        except OSError:
-            return None
+        # Use a safe stat collection to avoid races where files are removed
+        # between `is_file()` and `stat()`. Collect valid mtimes and pick
+        # the latest; if none are available, behave as if no logs exist.
+        def _safe_mtime(path: Path) -> float | None:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return None
+
+        mtimes: list[float] = []
+        for f in log_files:
+            if not f.is_file():
+                continue
+            t = _safe_mtime(f)
+            if t is not None:
+                mtimes.append(t)
+
+        latest_mtime = max(mtimes) if mtimes else None
             
         if latest_mtime is None:
             return None
