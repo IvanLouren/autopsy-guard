@@ -15,7 +15,6 @@ import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.patches import Patch
 
 
 def render_system_chart_png(
@@ -68,29 +67,45 @@ def render_system_chart_png(
 
     # If alert windows were provided (list of (start_ts, end_ts) epoch seconds),
     # convert them to minutes relative to t0 and shade those regions on the CPU plot.
+    alert_drawn = False
     if alert_windows:
         # choose a gentle red/pink shade and modest opacity so the plot remains readable
         alert_color = "#fee2e2"
+        alert_line_color = "#dc2626"
         alert_alpha = 0.25
-        alert_patch = Patch(facecolor=alert_color, alpha=alert_alpha, label="Período de alerta")
         for start_ts, end_ts in alert_windows:
-            # skip invalid windows
-            if end_ts <= start_ts:
-                continue
             start_min = (start_ts - t0) / 60.0
             end_min = (end_ts - t0) / 60.0
-            # Only draw if overlaps the plotted range
-            if end_min < x_minutes[0] or start_min > x_minutes[-1]:
-                continue
-            ax_top.axvspan(start_min, end_min, color=alert_color, alpha=alert_alpha, zorder=0)
-            # annotate window
-            mid = max(start_min, x_minutes[0]) + (min(end_min, x_minutes[-1]) - max(start_min, x_minutes[0])) / 2
-            try:
-                y = 95
-                ax_top.text(mid, y, "ALERTA", color="#7f1d1d", fontsize=8, fontweight="600",
-                            ha="center", va="top", backgroundcolor=(1,1,1,0.6))
-            except Exception:
-                pass
+
+            if start_ts == end_ts or abs(end_min - start_min) < 1e-6:
+                # Point-in-time alert (zero duration): draw a vertical line
+                if x_minutes[0] <= start_min <= x_minutes[-1]:
+                    ax_top.axvline(start_min, color=alert_line_color, alpha=0.5,
+                                   linewidth=1.2, linestyle="--", zorder=0)
+                    try:
+                        ax_top.text(start_min, 95, "ALERTA", color="#7f1d1d",
+                                    fontsize=8, fontweight="600", ha="center",
+                                    va="top", backgroundcolor=(1, 1, 1, 0.6))
+                    except Exception:
+                        pass
+                    alert_drawn = True
+            else:
+                # skip invalid windows
+                if end_ts < start_ts:
+                    continue
+                # Only draw if overlaps the plotted range
+                if end_min < x_minutes[0] or start_min > x_minutes[-1]:
+                    continue
+                ax_top.axvspan(start_min, end_min, color=alert_color, alpha=alert_alpha, zorder=0)
+                # annotate window
+                mid = max(start_min, x_minutes[0]) + (min(end_min, x_minutes[-1]) - max(start_min, x_minutes[0])) / 2
+                try:
+                    y = 95
+                    ax_top.text(mid, y, "ALERTA", color="#7f1d1d", fontsize=8, fontweight="600",
+                                ha="center", va="top", backgroundcolor=(1, 1, 1, 0.6))
+                except Exception:
+                    pass
+                alert_drawn = True
 
     # Top: CPU% and Memory%
     ax_top.plot(x_minutes, cpu_s, color="#e11d48", linewidth=1.6, label="CPU (%)")
@@ -98,7 +113,7 @@ def render_system_chart_png(
     ax_top.set_ylabel("Percent (%)")
     ax_top.set_ylim(0, 100)
     ax_top.grid(True, alpha=0.15)
-    lines = ax_top.get_lines()
+    lines = [l for l in ax_top.get_lines() if not l.get_label().startswith("_")]
     labels = [l.get_label() for l in lines]
 
     if has_rss:
@@ -108,10 +123,13 @@ def render_system_chart_png(
         lines += ax_rss.get_lines()
         labels += [l.get_label() for l in ax_rss.get_lines()]
 
-    # Add alert legend patch if any alert windows were drawn
-    if alert_windows:
-        lines.append(alert_patch)
-        labels.append(alert_patch.get_label())
+    # Add alert legend entry only if any alert was actually drawn on the chart
+    if alert_drawn:
+        from matplotlib.lines import Line2D
+        alert_legend = Line2D([0], [0], color="#dc2626", linewidth=1.2,
+                              linestyle="--", alpha=0.5, label="Período de alerta")
+        lines.append(alert_legend)
+        labels.append(alert_legend.get_label())
     ax_top.legend(lines, labels, loc="upper right", fontsize=8)
     ax_top.set_xlabel("Minutes since last email")
 
