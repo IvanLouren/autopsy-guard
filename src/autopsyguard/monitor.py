@@ -13,6 +13,7 @@ from __future__ import annotations
 import enum
 import logging
 import time
+from collections import defaultdict
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
@@ -71,6 +72,9 @@ class Monitor:
         self._last_report_time = time.time()
         self._events_since_last_report = 0
         self._report_count = 0
+        # Per-detector failure tracking and temporary disable windows
+        self._detector_fail_counts: dict[str, int] = defaultdict(int)
+        self._detector_disabled_until: dict[str, float] = {}
 
     def _is_case_active(self) -> bool:
                 """Check if Autopsy is running and the case is open.
@@ -106,12 +110,35 @@ class Monitor:
     def run_once(self) -> list[CrashEvent]:
         """Execute a single detection cycle across all detectors."""
         events: list[CrashEvent] = []
+        now = time.time()
         for detector in self.detectors:
+            disabled_until = self._detector_disabled_until.get(detector.name, 0)
+            if now < disabled_until:
+                logger.debug(
+                    "Skipping disabled detector %s until %s",
+                    detector.name,
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(disabled_until)),
+                )
+                continue
             try:
                 new_events = detector.check()
                 events.extend(new_events)
+                # Reset failure count on success
+                self._detector_fail_counts[detector.name] = 0
             except Exception as e:
-                logger.warning("Detector %s failed: %s", detector.name, e)
+                # Increment failure count and apply exponential backoff
+                count = self._detector_fail_counts.get(detector.name, 0) + 1
+                self._detector_fail_counts[detector.name] = count
+                backoff = min(300, 10 * (2 ** count))
+                self._detector_disabled_until[detector.name] = time.time() + backoff
+                logger.warning(
+                    "Detector %s failed (%d times), disabling for %ds: %s",
+                    detector.name,
+                    count,
+                    backoff,
+                    e,
+                )
+
         return events
 
     def run(self) -> None:
