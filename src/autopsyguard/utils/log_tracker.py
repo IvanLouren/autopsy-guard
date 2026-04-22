@@ -128,6 +128,22 @@ class LogFileTracker:
             log_file: Path to log file to reset
         """
         self._file_offsets[log_file] = 0
+
+    def seek_to_end(self, log_file: Path) -> None:
+        """Set the tracked position for `log_file` to its current EOF.
+
+        This is a safe helper used by detectors to ignore pre-existing
+        log content (seek-to-EOF) without reading the file.
+        """
+        try:
+            self._file_offsets[log_file] = log_file.stat().st_size
+        except OSError:
+            # If the file disappears between discovery and stat, skip.
+            pass
+
+    def tracked_count(self) -> int:
+        """Return number of files currently tracked."""
+        return len(self._file_offsets)
         
     def get_position(self, log_file: Path) -> int:
         """Get current read position for a log file.

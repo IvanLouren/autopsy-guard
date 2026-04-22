@@ -610,7 +610,7 @@ class SolrDetector(BaseDetector):
                     if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
                         # Treat rotated file as pre-existing: set offset to EOF
                         if log_file.exists():
-                            self._log_tracker._file_offsets[log_file] = file_size
+                            self._log_tracker.seek_to_end(log_file)
                         continue
 
                 # On first run, seek to end to ignore pre-existing errors
@@ -618,7 +618,7 @@ class SolrDetector(BaseDetector):
                     if not self._initialized:
                         # Set position to end of file on first run
                         if log_file.exists() and file_size is not None:
-                            self._log_tracker._file_offsets[log_file] = file_size
+                            self._log_tracker.seek_to_end(log_file)
                         continue
                     else:
                         # If the file appears after initialization but its
@@ -630,7 +630,7 @@ class SolrDetector(BaseDetector):
                         # reading from the beginning (current behaviour).
                         if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
                             if log_file.exists() and file_size is not None:
-                                self._log_tracker._file_offsets[log_file] = file_size
+                                self._log_tracker.seek_to_end(log_file)
                             continue
 
                 events.extend(self._scan_log_file(log_file, log_patterns))
@@ -639,7 +639,7 @@ class SolrDetector(BaseDetector):
 
         if not self._initialized:
             self._initialized = True
-            tracked_count = len(self._log_tracker._file_offsets)
+            tracked_count = self._log_tracker.tracked_count()
             logger.debug("SolrDetector: tracking %d Solr log file(s)", tracked_count)
             # Save initial positions
             self._log_tracker.save_positions()

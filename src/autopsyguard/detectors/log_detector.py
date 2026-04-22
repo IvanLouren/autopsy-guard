@@ -65,8 +65,8 @@ class LogDetector(BaseDetector):
             # Seek to end of all files on first run so we only catch new errors
             for log_file in log_files:
                 if log_file.is_file():
-                    # Set position to end of file
-                    self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
+                    # Set position to end of file via public API
+                    self._log_tracker.seek_to_end(log_file)
             self._initialised = True
             logger.debug("LogDetector: tracking %d log file(s)", len(log_files))
             # Save initial positions
