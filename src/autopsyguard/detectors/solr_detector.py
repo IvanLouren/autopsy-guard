@@ -258,6 +258,12 @@ class SolrDetector(BaseDetector):
                     },
                 ))
                 self._solr_hang_reported = True
+                # Inform shared cache that a hang was reported to avoid duplicate alerts
+                try:
+                    if self._solr_cache is not None:
+                        self._solr_cache.mark_report("hang")
+                except Exception:
+                    pass
         else:
             # Fast response — reset counters and clear hang flag
             if self._consecutive_slow_responses > 0 or self._solr_hang_reported:
@@ -286,6 +292,11 @@ class SolrDetector(BaseDetector):
                 },
             ))
             self._solr_hang_reported = True
+            try:
+                if self._solr_cache is not None:
+                    self._solr_cache.mark_report("hang")
+            except Exception:
+                pass
             
         return events
 
@@ -301,6 +312,11 @@ class SolrDetector(BaseDetector):
                 details={"error": str(error), "url": url},
             ))
             self._solr_down_reported = True
+            try:
+                if self._solr_cache is not None:
+                    self._solr_cache.mark_report("down")
+            except Exception:
+                pass
             
         # Reset hang tracking since service is down, not hung
         self._consecutive_slow_responses = 0

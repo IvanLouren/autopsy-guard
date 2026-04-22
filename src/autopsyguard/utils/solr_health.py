@@ -27,7 +27,20 @@ class SolrHealthCache:
     def __init__(self, config: MonitorConfig) -> None:
         self._config = config
         self._status: Optional[SolrStatus] = None
-        # diagnostics removed
+        # Track recent reports emitted by detectors to enable cooperation
+        # between Solr-related detectors (avoid duplicate alerts).
+        self._last_reported: dict[str, float] = {}
+
+    def mark_report(self, kind: str) -> None:
+        """Record that a detector has reported a given condition (e.g. 'hang'|'down')."""
+        self._last_reported[kind] = time.time()
+
+    def was_reported_recently(self, kind: str, within_seconds: float) -> bool:
+        """Return True if `kind` was reported within the last `within_seconds` seconds."""
+        ts = self._last_reported.get(kind)
+        if ts is None:
+            return False
+        return (time.time() - ts) < within_seconds
 
     def _probe(self) -> SolrStatus:
         # Lightweight liveness check: discover a core via the cores API,

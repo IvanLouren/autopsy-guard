@@ -258,9 +258,19 @@ class HangDetector(BaseDetector):
             Uses `self.config.solr_ping_timeout` for connection timeout.
             Considers response slow if > `self.config.solr_ping_slow_threshold`.
         """
-        # Use shared solr cache if provided to avoid duplicate probes
+        # Use shared solr cache if provided to avoid duplicate probes and
+        # to respect any hang/down reports already emitted by SolrDetector.
         try:
             if self._solr_cache is not None:
+                # If SolrDetector already reported a hang or down recently,
+                # suppress the Solr signal here to avoid double-alerting.
+                suppression_window = max(self.config.hang_confirmation_duration, 1)
+                if (self._solr_cache.was_reported_recently("hang", suppression_window)
+                        or self._solr_cache.was_reported_recently("down", suppression_window)):
+                    # Clear local unresponsive tracking since authoritative detector handled it
+                    self._solr_unresponsive_start = None
+                    return None
+
                 status = self._solr_cache.get_status()
                 if status.is_up:
                     elapsed = status.response_time or 0.0
