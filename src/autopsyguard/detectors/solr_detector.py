@@ -591,7 +591,7 @@ class SolrDetector(BaseDetector):
                         mtime = log_file.stat().st_mtime
                     except OSError:
                         mtime = None
-                    if self._monitor_start is not None and mtime is not None and mtime <= self._monitor_start:
+                    if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
                         # Treat rotated file as pre-existing: set offset to EOF
                         if log_file.exists():
                             self._log_tracker._file_offsets[log_file] = file_size
@@ -616,7 +616,7 @@ class SolrDetector(BaseDetector):
                             mtime = log_file.stat().st_mtime
                         except OSError:
                             mtime = None
-                        if self._monitor_start is not None and mtime is not None and mtime <= self._monitor_start:
+                        if self._monitor_start is not None and mtime is not None and mtime < self._monitor_start:
                             if log_file.exists():
                                 self._log_tracker._file_offsets[log_file] = log_file.stat().st_size
                             continue
