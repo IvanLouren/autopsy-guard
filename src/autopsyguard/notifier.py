@@ -54,6 +54,14 @@ def _get_case_label(config: MonitorConfig) -> str:
 
 logger = logging.getLogger(__name__)
 
+# Display / alerting thresholds used for colouring resource metrics.
+# Centralising these avoids magic numbers scattered across the module.
+RESOURCE_THRESHOLDS = {
+    "cpu_warn": 80.0,
+    "mem_warn": 85.0,
+    "disk_warn_gb": 5.0,
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTML Email Templates
@@ -467,9 +475,9 @@ class EmailNotifier:
         # System metrics bar
         metrics_html = ""
         if metrics:
-            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
-            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
-            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
+            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > RESOURCE_THRESHOLDS["cpu_warn"] else "#10b981"
+            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > RESOURCE_THRESHOLDS["mem_warn"] else "#10b981"
+            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < RESOURCE_THRESHOLDS["disk_warn_gb"] else "#10b981"
 
             # Compose CPU display with cores used when available
             cpu_pct = metrics.get("cpu_percent", 0)
@@ -613,9 +621,9 @@ class EmailNotifier:
         # System metrics bar
         metrics_html = ""
         if metrics:
-            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > 80 else "#10b981"
-            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > 85 else "#10b981"
-            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < 5 else "#10b981"
+            cpu_color = "#dc2626" if metrics.get("cpu_percent", 0) > RESOURCE_THRESHOLDS["cpu_warn"] else "#10b981"
+            mem_color = "#dc2626" if metrics.get("memory_percent", 0) > RESOURCE_THRESHOLDS["mem_warn"] else "#10b981"
+            disk_color = "#dc2626" if metrics.get("disk_free_gb", 100) < RESOURCE_THRESHOLDS["disk_warn_gb"] else "#10b981"
 
             cpu_pct = metrics.get("cpu_percent", 0)
             cpu_count = metrics.get("cpu_count")
