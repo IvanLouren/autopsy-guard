@@ -31,6 +31,9 @@ class ResourceDetector(BaseDetector):
         self._cpu_warning_reported = False
         self._mem_warning_reported = False
         self._disk_warning_reported = False
+        # Track whether we've seen a cpu_percent sample for a given PID
+        # because psutil returns 0.0 on the very first call for a process.
+        self._seen_cpu_pid: set[int] = set()
 
     @property
     def name(self) -> str:
@@ -60,12 +63,27 @@ class ResourceDetector(BaseDetector):
             # percentage since the last call to `cpu_percent()` for this
             # process. This avoids blocking the monitoring loop for 100ms
             # per detector call. Note: the first call after process start
-            # may return 0.0; we accept this trade-off to keep the loop
-            # responsive at short poll intervals.
+            # may return 0.0; discard that first sample to avoid spurious
+            # high-CPU detections immediately after process discovery.
             cpu = proc.cpu_percent(interval=None)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._high_cpu_since = None
             return []
+
+        # Discard the first non-informative sample for this PID. psutil
+        # often returns 0.0 on the first call — in that case we ignore
+        # the sample. If the first sample is non-zero (e.g. tests/mocks),
+        # treat it as valid.
+        if pid not in self._seen_cpu_pid:
+            self._seen_cpu_pid.add(pid)
+            try:
+                cpu_val = float(cpu)
+            except Exception:
+                cpu_val = None
+            if cpu_val == 0.0:
+                return []
+            if cpu_val is not None:
+                cpu = cpu_val
 
         # Interpret psutil's process CPU percent: can exceed 100% when
         # the process uses multiple logical cores (e.g. 250% ~= 2.5 cores).

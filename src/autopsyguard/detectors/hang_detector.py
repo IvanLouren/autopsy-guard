@@ -177,6 +177,16 @@ class HangDetector(BaseDetector):
             self._low_cpu_start = None
             return None
 
+        # Discard the first sample after PID discovery — psutil returns 0.0
+        # on the first call for a process, which would otherwise start the
+        # low-CPU timer too early and may cause false-positive hang detection.
+        if self._last_cpu_value is None:
+            try:
+                self._last_cpu_value = float(cpu)
+            except Exception:
+                self._last_cpu_value = 0.0
+            return None
+
         self._last_cpu_value = cpu
         
         if cpu <= self.config.hang_cpu_threshold:
