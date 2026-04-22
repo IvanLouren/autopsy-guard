@@ -381,6 +381,8 @@ class EmailNotifier:
         self._async_send = bool(getattr(self.config, "smtp_async", False))
         self._event_history: list[tuple[datetime, CrashEvent]] = []
         self._max_history = 50  # Keep last 50 events
+        # Lock to protect concurrent access when async sending is enabled
+        self._history_lock = threading.Lock()
         # Instance uptime tracking (avoid module-level singleton so multiple
         # EmailNotifier instances can have independent clocks).
         self._start_time: datetime | None = None
@@ -408,15 +410,17 @@ class EmailNotifier:
     
     def record_event(self, event: CrashEvent) -> None:
         """Record an event for history tracking."""
-        self._event_history.append((datetime.now(), event))
-        # Trim old events
-        if len(self._event_history) > self._max_history:
-            self._event_history = self._event_history[-self._max_history:]
+        with self._history_lock:
+            self._event_history.append((datetime.now(), event))
+            # Trim old events
+            if len(self._event_history) > self._max_history:
+                self._event_history = self._event_history[-self._max_history:]
     
     def get_recent_events(self, hours: float = 1.0) -> list[tuple[datetime, CrashEvent]]:
         """Get events from the last N hours."""
         cutoff = datetime.now() - timedelta(hours=hours)
-        return [(ts, ev) for ts, ev in self._event_history if ts >= cutoff]
+        with self._history_lock:
+            return [(ts, ev) for ts, ev in self._event_history if ts >= cutoff]
 
     def send_alert(self, events: list[CrashEvent]) -> bool:
         """Send an immediate alert for critical/warning events."""
