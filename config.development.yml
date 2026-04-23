@@ -1,6 +1,6 @@
 # Development config for AutopsyGuard - safe for local testing
 # Points to a local example case directory inside the repo.
-case_dir: C:\Users\francisco\Desktop\Universidade\PROJETO\TestCase
+case_dir: D:\AutopsyGuard\Cases\TEST
 
 # Poll frequently for quick feedback while developing
 poll_interval: 5.0

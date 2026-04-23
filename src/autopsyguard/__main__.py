@@ -1,10 +1,12 @@
 """CLI entry point for AutopsyGuard.
 
 Usage:
-    python -m autopsyguard [case_dir] [options]
+    autopsyguard [case_dir] [options]
 
-Example:
-    python -m autopsyguard "C:/Cases/MyCase" --poll-interval 10
+Examples:
+    autopsyguard                                  # auto-discovers config in cwd
+    autopsyguard "C:/Cases/MyCase" --poll-interval 10
+    autopsyguard --config config.production.yml
 """
 
 from __future__ import annotations
@@ -38,7 +40,8 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Path to YAML config file (default: ./config.yml when present)",
+        help="Path to YAML config file (auto-discovers config.development.yml, "
+             "config.production.yml, or config.yml in cwd)",
     )
     
     parser.add_argument(
@@ -89,8 +92,12 @@ def main() -> int:
     # Validate case directory
     config_path = args.config
     if config_path is None:
-        default_config = Path.cwd() / "config.yml"
-        config_path = default_config if default_config.is_file() else None
+        # Auto-discover config by convention: development → production → legacy
+        for name in ("config.development.yml", "config.production.yml", "config.yml"):
+            candidate = Path.cwd() / name
+            if candidate.is_file():
+                config_path = candidate
+                break
     else:
         config_path = config_path.resolve()
 
