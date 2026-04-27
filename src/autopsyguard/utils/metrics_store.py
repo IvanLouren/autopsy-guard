@@ -122,10 +122,11 @@ class MetricsStore:
         Migration plan:
         - version 1: initial schema (created above)
         - version 2: add disk_read_bytes, disk_write_bytes columns
+        - version 3: add autopsy_read_bytes, autopsy_write_bytes columns
         """
         cur_ver = self._current_schema_version()
 
-        # Migration to version 2: add disk_read_bytes/disk_write_bytes
+        # Migration to version 2: add system-wide disk I/O counters
         if cur_ver < 2:
             cols = self._get_table_columns("metrics")
             altered = False
@@ -146,8 +147,31 @@ class MetricsStore:
                     self._conn.commit()
                 except sqlite3.Error:
                     pass
-            # Mark migration applied
             self._set_schema_version(2)
+            cur_ver = 2
+
+        # Migration to version 3: add per-process Autopsy I/O counters
+        if cur_ver < 3:
+            cols = self._get_table_columns("metrics")
+            altered = False
+            if "autopsy_read_bytes" not in cols:
+                try:
+                    self._conn.execute("ALTER TABLE metrics ADD COLUMN autopsy_read_bytes INTEGER DEFAULT 0")
+                    altered = True
+                except sqlite3.OperationalError:
+                    logger.debug("autopsy_read_bytes column add failed or already exists")
+            if "autopsy_write_bytes" not in cols:
+                try:
+                    self._conn.execute("ALTER TABLE metrics ADD COLUMN autopsy_write_bytes INTEGER DEFAULT 0")
+                    altered = True
+                except sqlite3.OperationalError:
+                    logger.debug("autopsy_write_bytes column add failed or already exists")
+            if altered:
+                try:
+                    self._conn.commit()
+                except sqlite3.Error:
+                    pass
+            self._set_schema_version(3)
 
     def record_sample(self) -> None:
         """Capture a metrics sample and persist it."""
@@ -160,15 +184,28 @@ class MetricsStore:
 
             autopsy_pid = find_autopsy_pid()
             autopsy_rss = None
+            autopsy_read = 0
+            autopsy_write = 0
             if autopsy_pid is not None:
                 try:
                     proc = psutil.Process(autopsy_pid)
                     autopsy_rss = proc.memory_info().rss
+                    # Per-process I/O: cumulative read/write bytes for Autopsy
+                    # On Linux this needs root or CAP_SYS_PTRACE for other users' processes
+                    try:
+                        io = proc.io_counters()
+                        autopsy_read = int(io.read_bytes)
+                        autopsy_write = int(io.write_bytes)
+                    except (psutil.AccessDenied, AttributeError):
+                        # AccessDenied on Linux without privileges, or
+                        # AttributeError if io_counters not available on platform
+                        autopsy_read = 0
+                        autopsy_write = 0
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     autopsy_pid = None
                     autopsy_rss = None
 
-            # Desired mapping of column -> value (covers both old and new schemas)
+            # Desired mapping of column -> value (covers all schema versions)
             value_map = {
                 "ts": timestamp,
                 "cpu_percent": cpu_percent,
@@ -181,6 +218,8 @@ class MetricsStore:
                 "disk_write_bytes": int(disk_io.write_bytes) if disk_io is not None else 0,
                 "autopsy_pid": autopsy_pid,
                 "autopsy_rss_bytes": int(autopsy_rss) if autopsy_rss is not None else None,
+                "autopsy_read_bytes": autopsy_read,
+                "autopsy_write_bytes": autopsy_write,
             }
 
             # Inspect current table columns once and cache for subsequent samples
@@ -199,6 +238,8 @@ class MetricsStore:
                     "disk_write_bytes",
                     "autopsy_pid",
                     "autopsy_rss_bytes",
+                    "autopsy_read_bytes",
+                    "autopsy_write_bytes",
                 ]
                 self._insert_cols = [c for c in desired if c in existing_cols]
 
@@ -238,7 +279,11 @@ class MetricsStore:
         ]
 
         # Optional columns added in newer schemas
-        optional_cols = ["disk_read_bytes", "disk_write_bytes", "autopsy_pid", "autopsy_rss_bytes"]
+        optional_cols = [
+            "disk_read_bytes", "disk_write_bytes",
+            "autopsy_pid", "autopsy_rss_bytes",
+            "autopsy_read_bytes", "autopsy_write_bytes",
+        ]
         for c in optional_cols:
             if c in existing_cols:
                 select_cols.append(c)
@@ -268,6 +313,8 @@ class MetricsStore:
                 "disk_write_bytes",
                 "autopsy_pid",
                 "autopsy_rss_bytes",
+                "autopsy_read_bytes",
+                "autopsy_write_bytes",
             ]:
                 if k not in entry:
                     entry[k] = None

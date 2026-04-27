@@ -62,6 +62,26 @@ def render_system_chart_png(
     read_mbps = [v / (1024 ** 2) for v in read_bps]
     write_mbps = [v / (1024 ** 2) for v in write_bps]
 
+    # Compute Autopsy per-process I/O rates (same approach)
+    ap_read_bytes = [sample.get("autopsy_read_bytes") for sample in samples]
+    ap_write_bytes = [sample.get("autopsy_write_bytes") for sample in samples]
+    has_autopsy_io = any(v is not None and v > 0 for v in ap_read_bytes + ap_write_bytes)
+    ap_read_bps = [0.0] * len(samples)
+    ap_write_bps = [0.0] * len(samples)
+    if has_autopsy_io:
+        for i in range(1, len(samples)):
+            dt = max(1e-6, times[i] - times[i - 1])
+            try:
+                ap_read_bps[i] = ( (ap_read_bytes[i] or 0) - (ap_read_bytes[i - 1] or 0) ) / dt
+            except Exception:
+                ap_read_bps[i] = 0.0
+            try:
+                ap_write_bps[i] = ( (ap_write_bytes[i] or 0) - (ap_write_bytes[i - 1] or 0) ) / dt
+            except Exception:
+                ap_write_bps[i] = 0.0
+    ap_read_mbps = [v / (1024 ** 2) for v in ap_read_bps]
+    ap_write_mbps = [v / (1024 ** 2) for v in ap_write_bps]
+
     fig = Figure(figsize=(6.2, 4.2), dpi=120)
     ax_top, ax_bot = fig.subplots(2, 1, gridspec_kw={"height_ratios": [2, 1]})
 
@@ -133,13 +153,16 @@ def render_system_chart_png(
     ax_top.legend(lines, labels, loc="upper right", fontsize=8)
     ax_top.set_xlabel("Minutes since last email")
 
-    # Bottom: Disk I/O MB/s
-    ax_bot.plot(x_minutes, read_mbps, color="#10b981", linewidth=1.4, label="Read (MB/s)")
-    ax_bot.plot(x_minutes, write_mbps, color="#6366f1", linewidth=1.4, label="Write (MB/s)")
+    # Bottom: Disk I/O MB/s (system = solid, Autopsy = dashed)
+    ax_bot.plot(x_minutes, read_mbps, color="#10b981", linewidth=1.4, label="System Read (MB/s)")
+    ax_bot.plot(x_minutes, write_mbps, color="#6366f1", linewidth=1.4, label="System Write (MB/s)")
+    if has_autopsy_io:
+        ax_bot.plot(x_minutes, ap_read_mbps, color="#10b981", linewidth=1.2, linestyle="--", label="Autopsy Read (MB/s)")
+        ax_bot.plot(x_minutes, ap_write_mbps, color="#6366f1", linewidth=1.2, linestyle="--", label="Autopsy Write (MB/s)")
     ax_bot.set_ylabel("MB/s")
     ax_bot.set_xlabel("Minutes since last email")
     ax_bot.grid(True, alpha=0.15)
-    ax_bot.legend(loc="upper right", fontsize=8)
+    ax_bot.legend(loc="upper right", fontsize=7)
 
     fig.tight_layout()
     buf = io.BytesIO()
