@@ -207,6 +207,27 @@ report_interval_hours: 12.0
 
 
 # -----------------------------------------------------------------------------
+# WhatsApp Notifications (via CallMeBot)
+# Sends instant plain-text alerts and periodic status summaries to WhatsApp.
+# Works alongside email — use WhatsApp for immediate phone alerts, email for
+# detailed reports with charts and attachments.
+#
+# Setup (2 minutes):
+#   1. Save +34 644 31 82 94 in your phone contacts
+#   2. Send "I allow callmebot to send me messages" to that number on WhatsApp
+#   3. You receive an API key — set it as an environment variable:
+#        export AUTOPSYGUARD_WHATSAPP_APIKEY="your-api-key"
+#      or put it directly below (less secure).
+#
+# The API key can also be set via environment variable:
+#   AUTOPSYGUARD_WHATSAPP_APIKEY
+# -----------------------------------------------------------------------------
+whatsapp_enabled: false
+whatsapp_phone: ""        # e.g. "+351912345678" (with country code)
+whatsapp_apikey: ""       # or use AUTOPSYGUARD_WHATSAPP_APIKEY env var
+
+
+# -----------------------------------------------------------------------------
 # Log error patterns
 # Lines containing any pattern trigger a LOG_ERROR event (case-insensitive).
 # The five built-in patterns are always active:

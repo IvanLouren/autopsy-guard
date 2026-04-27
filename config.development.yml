@@ -47,3 +47,10 @@ email_recipient: "devops+autopsy@example.local"
 
 # Faster reporting while developing
 report_interval_hours: 0.04 # ≈2.4 minutes
+
+# WhatsApp notifications (via CallMeBot) — disabled by default
+# Setup: save +34 644 31 82 94 in your contacts, send "I allow callmebot to send me messages"
+# You'll receive an API key to put here (or set AUTOPSYGUARD_WHATSAPP_APIKEY env var)
+whatsapp_enabled: false
+whatsapp_phone: ""      # e.g. "+351912345678"
+whatsapp_apikey: ""     # your CallMeBot API key
