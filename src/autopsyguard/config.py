@@ -74,6 +74,13 @@ class MonitorConfig:
     # Optional human-readable label to show in emails instead of the case directory name
     email_case_label: str = ""
 
+    # --- WhatsApp Notifications (via CallMeBot) ---
+    whatsapp_enabled: bool = False
+    # Recipient phone number with country code, e.g. "+351912345678"
+    whatsapp_phone: str = ""
+    # CallMeBot API key (get it by messaging the bot on WhatsApp)
+    whatsapp_apikey: str = ""
+
     # --- Periodic Reporting ---
     report_interval_hours: float = 12.0
 
@@ -197,6 +204,9 @@ _SUPPORTED_CONFIG_KEYS = {
     "email_recipient",
     "email_case_label",
     "report_interval_hours",
+    "whatsapp_enabled",
+    "whatsapp_phone",
+    "whatsapp_apikey",
 }
 
 _PATH_KEYS = {"case_dir", "autopsy_install_dir"}
@@ -237,6 +247,7 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
 _ENV_OVERRIDES = {
     "smtp_password": "AUTOPSYGUARD_SMTP_PASSWORD",
     "smtp_user": "AUTOPSYGUARD_SMTP_USER",
+    "whatsapp_apikey": "AUTOPSYGUARD_WHATSAPP_APIKEY",
 }
 
 
