@@ -50,8 +50,27 @@ def get_autopsy_user_dir() -> Path:
         # This handles rare cases where APPDATA is not set in the environment.
         return Path.home() / "AppData" / "Roaming" / "autopsy"
     snap_user_common = os.environ.get("SNAP_USER_COMMON")
+    # If running as a snap, prefer the snap common autopsy dir. Some snap
+    # installs may place user data under a channel-specific subdirectory
+    # such as `dev` (e.g. ~/snap/autopsy/common/.autopsy/dev). Check for
+    # that first, then fall back to the plain .autopsy path.
     if snap_user_common:
-        return Path(snap_user_common) / ".autopsy"
+        snap_autopsy = Path(snap_user_common) / ".autopsy"
+        snap_dev = snap_autopsy / "dev"
+        if snap_dev.exists():
+            return snap_dev
+        if snap_autopsy.exists():
+            return snap_autopsy
+
+    # Also try the common user-visible snap layout if SNAP_USER_COMMON
+    # isn't set for some reason.
+    home_snap_dev = Path.home() / "snap" / "autopsy" / "common" / ".autopsy" / "dev"
+    if home_snap_dev.exists():
+        return home_snap_dev
+    home_snap = Path.home() / "snap" / "autopsy" / "common" / ".autopsy"
+    if home_snap.exists():
+        return home_snap
+
     return Path.home() / ".autopsy"
 
 
