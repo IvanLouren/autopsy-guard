@@ -75,8 +75,20 @@ def get_autopsy_user_dir() -> Path:
 
 
 def get_autopsy_log_dir() -> Path:
-    """Return the global Autopsy log directory."""
-    return get_autopsy_user_dir() / "var" / "log"
+    """Return the global Autopsy log directory.
+    Checks both ~/.autopsy/var/log and ~/.autopsy/dev/var/log, returns the one that exists.
+    If both exist, prefers ~/.autopsy/dev/var/log.
+    """
+    home = Path.home()
+    log_paths = [
+        home / ".autopsy" / "dev" / "var" / "log",
+        home / ".autopsy" / "var" / "log",
+    ]
+    for p in log_paths:
+        if p.is_dir():
+            return p
+    # Fallback to default (dev path)
+    return log_paths[0]
 
 
 def get_case_log_dir(case_dir: Path) -> Path:
