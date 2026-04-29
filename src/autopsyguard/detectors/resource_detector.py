@@ -31,6 +31,7 @@ class ResourceDetector(BaseDetector):
         self._cpu_warning_reported = False
         self._mem_warning_reported = False
         self._disk_warning_reported = False
+        self._external_mem_warning_reported = False
         # Track whether we've seen a cpu_percent sample for a given PID
         # because psutil returns 0.0 on the very first call for a process.
         self._seen_cpu_pid: set[int] = set()
@@ -46,6 +47,7 @@ class ResourceDetector(BaseDetector):
         if pid is not None:
             events.extend(self._check_cpu(pid))
             events.extend(self._check_memory(pid))
+            events.extend(self._check_external_memory_pressure(pid))
 
         events.extend(self._check_disk())
 
@@ -235,6 +237,100 @@ class ResourceDetector(BaseDetector):
             self._disk_warning_reported = False
 
         return []
+
+    # ------------------------------------------------------------------
+    # External memory pressure
+    # ------------------------------------------------------------------
+
+    def _check_external_memory_pressure(self, pid: int) -> list[CrashEvent]:
+        """Detect when system memory is high but Autopsy is NOT the main consumer.
+
+        If total system memory usage exceeds the warning threshold but Autopsy
+        accounts for less than half of the used memory, another process is the
+        real cause.  Report the top memory consumers so the user can act.
+        """
+        try:
+            system_mem = psutil.virtual_memory()
+            proc = psutil.Process(pid)
+            autopsy_rss = proc.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return []
+
+        try:
+            system_used = int(system_mem.used)
+            system_total = int(system_mem.total)
+            system_percent = float(system_mem.percent)
+            autopsy_rss = int(autopsy_rss)
+        except Exception:
+            return []
+
+        # Only trigger when system memory is high
+        if system_percent < self.config.memory_warning_percent:
+            self._external_mem_warning_reported = False
+            return []
+
+        # Check if Autopsy is NOT the main consumer (< 50% of used memory)
+        autopsy_fraction = autopsy_rss / system_used if system_used > 0 else 1.0
+        if autopsy_fraction >= 0.5:
+            # Autopsy is the dominant consumer — the existing memory check handles this
+            self._external_mem_warning_reported = False
+            return []
+
+        if self._external_mem_warning_reported:
+            return []
+
+        # Find top 5 non-Autopsy processes by memory
+        from autopsyguard.platform_utils import get_autopsy_process_names, get_java_process_names
+        autopsy_names = {n.lower() for n in get_autopsy_process_names()}
+        java_names = {n.lower() for n in get_java_process_names()}
+        exclude_pids = {pid}  # Autopsy PID
+
+        top_procs: list[tuple[str, int, float]] = []  # (name, pid, rss_bytes)
+        try:
+            for p in psutil.process_iter(["pid", "name", "memory_info"]):
+                try:
+                    p_pid = p.info["pid"]
+                    p_name = (p.info.get("name") or "").lower()
+                    p_mem = p.info.get("memory_info")
+                    if p_pid in exclude_pids or p_name in autopsy_names:
+                        continue
+                    if p_mem is not None:
+                        rss = int(p_mem.rss)
+                        top_procs.append((p.info.get("name") or "unknown", p_pid, rss))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception:
+            return []
+
+        # Sort by RSS descending and take top 5
+        top_procs.sort(key=lambda x: x[2], reverse=True)
+        top_5 = top_procs[:5]
+
+        # Build message
+        autopsy_gb = autopsy_rss / (1024**3)
+        other_used_gb = (system_used - autopsy_rss) / (1024**3)
+        top_list = ", ".join(
+            f"{name} (PID {p_pid}, {rss / (1024**3):.1f} GB)"
+            for name, p_pid, rss in top_5
+        )
+
+        self._external_mem_warning_reported = True
+        return [CrashEvent(
+            crash_type=CrashType.HIGH_RESOURCE_USAGE,
+            severity=Severity.WARNING,
+            message=(
+                f"System memory at {system_percent:.1f}% but Autopsy only uses "
+                f"{autopsy_gb:.1f} GB ({autopsy_fraction * 100:.0f}% of used). "
+                f"Other processes are consuming {other_used_gb:.1f} GB."
+            ),
+            details={
+                "system_memory_percent": system_percent,
+                "autopsy_rss_gb": round(autopsy_gb, 2),
+                "autopsy_fraction_of_used": round(autopsy_fraction * 100, 1),
+                "other_used_gb": round(other_used_gb, 2),
+                "top_consumers": top_list,
+            },
+        )]
 
     # ------------------------------------------------------------------
     # Helpers

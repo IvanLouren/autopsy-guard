@@ -137,6 +137,95 @@ class TestDiskMonitoring:
         assert events == []
 
 
+class TestExternalMemoryPressure:
+    """Detect when other processes (not Autopsy) are consuming system memory."""
 
+    def test_external_pressure_triggers_warning(self, config: MonitorConfig) -> None:
+        """When system memory is high but Autopsy uses little, alert with top consumers."""
+        config.memory_warning_percent = 85.0
+
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
+            with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+                # Autopsy process: small RSS (2 GB out of 30 GB used)
+                proc = MagicMock()
+                proc.cpu_percent.return_value = 10.0
+                proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+                mock_psutil.Process.return_value = proc
+
+                # System memory: 93% used (30 GB of 32 GB)
+                mock_psutil.virtual_memory.return_value = VmemResult(
+                    percent=93.0,
+                    used=30 * 1024**3,
+                    total=32 * 1024**3,
+                )
+                mock_psutil.disk_usage.return_value = MagicMock(
+                    free=50 * 1024**3, total=100 * 1024**3
+                )
+                mock_psutil.cpu_count.return_value = 8
+
+                # Mock process_iter to return some "heavy" processes
+                fake_procs = []
+                for name, pid, rss_gb in [
+                    ("TiWorker.exe", 5000, 8),
+                    ("MsMpEng.exe", 5001, 5),
+                    ("chrome.exe", 5002, 4),
+                ]:
+                    fp = MagicMock()
+                    fp.info = {
+                        "pid": pid,
+                        "name": name,
+                        "memory_info": MagicMock(rss=rss_gb * 1024**3),
+                    }
+                    fake_procs.append(fp)
+                mock_psutil.process_iter.return_value = fake_procs
+                mock_psutil.NoSuchProcess = Exception
+                mock_psutil.AccessDenied = PermissionError
+
+                events = detector.check()
+
+        ext_events = [e for e in events if "Other processes" in e.message]
+        assert len(ext_events) == 1
+        assert "TiWorker.exe" in ext_events[0].details["top_consumers"]
+
+    def test_no_warning_when_autopsy_is_main_consumer(self, config: MonitorConfig) -> None:
+        """When Autopsy uses most of the memory, no external pressure alert."""
+        config.memory_warning_percent = 85.0
+
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
+            with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+                # Autopsy uses 20 GB out of 30 GB used (66% — dominant consumer)
+                proc = MagicMock()
+                proc.cpu_percent.return_value = 10.0
+                proc.memory_info.return_value = MemInfo(rss=20 * 1024**3)
+                mock_psutil.Process.return_value = proc
+
+                mock_psutil.virtual_memory.return_value = VmemResult(
+                    percent=93.0,
+                    used=30 * 1024**3,
+                    total=32 * 1024**3,
+                )
+                mock_psutil.disk_usage.return_value = MagicMock(
+                    free=50 * 1024**3, total=100 * 1024**3
+                )
+                mock_psutil.cpu_count.return_value = 8
+                mock_psutil.NoSuchProcess = Exception
+                mock_psutil.AccessDenied = PermissionError
+
+                events = detector.check()
+
+        ext_events = [e for e in events if "Other processes" in e.message]
+        assert len(ext_events) == 0
 
 

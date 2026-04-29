@@ -26,6 +26,7 @@ from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.utils.solr_health import SolrHealthCache
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifier import EmailNotifier
+from autopsyguard.whatsapp_notifier import WhatsAppNotifier
 from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_global_lock_file,
@@ -66,6 +67,7 @@ class Monitor:
             SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start),
         ]
         self.notifier = EmailNotifier(config)
+        self.whatsapp = WhatsAppNotifier(config)
         self._metrics_store = MetricsStore(case_dir=config.case_dir)
         self._running = False
         self._state = MonitorState.WAITING
@@ -200,6 +202,7 @@ class Monitor:
             alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
             if alert_events:
                 self.notifier.send_alert(alert_events)
+                self.whatsapp.send_alert(alert_events)
                 
             for event in events:
                 self._handle_event(event)
@@ -216,6 +219,11 @@ class Monitor:
             since_ts = max(0.0, self._last_report_time - buffer_seconds)
             metrics_samples = self._metrics_store.fetch_samples(since_ts=since_ts)
             self.notifier.send_report(
+                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                events_last_period=self._events_since_last_report,
+                metrics_samples=metrics_samples,
+            )
+            self.whatsapp.send_report(
                 system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
                 events_last_period=self._events_since_last_report,
                 metrics_samples=metrics_samples,
