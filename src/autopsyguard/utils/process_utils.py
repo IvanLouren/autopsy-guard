@@ -45,6 +45,8 @@ def find_autopsy_pid() -> int | None:
                         return proc.info["pid"]
                     if "netbeans.user" in s and "autopsy" in s:
                         return proc.info["pid"]
+                    if "--branding" in s and "autopsy" in s:
+                        return proc.info["pid"]
 
             # For non-Java processes that didn't match by name, also check
             # the command line for an 'autopsy' substring. This captures

@@ -49,6 +49,9 @@ def get_autopsy_user_dir() -> Path:
         # Fallback: construct the usual Roaming path from the user home.
         # This handles rare cases where APPDATA is not set in the environment.
         return Path.home() / "AppData" / "Roaming" / "autopsy"
+    snap_user_common = os.environ.get("SNAP_USER_COMMON")
+    if snap_user_common:
+        return Path(snap_user_common) / ".autopsy"
     return Path.home() / ".autopsy"
 
 
