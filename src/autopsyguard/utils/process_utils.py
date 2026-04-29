@@ -28,22 +28,32 @@ def find_autopsy_pid() -> int | None:
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
-            if name in target_names:
+
+            # Accept exact matches from the configured target names
+            # or defensive substring matches for common launcher names
+            # (e.g. 'autopsywrapper' used by the snap/AppImage packages).
+            if name in target_names or "autopsy" in name:
                 return proc.info["pid"]
 
+            # If the process is a Java binary, examine the command line
+            # for explicit Autopsy indicators (package name or netbeans.user).
             if name in java_names:
                 cmdline = proc.info.get("cmdline") or []
-                # Require a more specific indicator than a bare substring
-                # to avoid false positives (e.g., developer IDEs with
-                # classpaths referencing an "autopsy" source tree). Match
-                # either the Autopsy package name or a netbeans.user path
-                # that mentions 'autopsy'.
                 for arg in cmdline:
                     s = str(arg).lower()
                     if "org.sleuthkit.autopsy" in s:
                         return proc.info["pid"]
                     if "netbeans.user" in s and "autopsy" in s:
                         return proc.info["pid"]
+
+            # For non-Java processes that didn't match by name, also check
+            # the command line for an 'autopsy' substring. This captures
+            # wrapper scripts (e.g. autopsywrapper.sh) used by snap/AppImage
+            # without relying on exact process names.
+            cmdline = proc.info.get("cmdline") or []
+            for arg in cmdline:
+                if "autopsy" in str(arg).lower():
+                    return proc.info["pid"]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
