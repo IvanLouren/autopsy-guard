@@ -29,7 +29,7 @@ def find_autopsy_pid() -> int | None:
     # Known launcher basenames (script/executable names used by packages)
     launcher_basenames = {"autopsywrapper", "autopsywrapper.sh", "nbexec", "nbexec.sh"}
 
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "exe"]):
         try:
             name = (proc.info.get("name") or "").lower()
             cmdline = proc.info.get("cmdline") or []
@@ -57,14 +57,33 @@ def find_autopsy_pid() -> int | None:
             if "autopsy" in name:
                 return proc.info["pid"]
 
-            # If the process is a Java binary, examine the command line
-            # for explicit Autopsy indicators (package name or netbeans.user).
-            if name in java_names:
-                # Only apply Java-specific checks for JVM processes. Do not
-                # fall through to the generic substring scan below — that
-                # would match paths like `/snap/autopsy/...` passed as JVM
-                # system properties (e.g. -Dsolr.log.dir=.../autopsy/...),
-                # incorrectly identifying Solr's JVM as Autopsy.
+            # Determine whether this process is a JVM by checking:
+            # - the process name, or
+            # - the basename of the first cmdline entry, or
+            # - the executable name when available.
+            is_java_proc = False
+            try:
+                if name in java_names:
+                    is_java_proc = True
+                else:
+                    # Check first cmdline entry basename
+                    if cmdline:
+                        first = str(cmdline[0])
+                        if Path(first).name.lower() in java_names:
+                            is_java_proc = True
+                    # Check proc.exe filename if available (may raise or be None)
+                    exe = proc.info.get("exe")
+                    if not is_java_proc and exe:
+                        if Path(str(exe)).name.lower() in java_names:
+                            is_java_proc = True
+            except Exception:
+                # Be conservative on errors: assume not Java and continue
+                is_java_proc = False
+
+            # If the process looks like a Java VM, run the Java-specific
+            # Autopsy checks and then skip the generic 'autopsy' substring
+            # scan to avoid false-positives from JVM system properties.
+            if is_java_proc:
                 cmdline = proc.info.get("cmdline") or []
                 for arg in cmdline:
                     s = str(arg).lower()
@@ -77,8 +96,6 @@ def find_autopsy_pid() -> int | None:
                     # Branding flag explicitly set to 'autopsy'
                     if "--branding" in s and "autopsy" in s:
                         return proc.info["pid"]
-                # We've finished Java-specific checks — don't perform the
-                # generic 'autopsy' substring scan on JVM arg values.
                 continue
 
             # For non-Java processes that didn't match by name, also check
