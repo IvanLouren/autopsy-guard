@@ -143,6 +143,25 @@ class WhatsAppNotifier:
         message = "\n".join(lines)
         return self._send_message(message)
 
+    def send_ingest_report(self, duration_seconds: float) -> bool:
+        """Send a report when an Autopsy ingest job finishes."""
+        if not self._enabled:
+            return False
+
+        hours, rem = divmod(int(duration_seconds), 3600)
+        minutes, seconds = divmod(rem, 60)
+        duration_str = f"{hours}h {minutes}m {seconds}s"
+
+        lines = [
+            f"🏁 *AutopsyGuard - Ingestão Concluída*",
+            f"O processo de ingestão no Autopsy terminou com sucesso.",
+            f"",
+            f"⏱️ *Tempo Total:* {duration_str}"
+        ]
+
+        message = "\n".join(lines)
+        return self._send_message(message)
+
     # ------------------------------------------------------------------
     # Internal: HTTP dispatch
     # ------------------------------------------------------------------
