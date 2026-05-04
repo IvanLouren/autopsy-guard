@@ -55,6 +55,7 @@ class LogDetector(BaseDetector):
         self._recent_lines: dict[Path, dict[str, float]] = {}
         # Ingest state tracking — updated by parsing the Autopsy log
         self._ingest_running = False
+        self._ingest_start_time: float | None = None
         # Compile pattern list from built-in constants and operator-configured patterns
         self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
             (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
@@ -80,6 +81,14 @@ class LogDetector(BaseDetector):
         *"Starting ingest job"* message is seen.
         """
         return self._ingest_running
+
+    @property
+    def ingest_start_time(self) -> float | None:
+        """The unix timestamp when the current ingest job started.
+
+        Returns ``None`` if no ingest job is currently running.
+        """
+        return self._ingest_start_time
 
     def check(self) -> list[CrashEvent]:
         log_files = self._get_log_files()
@@ -213,7 +222,9 @@ class LogDetector(BaseDetector):
             if not self._ingest_running:
                 logger.info("📥 Ingest job started (detected from Autopsy log)")
                 self._ingest_running = True
+                self._ingest_start_time = time.time()
         elif _INGEST_FINISH_PATTERN.search(line):
             if self._ingest_running:
                 logger.info("✅ Ingest job finished (detected from Autopsy log)")
                 self._ingest_running = False
+                self._ingest_start_time = None
