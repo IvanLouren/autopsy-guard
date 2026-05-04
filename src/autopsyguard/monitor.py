@@ -59,13 +59,13 @@ class Monitor:
         solr_cache = SolrHealthCache(config)
 
         # Create LogDetector first so HangDetector can query ingest state
-        log_detector = LogDetector(config)
+        self._log_detector = LogDetector(config)
 
         self.detectors: list[BaseDetector] = [
             ProcessDetector(config),
             JvmCrashDetector(config),
-            log_detector,
-            HangDetector(config, solr_cache=solr_cache, log_detector=log_detector),
+            self._log_detector,
+            HangDetector(config, solr_cache=solr_cache, log_detector=self._log_detector),
             ResourceDetector(config),
             SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start),
         ]
@@ -80,6 +80,10 @@ class Monitor:
         # Per-detector failure tracking and temporary disable windows
         self._detector_fail_counts: dict[str, int] = defaultdict(int)
         self._detector_disabled_until: dict[str, float] = {}
+        
+        # Track previous ingest state to detect transitions
+        self._was_ingest_running = False
+        self._ingest_start_time: float | None = None
 
     def _is_case_active(self) -> bool:
                 """Check if Autopsy is running and the case is open.
@@ -210,6 +214,26 @@ class Monitor:
             for event in events:
                 self._handle_event(event)
                 self._events_since_last_report += 1
+
+        # Check for ingest state transitions
+        is_ingest_running = self._log_detector.ingest_running
+        if is_ingest_running and not self._was_ingest_running:
+            # Ingest just started
+            self._ingest_start_time = self._log_detector.ingest_start_time
+            self._was_ingest_running = True
+            
+        elif not is_ingest_running and self._was_ingest_running:
+            # Ingest just finished
+            duration = 0.0
+            if self._ingest_start_time is not None:
+                duration = time.time() - self._ingest_start_time
+            
+            logger.info("Ingest job finished after %.1fs. Sending reports.", duration)
+            self.notifier.send_ingest_report(duration)
+            self.whatsapp.send_ingest_report(duration)
+            
+            self._was_ingest_running = False
+            self._ingest_start_time = None
 
         # Check periodic reporting (Heartbeat)
         now = time.time()
