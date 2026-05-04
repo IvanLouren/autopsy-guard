@@ -3,6 +3,11 @@
 Covers crash types:
   3. OutOfMemoryError — detected via log pattern
   8. Log-Based Error Detection — SEVERE, exceptions, fatal messages
+
+Also tracks ingest job state by detecting start/finish messages
+written by Autopsy's IngestJobExecutor.  The ``ingest_running``
+property is exposed so that other detectors (e.g. HangDetector)
+can suppress false-positive alerts when Autopsy is open but idle.
 """
 
 from __future__ import annotations
@@ -26,6 +31,12 @@ _OOM_PATTERN = re.compile(r"java\.lang\.OutOfMemoryError", re.IGNORECASE)
 _STACK_OVERFLOW_PATTERN = re.compile(r"java\.lang\.StackOverflowError", re.IGNORECASE)
 _FATAL_PATTERN = re.compile(r"\bFATAL\b", re.IGNORECASE)
 
+# Ingest lifecycle patterns (from Autopsy IngestJobExecutor.java)
+_INGEST_START_PATTERN = re.compile(r"Starting ingest job", re.IGNORECASE)
+_INGEST_FINISH_PATTERN = re.compile(
+    r"Finished all ingest tasks for ingest job", re.IGNORECASE,
+)
+
 
 class LogDetector(BaseDetector):
     """Tails Autopsy log files and detects error patterns."""
@@ -42,6 +53,8 @@ class LogDetector(BaseDetector):
         self._recent_duplicate_window = 300.0  # seconds
         # Map of source -> {line_hash -> last_seen_timestamp}
         self._recent_lines: dict[Path, dict[str, float]] = {}
+        # Ingest state tracking — updated by parsing the Autopsy log
+        self._ingest_running = False
         # Compile pattern list from built-in constants and operator-configured patterns
         self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
             (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
@@ -57,6 +70,16 @@ class LogDetector(BaseDetector):
     @property
     def name(self) -> str:
         return "LogDetector"
+
+    @property
+    def ingest_running(self) -> bool:
+        """Whether an Autopsy ingest job is currently active.
+
+        Determined by parsing log entries written by
+        ``IngestJobExecutor``.  Returns ``False`` until the first
+        *"Starting ingest job"* message is seen.
+        """
+        return self._ingest_running
 
     def check(self) -> list[CrashEvent]:
         log_files = self._get_log_files()
@@ -116,6 +139,9 @@ class LogDetector(BaseDetector):
             self._log_tracker.save_positions()
             
             for line in new_content.splitlines():
+                # --- Ingest state tracking (before error classification) ---
+                self._update_ingest_state(line)
+
                 if self._is_recent_duplicate(line, path):
                     continue
                 event = self._classify_line(line, path)
@@ -180,3 +206,14 @@ class LogDetector(BaseDetector):
         self._recent_lines[source] = pruned
 
         return False
+
+    def _update_ingest_state(self, line: str) -> None:
+        """Track ingest start/finish from Autopsy log lines."""
+        if _INGEST_START_PATTERN.search(line):
+            if not self._ingest_running:
+                logger.info("📥 Ingest job started (detected from Autopsy log)")
+                self._ingest_running = True
+        elif _INGEST_FINISH_PATTERN.search(line):
+            if self._ingest_running:
+                logger.info("✅ Ingest job finished (detected from Autopsy log)")
+                self._ingest_running = False
