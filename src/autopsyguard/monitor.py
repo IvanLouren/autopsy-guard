@@ -58,11 +58,14 @@ class Monitor:
         # Shared Solr health cache to avoid duplicate probes per cycle
         solr_cache = SolrHealthCache(config)
 
+        # Create LogDetector first so HangDetector can query ingest state
+        log_detector = LogDetector(config)
+
         self.detectors: list[BaseDetector] = [
             ProcessDetector(config),
             JvmCrashDetector(config),
-            LogDetector(config),
-            HangDetector(config, solr_cache=solr_cache),
+            log_detector,
+            HangDetector(config, solr_cache=solr_cache, log_detector=log_detector),
             ResourceDetector(config),
             SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start),
         ]
