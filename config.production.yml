@@ -213,7 +213,7 @@ report_interval_hours: 12.0
 # detailed reports with charts and attachments.
 #
 # Setup (2 minutes):
-#   1. Save +34 644 31 82 94 in your phone contacts
+#   1. Save +34 611 08 28 80 in your phone contacts
 #   2. Send "I allow callmebot to send me messages" to that number on WhatsApp
 #   3. You receive an API key — set it as an environment variable:
 #        export AUTOPSYGUARD_WHATSAPP_APIKEY="your-api-key"
