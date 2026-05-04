@@ -9,6 +9,11 @@ A hang is detected when MULTIPLE signals occur together:
 
 A single signal alone (e.g., low CPU) is NOT sufficient - Autopsy may be
 legitimately idle waiting for user input or after completing processing.
+
+Additionally, hang detection is suppressed when no ingest job is active.
+The detector queries ``LogDetector.ingest_running`` (which tracks
+*"Starting ingest job"* / *"Finished all ingest tasks"* log entries)
+to avoid false positives when Autopsy is open but idle.
 """
 
 from __future__ import annotations
@@ -63,12 +68,15 @@ class HangDetector(BaseDetector):
       2. Log files not updated for extended period  
       3. Solr service unresponsive
     
-    This prevents false positives when Autopsy is legitimately idle.
+    Detection is only active when ``LogDetector`` reports an ingest job
+    is running.  This prevents false positives when Autopsy is open but
+    idle (e.g. browsing results without an active ingest).
     """
 
-    def __init__(self, config: MonitorConfig, solr_cache=None) -> None:
+    def __init__(self, config: MonitorConfig, solr_cache=None, log_detector=None) -> None:
         super().__init__(config)
         self._solr_cache = solr_cache
+        self._log_detector = log_detector
         # CPU tracking
         self._low_cpu_start: float | None = None
         self._last_cpu_value: float | None = None
@@ -113,6 +121,16 @@ class HangDetector(BaseDetector):
         # Count active signals
         signals = [cpu_signal, log_signal, solr_signal]
         active_signals = sum(1 for s in signals if s is not None)
+        
+        # Suppress hang detection if no ingest job is running — Autopsy
+        # is open but idle (e.g. browsing results, no active processing).
+        if self._log_detector is not None and not self._log_detector.ingest_running:
+            if active_signals >= 2:
+                logger.debug(
+                    "Hang signals present but no ingest job active — "
+                    "suppressing (Autopsy is idle)"
+                )
+            return events
         
         # Need at least 2 signals to declare a hang
         if active_signals >= 2 and not self._hang_reported:
