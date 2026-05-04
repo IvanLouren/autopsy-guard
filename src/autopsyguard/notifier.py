@@ -872,6 +872,55 @@ class EmailNotifier:
 
         return self._dispatch_email(subject, html_body, inline_images=inline_images, attachments=attachments, plain_text=plain_text)
 
+    def send_ingest_report(self, duration_seconds: float) -> bool:
+        """Send a report when an Autopsy ingest job finishes."""
+        if not self._enabled:
+            return False
+
+        subject = "🏁 [AutopsyGuard] Ingestão Concluída"
+        
+        hours, rem = divmod(int(duration_seconds), 3600)
+        minutes, seconds = divmod(rem, 60)
+        duration_str = f"{hours}h {minutes}m {seconds}s"
+
+        body_content = f"""
+        <div style="margin-bottom:24px; text-align:center;">
+            <div style="font-size:48px; margin-bottom:16px;">🏁</div>
+            <h2 style="color:#111827; margin:0 0 8px 0;">Ingestão Concluída</h2>
+            <p style="color:#4b5563; font-size:16px; margin:0;">
+                O processo de ingestão no Autopsy terminou com sucesso.
+            </p>
+        </div>
+        
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
+            <tr>
+                <td style="background-color:#f8f9fa; border-radius:8px; padding:20px;">
+                    <div style="font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">
+                        ⏱️ Tempo de Processamento
+                    </div>
+                    <div style="font-size:28px; font-weight:bold; color:#2563eb;">
+                        {duration_str}
+                    </div>
+                </td>
+            </tr>
+        </table>
+        """
+
+        case_label = _get_case_label(self.config)
+        html_body = BASE_TEMPLATE.format(
+            header_color_start="#2563eb",
+            header_color_end="#1d4ed8",
+            header_icon="✅",
+            header_title="Ingestão Terminada",
+            header_subtitle="Resumo do processamento",
+            timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+            case_name=f"📁 {case_label}",
+            body_content=body_content,
+        )
+
+        plain_text = f"Ingestão Concluída.\nTempo total de processamento: {duration_str}"
+        return self._dispatch_email(subject, html_body, plain_text=plain_text)
+
     def _dispatch_email(
         self,
         subject: str,
