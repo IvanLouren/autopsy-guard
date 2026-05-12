@@ -1,6 +1,6 @@
 # Development config for AutopsyGuard - safe for local testing
 # Points to a local example case directory inside the repo.
-case_dir: D:\AutopsyGuard\Cases\TEST
+case_dir: ./example_case
 
 # Poll frequently for quick feedback while developing
 poll_interval: 5.0
@@ -37,16 +37,16 @@ error_patterns:
   - FATAL
   - StackOverflowError
 
-# Local SMTP server for development/testing (e.g., smtp4dev, mailhog, or local Python SMTP)
+# Local SMTP server for testing (e.g., MailHog or smtp4dev)
 smtp_host: "localhost"
 smtp_port: 1025
 smtp_user: ""
 smtp_password: ""
 email_sender: "AutopsyGuard <autopsyguard-dev@local>"
-email_recipient: "devops+autopsy@example.local"
+email_recipient: "dev@local"
 
 # Faster reporting while developing
-report_interval_hours: 0.04 # ≈2.4 minutes
+report_interval_hours: 0.5 # Mudado para 1 hora (estava 0.04) para não te spammar nas aulas
 
 # WhatsApp notifications (via CallMeBot) — disabled by default
 # Setup: save +34 611 08 28 80 in your contacts, send "I allow callmebot to send me messages"
@@ -54,3 +54,9 @@ report_interval_hours: 0.04 # ≈2.4 minutes
 whatsapp_enabled: false
 whatsapp_phone: ""      # e.g. "+351912345678"
 whatsapp_apikey: ""     # your CallMeBot API key
+
+# Telegram notifications (via CallMeBot) — disabled by default
+# Setup: send a message to @CallMeBot_txtbot on Telegram
+# You'll use your telegram username (e.g. @yourusername)
+telegram_enabled: false
+telegram_user: ""       # e.g. "@myusername"

@@ -226,6 +226,14 @@ whatsapp_enabled: false
 whatsapp_phone: ""        # e.g. "+351912345678" (with country code)
 whatsapp_apikey: ""       # or use AUTOPSYGUARD_WHATSAPP_APIKEY env var
 
+# -----------------------------------------------------------------------------
+# Telegram Notifications (via CallMeBot)
+# Setup (2 minutes):
+#   1. Send a message to @CallMeBot_txtbot on Telegram
+#   2. Provide your telegram username (e.g. @yourusername) or phone number
+# -----------------------------------------------------------------------------
+telegram_enabled: false
+telegram_user: ""         # e.g. "@myusername"
 
 # -----------------------------------------------------------------------------
 # Log error patterns
