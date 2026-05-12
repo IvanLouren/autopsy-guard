@@ -27,6 +27,7 @@ from autopsyguard.utils.solr_health import SolrHealthCache
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifier import EmailNotifier
 from autopsyguard.whatsapp_notifier import WhatsAppNotifier
+from autopsyguard.telegram_notifier import TelegramNotifier
 from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_global_lock_file,
@@ -71,6 +72,7 @@ class Monitor:
         ]
         self.notifier = EmailNotifier(config)
         self.whatsapp = WhatsAppNotifier(config)
+        self.telegram = TelegramNotifier(config)
         self._metrics_store = MetricsStore(case_dir=config.case_dir)
         self._running = False
         self._state = MonitorState.WAITING
@@ -210,6 +212,7 @@ class Monitor:
             if alert_events:
                 self.notifier.send_alert(alert_events)
                 self.whatsapp.send_alert(alert_events)
+                self.telegram.send_alert(alert_events)
                 
             for event in events:
                 self._handle_event(event)
@@ -231,6 +234,7 @@ class Monitor:
             logger.info("Ingest job finished after %.1fs. Sending reports.", duration)
             self.notifier.send_ingest_report(duration)
             self.whatsapp.send_ingest_report(duration)
+            self.telegram.send_ingest_report(duration)
             
             self._was_ingest_running = False
             self._ingest_start_time = None
@@ -251,6 +255,11 @@ class Monitor:
                 metrics_samples=metrics_samples,
             )
             self.whatsapp.send_report(
+                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                events_last_period=self._events_since_last_report,
+                metrics_samples=metrics_samples,
+            )
+            self.telegram.send_report(
                 system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
                 events_last_period=self._events_since_last_report,
                 metrics_samples=metrics_samples,
