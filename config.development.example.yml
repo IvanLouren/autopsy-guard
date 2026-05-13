@@ -1,62 +1,95 @@
-# Development config for AutopsyGuard - safe for local testing
-# Points to a local example case directory inside the repo.
-case_dir: ./example_case
+# =============================================================================
+# AutopsyGuard Configuration
+# Environment: Development
+# =============================================================================
+# PURPOSE: Optimized for local testing and active development.
+# Thresholds are low and polling is fast to provide immediate feedback.
+#
+# Usage:
+#   copy config.development.example.yml config.yml
+#   uv run autopsyguard
+# =============================================================================
 
-# Poll frequently for quick feedback while developing
+# -----------------------------------------------------------------------------
+# 1. Target Directories
+# -----------------------------------------------------------------------------
+# Path to the Autopsy case directory (must contain .aut file)
+case_dir: "./example_case"
+
+# Optional: Path to Autopsy installation (helps locate crash logs)
+# autopsy_install_dir: "C:/Program Files/Autopsy-4.22.1"
+
+# -----------------------------------------------------------------------------
+# 2. Polling & Hang Detection
+# -----------------------------------------------------------------------------
+# Polling interval in seconds (fast for development)
 poll_interval: 5.0
 
-# Hang detection (shorter for dev)
+# Hang detection thresholds (lower for quick testing)
 hang_cpu_threshold: 1.0
 hang_timeout: 120.0
 hang_confirmation_duration: 30.0
 log_stale_timeout: 300.0
 
-# Resource thresholds (conservative for dev testing)
+# -----------------------------------------------------------------------------
+# 3. Resource Warning Thresholds
+# -----------------------------------------------------------------------------
+# Alert if resource usage exceeds these limits
 cpu_warning_percent: 95.0
+cpu_per_core_warning_percent: 90.0
 cpu_warning_duration: 60.0
 memory_warning_percent: 90.0
 disk_min_free_gb: 1.0
 
-# Solr settings (if not used, these are benign defaults)
+# -----------------------------------------------------------------------------
+# 4. Solr Service Monitoring
+# -----------------------------------------------------------------------------
 solr_port: 23232
 solr_timeout_seconds: 5.0
 solr_ping_timeout: 3.0
 solr_ping_slow_threshold: 3.0
 solr_ping_slow_duration: 30.0
+solr_unresponsive_duration: 15.0
 solr_slow_threshold_seconds: 2.0
 solr_slow_count_threshold: 3
+
 solr_heap_usage_warning: 85.0
 solr_heap_usage_critical: 95.0
 solr_cpu_warning: 90.0
 
-# Log patterns to detect
+# -----------------------------------------------------------------------------
+# 5. Log Error Signatures
+# -----------------------------------------------------------------------------
+# Triggers a warning if these case-insensitive strings appear in the logs
 error_patterns:
-  - java.lang.OutOfMemoryError
-  - SEVERE
-  - Exception
-  - FATAL
-  - StackOverflowError
+  - "java.lang.OutOfMemoryError"
+  - "SEVERE"
+  - "Exception"
+  - "FATAL"
+  - "StackOverflowError"
 
-# Local SMTP server for testing (e.g., MailHog or smtp4dev)
+# -----------------------------------------------------------------------------
+# 6. Notifications & Reporting
+# -----------------------------------------------------------------------------
+# Frequency of status heartbeat emails
+report_interval_hours: 0.5
+
+# Email Settings (Testing with local server like MailHog)
 smtp_host: "localhost"
 smtp_port: 1025
+smtp_use_ssl: false
+smtp_async: true
 smtp_user: ""
 smtp_password: ""
-email_sender: "AutopsyGuard <autopsyguard-dev@local>"
+email_sender: "autopsyguard-dev@local"
 email_recipient: "dev@local"
+email_case_label: "Dev Test Case"
 
-# Faster reporting while developing
-report_interval_hours: 0.5 # Mudado para 1 hora (estava 0.04) para não te spammar nas aulas
-
-# WhatsApp notifications (via CallMeBot) — disabled by default
-# Setup: save +34 611 08 28 80 in your contacts, send "I allow callmebot to send me messages"
-# You'll receive an API key to put here (or set AUTOPSYGUARD_WHATSAPP_APIKEY env var)
+# WhatsApp Notifications (via CallMeBot)
 whatsapp_enabled: false
-whatsapp_phone: ""      # e.g. "+351912345678"
-whatsapp_apikey: ""     # your CallMeBot API key
+whatsapp_phone: ""  # e.g. "+351912345678"
+whatsapp_apikey: "" # your CallMeBot API key
 
-# Telegram notifications (via CallMeBot) — disabled by default
-# Setup: send a message to @CallMeBot_txtbot on Telegram
-# You'll use your telegram username (e.g. @yourusername)
+# Telegram Notifications (via CallMeBot)
 telegram_enabled: false
-telegram_user: ""       # e.g. "@myusername"
+telegram_user: ""   # e.g. "@myusername"
