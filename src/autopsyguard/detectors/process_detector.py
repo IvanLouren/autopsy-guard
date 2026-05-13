@@ -153,38 +153,44 @@ class ProcessDetector(BaseDetector):
             if exit_code is not None:
                 details["exit_code"] = exit_code
 
-            if exit_code is not None and exit_code != 0:
-                events.append(CrashEvent(
-                    crash_type=CrashType.ABNORMAL_EXIT,
-                    severity=Severity.CRITICAL,
-                    message=(
-                        f"Autopsy (PID {pid}) exited with code {exit_code}"
-                    ),
-                    details=details,
-                ))
-            else:
-                events.append(CrashEvent(
-                    crash_type=CrashType.PROCESS_DISAPPEARED,
-                    severity=Severity.CRITICAL,
-                    message=f"Autopsy process (PID {pid}) has disappeared",
-                    details=details,
-                ))
-
             # Check for stale lock files (case-level or global)
             case_lock = get_case_lock_file(self.config.case_dir)
             global_lock = get_global_lock_file()
-            if case_lock.exists():
-                details["stale_lock_file"] = str(case_lock)
-                logger.warning(
-                    "Stale case lock file found at %s — confirms ungraceful shutdown",
-                    case_lock,
-                )
-            elif global_lock.exists():
-                details["stale_lock_file"] = str(global_lock)
-                logger.warning(
-                    "Global messages lock found at %s — corroborates ungraceful shutdown",
-                    global_lock,
-                )
+            locks_exist = case_lock.exists() or global_lock.exists()
+
+            # If no locks remain and exit code is 0 (or unknown), it's a graceful shutdown
+            if not locks_exist and (exit_code == 0 or exit_code is None):
+                logger.info("Autopsy process exited gracefully (no locks remaining).")
+            else:
+                if exit_code is not None and exit_code != 0:
+                    events.append(CrashEvent(
+                        crash_type=CrashType.ABNORMAL_EXIT,
+                        severity=Severity.CRITICAL,
+                        message=(
+                            f"Autopsy (PID {pid}) exited with code {exit_code}"
+                        ),
+                        details=details,
+                    ))
+                else:
+                    events.append(CrashEvent(
+                        crash_type=CrashType.PROCESS_DISAPPEARED,
+                        severity=Severity.CRITICAL,
+                        message=f"Autopsy process (PID {pid}) has disappeared",
+                        details=details,
+                    ))
+
+                if case_lock.exists():
+                    details["stale_lock_file"] = str(case_lock)
+                    logger.warning(
+                        "Stale case lock file found at %s — confirms ungraceful shutdown",
+                        case_lock,
+                    )
+                elif global_lock.exists():
+                    details["stale_lock_file"] = str(global_lock)
+                    logger.warning(
+                        "Global messages lock found at %s — corroborates ungraceful shutdown",
+                        global_lock,
+                    )
 
             self._process_lost_reported = True
 

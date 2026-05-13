@@ -87,36 +87,14 @@ class Monitor:
         self._was_ingest_running = False
         self._ingest_start_time: float | None = None
 
-    def _is_case_active(self) -> bool:
-                """Check if Autopsy is running and the case is open.
-
-                Rationale:
-                - Autopsy creates a per-case lock file inside the case `Log/` directory
-                    when a case is opened.  However, on startup NetBeans/Autopsy also
-                    creates a global `messages.log.lck` under the user var/log tree
-                    shortly after the JVM starts.  We treat either lock as evidence the
-                    application is active because the global lock is a reliable early
-                    indicator that Autopsy has started its runtime and may soon open a
-                    case.
-
-                Notes on behaviour:
-                - This can cause the monitor to enter `ACTIVE` briefly while the
-                    Autopsy UI is still showing the "Open Case" dialog (global lock is
-                    created ~2–3s after process start).  This is intentional and benign:
-                    detectors initialize by seeking to EOF on first run so they won't
-                    reprocess historical log data, and active monitoring will correctly
-                    pick up once a case is actually opened.
-                - The global lock is used as a pragmatic early proxy to avoid missing
-                    short-lived case activity; it reduces race conditions when the
-                    monitor starts before Autopsy has finished initialization.
-                """
-                pid = find_autopsy_pid()
-                # Consider either a case-level lock or the global NetBeans messages lock
-                lock_exists = (
-                        get_case_lock_file(self.config.case_dir).exists()
-                        or get_global_lock_file().exists()
-                )
-                return pid is not None and lock_exists
+    def _is_autopsy_running(self) -> bool:
+        """Check if the Autopsy process is running.
+        
+        We start monitoring as soon as the process exists so we can detect
+        crashes even before a case is fully opened.
+        """
+        pid = find_autopsy_pid()
+        return pid is not None
 
     def run_once(self) -> list[CrashEvent]:
         """Execute a single detection cycle across all detectors."""
@@ -185,21 +163,12 @@ class Monitor:
         self._running = False
 
     def _handle_waiting(self) -> None:
-        """Wait until Autopsy is running and the case is active."""
-        if self._is_case_active():
+        """Wait until Autopsy is running."""
+        if self._is_autopsy_running():
             self._state = MonitorState.ACTIVE
             logger.info("✅ Autopsy detected — monitoring active")
         else:
-            pid = find_autopsy_pid()
-            lock = (
-                get_case_lock_file(self.config.case_dir).exists()
-                or get_global_lock_file().exists()
-            )
-            logger.debug(
-                "Waiting... (process: %s, lock: %s)",
-                pid if pid else "no",
-                "yes" if lock else "no",
-            )
+            logger.debug("Waiting for Autopsy process...")
 
     def _handle_active(self) -> None:
         """Run detectors while the case is being processed."""
