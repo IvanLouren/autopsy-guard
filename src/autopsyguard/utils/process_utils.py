@@ -110,14 +110,6 @@ def find_autopsy_pid() -> int | None:
                         return proc.info["pid"]
                 continue
 
-            # For non-Java processes that didn't match by name, also check
-            # the command line for an 'autopsy' substring. This captures
-            # wrapper scripts (e.g. autopsywrapper.sh) used by snap/AppImage
-            # without relying on exact process names.
-            cmdline = proc.info.get("cmdline") or []
-            for arg in cmdline:
-                if "autopsy" in str(arg).lower():
-                    return proc.info["pid"]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
