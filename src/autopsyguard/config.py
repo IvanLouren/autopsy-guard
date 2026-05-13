@@ -81,6 +81,11 @@ class MonitorConfig:
     # CallMeBot API key (get it by messaging the bot on WhatsApp)
     whatsapp_apikey: str = ""
 
+    # --- Telegram Notifications (via CallMeBot) ---
+    telegram_enabled: bool = False
+    # Recipient username (e.g. "@myusername") or phone number
+    telegram_user: str = ""
+
     # --- Periodic Reporting ---
     report_interval_hours: float = 12.0
 
@@ -207,6 +212,8 @@ _SUPPORTED_CONFIG_KEYS = {
     "whatsapp_enabled",
     "whatsapp_phone",
     "whatsapp_apikey",
+    "telegram_enabled",
+    "telegram_user",
 }
 
 _PATH_KEYS = {"case_dir", "autopsy_install_dir"}

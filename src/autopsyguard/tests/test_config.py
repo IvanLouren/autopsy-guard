@@ -152,3 +152,23 @@ def test_from_sources_rejects_per_core_cpu_threshold_over_100(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="cpu_per_core_warning_percent"):
         MonitorConfig.from_sources(yaml_path=cfg)
+
+
+def test_from_sources_loads_telegram_settings(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "telegram_enabled: true",
+                "telegram_user: '@myusername'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = MonitorConfig.from_sources(yaml_path=cfg)
+    assert config.telegram_enabled is True
+    assert config.telegram_user == "@myusername"

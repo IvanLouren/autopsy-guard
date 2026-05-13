@@ -33,7 +33,7 @@
 # The directory must contain a .aut descriptor file and either autopsy.db
 # (single-user) or a Log/ subdirectory (multi-user / PostgreSQL).
 # -----------------------------------------------------------------------------
-case_dir: /cases/active/Evidence-2025-001
+case_dir: C:\Users\francisco\Desktop\Universidade\PROJETO\TestCase
 
 # Autopsy 4.22.1 installation directory.
 # Used to locate hs_err_pid*.log files on a JVM crash.
