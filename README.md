@@ -116,18 +116,23 @@ The scripts:
 2. Validate case-directory hints (`*.aut`, `Log/` or `autopsy.db`) and show warnings/suggestions
 3. Try to auto-detect `autopsy_install_dir` from common locations (Windows, Linux, Linux snap) and offer it as a suggestion
 4. Create a config file (default: `config.local.yml`)
-5. Create an env file for secrets (`autopsyguard-env.ps1` or `autopsyguard-env.sh`)
+5. Create a `.env` file for secrets (default: `.env` in cwd) — loaded automatically at startup
 6. Optionally run `uv sync`
 7. Print exact run commands, debug command, and a setup summary
 
-After script completion:
+After script completion, just run:
 
-- **Windows PowerShell**
-  - Load env: `. .\autopsyguard-env.ps1`
-  - Run: `uv run autopsyguard --config .\config.local.yml`
-- **Linux/macOS**
-  - Load env: `source ./autopsyguard-env.sh`
-  - Run: `uv run autopsyguard --config ./config.local.yml`
+```powershell
+# PowerShell
+uv run autopsyguard --config .\config.local.yml
+```
+
+```bash
+# Linux/macOS
+uv run autopsyguard --config ./config.local.yml
+```
+
+The `.env` file is picked up automatically — no shell sourcing needed.
 
 ## CLI reference
 
@@ -138,6 +143,7 @@ autopsyguard [case_dir] [options]
 Options:
 
 - `--config PATH` - YAML config path (if omitted, auto-discovers in current directory: `config.local.yml`, then `config.yml`)
+- `--env-file FILE` - path to `.env` file with secrets (if omitted, auto-discovers `.env` in current directory)
 - `--autopsy-dir PATH` - optional Autopsy install directory (used mainly for JVM crash file search)
 - `--poll-interval SECONDS` - override `poll_interval`
 - `--hang-timeout SECONDS` - override `hang_timeout`
@@ -160,7 +166,7 @@ Configuration precedence (`MonitorConfig.from_sources()`):
 
 1. Dataclass defaults (`src\autopsyguard\config.py`)
 2. YAML file values
-3. Environment variable overrides (secrets)
+3. `.env` file variables (auto-loaded from cwd or `--env-file`), then real environment variables
 4. CLI overrides
 
 ### Required setting
@@ -180,9 +186,13 @@ Validation expects:
 
 ### Environment variables (supported overrides)
 
+Set these in your `.env` file (auto-loaded) or in the real environment:
+
 - `AUTOPSYGUARD_SMTP_USER` -> `smtp_user`
 - `AUTOPSYGUARD_SMTP_PASSWORD` -> `smtp_password`
 - `AUTOPSYGUARD_WHATSAPP_APIKEY` -> `whatsapp_apikey`
+
+Real environment variables always take priority over `.env` values, so you can always override from the shell.
 
 ### Example minimal config
 
@@ -290,6 +300,7 @@ Tests are under `src\autopsyguard\tests`.
 ## Project structure (high level)
 
 ```text
+.env.example
 config.development.example.yml
 config.production.example.yml
 pyproject.toml

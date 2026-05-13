@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import os
 
 import yaml
+from dotenv import load_dotenv
 
 from autopsyguard.platform_utils import (
     get_autopsy_log_dir,
@@ -127,15 +128,34 @@ class MonitorConfig:
         cls,
         *,
         yaml_path: Path | None = None,
+        env_file: Path | None = None,
         overrides: Mapping[str, Any] | None = None,
     ) -> "MonitorConfig":
-        """Build config from optional YAML + explicit overrides.
+        """Build config from optional .env, YAML, and explicit overrides.
 
-        Precedence:
+        Precedence (highest wins):
           1) Dataclass defaults
           2) YAML values
-          3) Explicit overrides (typically CLI args)
+          3) Environment variables (loaded from .env file, then the real env)
+          4) Explicit overrides (typically CLI args)
+
+        The .env file is resolved in this order:
+          - The path supplied via *env_file* (e.g. from ``--env-file`` CLI flag)
+          - A file named ``.env`` in the current working directory
+          - No file (silently skipped — existing env vars still apply)
         """
+        # --- Load .env file (does not overwrite already-set env vars) ---
+        _resolved_env_file: Path | None = None
+        if env_file is not None:
+            _resolved_env_file = env_file.resolve()
+        else:
+            candidate = Path.cwd() / ".env"
+            if candidate.is_file():
+                _resolved_env_file = candidate
+
+        if _resolved_env_file is not None:
+            load_dotenv(_resolved_env_file, override=False)
+
         values: dict[str, Any] = {}
         if yaml_path is not None:
             values.update(_load_yaml_config(yaml_path))

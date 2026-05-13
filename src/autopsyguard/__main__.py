@@ -42,6 +42,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to YAML config file (auto-discovers config.local.yml or config.yml in cwd)",
     )
+
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Path to a .env file with secrets (auto-discovers .env in cwd if present)",
+    )
     
     parser.add_argument(
         "--autopsy-dir",
@@ -113,6 +121,7 @@ def main() -> int:
 
         config = MonitorConfig.from_sources(
             yaml_path=config_path,
+            env_file=args.env_file,
             overrides=overrides,
         )
     except ValueError as exc:
