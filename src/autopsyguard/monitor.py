@@ -58,7 +58,7 @@ class Monitor:
         solr_cache = SolrHealthCache(config)
 
         # Create LogDetector first so HangDetector can query ingest state
-        self._log_detector = LogDetector(config)
+        self._log_detector = LogDetector(config, monitor_start=monitor_start)
 
         self.detectors: list[BaseDetector] = [
             ProcessDetector(config),

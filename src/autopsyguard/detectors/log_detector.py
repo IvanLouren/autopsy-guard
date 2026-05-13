@@ -41,8 +41,9 @@ _INGEST_FINISH_PATTERN = re.compile(
 class LogDetector(BaseDetector):
     """Tails Autopsy log files and detects error patterns."""
 
-    def __init__(self, config: MonitorConfig) -> None:
+    def __init__(self, config: MonitorConfig, monitor_start: float | None = None) -> None:
         super().__init__(config)
+        self._monitor_start = monitor_start
         
         # Initialize log file tracker with persistence (stored outside case)
         state_dir = get_autopsyguard_state_dir(config.case_dir)
@@ -94,11 +95,13 @@ class LogDetector(BaseDetector):
         log_files = self._get_log_files()
 
         if not self._initialised:
-            # Seek to end of all files on first run so we only catch new errors
+            # On first run, seek to end ONLY for files we aren't already tracking
+            # so we preserve persisted offsets from previous runs
             for log_file in log_files:
                 if log_file.is_file():
-                    # Set position to end of file via public API
-                    self._log_tracker.seek_to_end(log_file)
+                    last_pos = self._log_tracker.get_position(log_file)
+                    if last_pos == 0:
+                        self._log_tracker.seek_to_end(log_file)
             self._initialised = True
             logger.debug("LogDetector: tracking %d log file(s)", len(log_files))
             # Save initial positions
@@ -139,6 +142,27 @@ class LogDetector(BaseDetector):
 
         if not path.is_file():
             return events
+
+        try:
+            last_pos = self._log_tracker.get_position(path)
+            st = path.stat()
+            file_size = st.st_size
+            mtime = st.st_mtime
+            
+            # If the file has been rotated/truncated since the tracked position,
+            # or if it's completely new, and its modification time predates the monitor startup,
+            # treat it as pre-existing to avoid reprocessing historical alerts.
+            if last_pos > 0 and file_size < last_pos:
+                if self._monitor_start is not None and mtime < self._monitor_start:
+                    self._log_tracker.seek_to_end(path)
+                    return events
+                    
+            if last_pos == 0 and self._initialised:
+                if self._monitor_start is not None and mtime < self._monitor_start:
+                    self._log_tracker.seek_to_end(path)
+                    return events
+        except OSError:
+            pass
 
         # Use LogFileTracker for incremental reading
         new_content = self._log_tracker.read_new_content(path)
