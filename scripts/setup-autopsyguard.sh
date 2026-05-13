@@ -169,12 +169,20 @@ if [[ "$SKIP_SYNC" == "false" ]]; then
     echo "Warning: 'uv' command not found. Install uv first, then run this script again."
   fi
 fi
-
-case_dir="$(prompt_required "Autopsy case directory (case_dir)")"
-if [[ ! -e "$case_dir" ]]; then
-  echo "Warning: path does not currently exist: $case_dir"
+echo
+echo "--- 1. Target Directories ---"
+echo "AutopsyGuard needs to know where your Autopsy case is located to monitor its logs and locks."
+echo "If you don't have one yet, just press Enter to set it up later."
+read -r -p "Autopsy case directory (case_dir, optional): " case_dir
+if [[ -z "${case_dir// }" ]]; then
+  case_dir="/path/to/your/case"
+  echo "Note: You must edit config.local.yml to set the actual case_dir before running AutopsyGuard."
+else
+  if [[ ! -e "$case_dir" ]]; then
+    echo "Warning: path does not currently exist: $case_dir"
+  fi
+  show_case_dir_hints "$case_dir"
 fi
-show_case_dir_hints "$case_dir"
 
 autopsy_install_dir=""
 install_candidates_raw="$(detect_autopsy_install_candidates || true)"
@@ -204,9 +212,13 @@ else
   echo "No install dir auto-detected. You can leave it blank (optional)."
   read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
 fi
+
+echo
+echo "--- 2. Performance & Polling ---"
+echo "Configure how often AutopsyGuard checks the system and when to assume the process is hung."
 poll_interval="$(prompt_default "poll_interval (seconds)" "30.0")"
 hang_timeout="$(prompt_default "hang_timeout (seconds)" "900.0")"
-report_interval="$(prompt_default "report_interval_hours" "12.0")"
+report_interval="$(prompt_default "report_interval_hours (e.g., 12.0 for half-day, 0.5 for 30 min)" "12.0")"
 
 email_enabled=false
 smtp_host=""
@@ -218,7 +230,10 @@ email_recipient=""
 email_case_label=""
 smtp_user=""
 smtp_password=""
-
+echo
+echo "--- 3. Notifications (Email) ---"
+echo "Configure email alerts for crashes, warnings, and periodic status reports."
+echo "We recommend using an App Password if using Gmail/O365."
 if prompt_yes_no "Configure email notifications?" "y"; then
   email_enabled=true
   smtp_host="$(prompt_required "SMTP host (smtp_host)")"
@@ -245,7 +260,9 @@ if prompt_yes_no "Configure email notifications?" "y"; then
     echo "Suggestion: SMTP port 465 usually uses implicit SSL (smtp_use_ssl=true)."
   fi
 fi
-
+echo
+echo "--- 4. Notifications (WhatsApp) ---"
+echo "You can receive instant text alerts on WhatsApp via the free CallMeBot API."
 whatsapp_enabled=false
 whatsapp_phone=""
 whatsapp_apikey=""
@@ -258,6 +275,9 @@ if prompt_yes_no "Configure WhatsApp notifications?" "n"; then
   fi
 fi
 
+echo
+echo "--- 5. Notifications (Telegram) ---"
+echo "You can receive instant text alerts on Telegram via the free CallMeBot API."
 telegram_enabled=false
 telegram_user=""
 if prompt_yes_no "Configure Telegram notifications?" "n"; then

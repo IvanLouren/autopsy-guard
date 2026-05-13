@@ -206,12 +206,20 @@ if (-not $SkipDependencySync) {
         }
     }
 }
-
-$caseDir = Read-Required "Autopsy case directory (case_dir)"
-if (-not (Test-Path -LiteralPath $caseDir)) {
-    Write-Host "Warning: path does not currently exist: $caseDir" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "--- 1. Target Directories ---" -ForegroundColor Cyan
+Write-Host "AutopsyGuard needs to know where your Autopsy case is located to monitor its logs and locks." -ForegroundColor Gray
+Write-Host "If you don't have one yet, just press Enter to set it up later." -ForegroundColor Gray
+$caseDir = Read-Host "Autopsy case directory (case_dir, optional)"
+if ([string]::IsNullOrWhiteSpace($caseDir)) {
+    $caseDir = "C:\Path\To\Your\Case"
+    Write-Host "Note: You must edit config.local.yml to set the actual case_dir before running AutopsyGuard." -ForegroundColor Yellow
+} else {
+    if (-not (Test-Path -LiteralPath $caseDir)) {
+        Write-Host "Warning: path does not currently exist: $caseDir" -ForegroundColor Yellow
+    }
+    Show-CaseDirHints -CaseDir $caseDir
 }
-Show-CaseDirHints -CaseDir $caseDir
 
 $autopsyInstallDir = ""
 $installCandidates = @(Get-AutopsyInstallCandidates)
@@ -234,10 +242,17 @@ if ($installCandidates.Count -gt 0) {
     Write-Host "No install dir auto-detected. You can leave it blank (optional)." -ForegroundColor Yellow
     $autopsyInstallDir = Read-Host "Autopsy install directory (optional, for hs_err_pid*.log search)"
 }
+
+Write-Host ""
+Write-Host "--- 2. Performance & Polling ---" -ForegroundColor Cyan
+Write-Host "Configure how often AutopsyGuard checks the system and when to assume the process is hung." -ForegroundColor Gray
 $pollInterval = Read-Default "poll_interval (seconds)" "30.0"
 $hangTimeout = Read-Default "hang_timeout (seconds)" "900.0"
-$reportInterval = Read-Default "report_interval_hours" "12.0"
-
+$reportInterval = Read-Default "report_interval_hours (e.g., 12.0 for half-day, 0.5 for 30 min)" "12.0"
+Write-Host ""
+Write-Host "--- 3. Notifications (Email) ---" -ForegroundColor Cyan
+Write-Host "Configure email alerts for crashes, warnings, and periodic status reports." -ForegroundColor Gray
+Write-Host "We recommend using an App Password if using Gmail/O365." -ForegroundColor Gray
 $emailEnabled = Read-YesNo "Configure email notifications?" $true
 $smtpHost = ""
 $smtpPort = "587"
@@ -275,7 +290,9 @@ if ($emailEnabled) {
         Write-Host "Suggestion: SMTP port 465 usually uses implicit SSL (smtp_use_ssl=true)." -ForegroundColor Yellow
     }
 }
-
+Write-Host ""
+Write-Host "--- 4. Notifications (WhatsApp) ---" -ForegroundColor Cyan
+Write-Host "You can receive instant text alerts on WhatsApp via the free CallMeBot API." -ForegroundColor Gray
 $whatsappEnabled = Read-YesNo "Configure WhatsApp notifications?" $false
 $whatsappPhone = ""
 $whatsappApiKey = ""
@@ -286,7 +303,9 @@ if ($whatsappEnabled) {
         Write-Host "Note: WhatsApp requires AUTOPSYGUARD_WHATSAPP_APIKEY before alerts can be sent." -ForegroundColor Yellow
     }
 }
-
+Write-Host ""
+Write-Host "--- 5. Notifications (Telegram) ---" -ForegroundColor Cyan
+Write-Host "You can receive instant text alerts on Telegram via the free CallMeBot API." -ForegroundColor Gray
 $telegramEnabled = Read-YesNo "Configure Telegram notifications?" $false
 $telegramUser = ""
 if ($telegramEnabled) {
