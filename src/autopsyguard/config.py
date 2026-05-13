@@ -304,7 +304,6 @@ def _validate_config_types(config: MonitorConfig) -> None:
 
     # Validate percentage thresholds
     percentage_fields = [
-        ("cpu_warning_percent", config.cpu_warning_percent),
         ("cpu_per_core_warning_percent", config.cpu_per_core_warning_percent),
         ("memory_warning_percent", config.memory_warning_percent),
         ("hang_cpu_threshold", config.hang_cpu_threshold),
@@ -316,6 +315,9 @@ def _validate_config_types(config: MonitorConfig) -> None:
     for field_name, value in percentage_fields:
         if not (0 <= value <= 100):
             raise ValueError(f"Invalid {field_name}: {value} (must be 0-100)")
+
+    if config.cpu_warning_percent < 0:
+        raise ValueError(f"Invalid cpu_warning_percent: {config.cpu_warning_percent} (must be >= 0)")
 
     # Validate timeout values
     timeout_fields = [

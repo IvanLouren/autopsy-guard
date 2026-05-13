@@ -56,6 +56,11 @@ class TestProcessDisappearance:
                 events = detector.check()
         assert events == []
         assert detector._tracked_pid == 1234
+        
+        # Create lock file so it doesn't think it was a graceful shutdown
+        lock_file = config.case_dir / "Log" / "autopsy.log.0.lck"
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text("", encoding="utf-8")
 
         # Second check: process gone
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
@@ -80,6 +85,11 @@ class TestProcessDisappearance:
         detector._tracked_pid = 1234
         detector._process_lost_reported = False
 
+        # Create lock file so it doesn't think it was a graceful shutdown
+        lock_file = config.case_dir / "Log" / "autopsy.log.0.lck"
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text("", encoding="utf-8")
+
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
             detector._pid_finder = lambda: None
             mock_psutil.pid_exists.return_value = False
@@ -89,7 +99,9 @@ class TestProcessDisappearance:
             mock_psutil.Process.side_effect = real_psutil.NoSuchProcess(1234)
             events1 = detector.check()
 
-        # After reporting, tracked_pid is reset; next check finds nothing
+        # After reporting, tracked_pid is reset; next check finds nothing.
+        # We also delete the lock file so the stale-lock detector doesn't fire.
+        lock_file.unlink()
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
             mock_psutil.process_iter.return_value = []
             events2 = detector.check()
