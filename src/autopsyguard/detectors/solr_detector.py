@@ -110,6 +110,7 @@ class SolrDetector(BaseDetector):
         self._solr_down_reported = False
         self._solr_hang_reported = False
         self._consecutive_slow_responses = 0
+        self._consecutive_connection_errors = 0
         self._heap_warning_reported = False
         self._cpu_warning_reported = False
         self._core_doc_counts: dict[str, int] = {}
@@ -144,6 +145,7 @@ class SolrDetector(BaseDetector):
                             "Solr service has recovered and is responding on port %d.",
                             self.config.solr_port,
                         )
+                    self._consecutive_connection_errors = 0
                     self._solr_down_reported = False
                     self._report_tracker.clear("solr_down")
                 else:
@@ -204,6 +206,7 @@ class SolrDetector(BaseDetector):
                                 "Solr service has recovered and is responding on port %d.",
                                 self.config.solr_port,
                             )
+                        self._consecutive_connection_errors = 0
                         self._solr_down_reported = False
                         self._report_tracker.clear("solr_down")
                         core = None
@@ -223,6 +226,7 @@ class SolrDetector(BaseDetector):
                                         "Solr service has recovered and is responding on port %d.",
                                         self.config.solr_port,
                                     )
+                                self._consecutive_connection_errors = 0
                                 self._solr_down_reported = False
                                 self._report_tracker.clear("solr_down")
             except urllib.error.URLError as e:
@@ -328,7 +332,11 @@ class SolrDetector(BaseDetector):
         """Handle connection refused or other network errors."""
         events: list[CrashEvent] = []
         
-        if not self._solr_down_reported:
+        self._consecutive_connection_errors += 1
+        
+        # Only report down if it's been down for multiple consecutive checks
+        # (Allows Solr time to boot up when Autopsy starts)
+        if self._consecutive_connection_errors >= 6 and not self._solr_down_reported:
             events.append(CrashEvent(
                 crash_type=CrashType.SOLR_CRASH,
                 severity=Severity.CRITICAL,
@@ -639,10 +647,10 @@ class SolrDetector(BaseDetector):
 
         # Check the main solr.log file(s) and also stdout/stderr files
         log_patterns = [
-            (re.compile(r"ERROR", re.IGNORECASE), Severity.CRITICAL),
-            (re.compile(r"SEVERE", re.IGNORECASE), Severity.CRITICAL),
+            (re.compile(r"\bERROR\b", re.IGNORECASE), Severity.CRITICAL),
+            (re.compile(r"\bSEVERE\b", re.IGNORECASE), Severity.CRITICAL),
             (re.compile(r"OutOfMemoryError", re.IGNORECASE), Severity.CRITICAL),
-            (re.compile(r"WARN.*(?:corrupt|failed|exception)", re.IGNORECASE), Severity.WARNING),
+            (re.compile(r"\bWARN\b.*(?:corrupt|failed|exception)", re.IGNORECASE), Severity.WARNING),
         ]
 
         # Collect candidate log files from the Solr-specific dir and the global
@@ -752,7 +760,12 @@ class SolrDetector(BaseDetector):
 
         # Scan line by line for error patterns
         for line in new_content.splitlines():
-            if not line.strip():  # Skip empty lines
+            stripped = line.strip()
+            if not stripped:  # Skip empty lines
+                continue
+                
+            # Ignore lines that are just echoed Windows batch script commands from solr.cmd
+            if stripped.startswith(("REM ", "set ", "echo ", "IF ")) or re.match(r"^[a-zA-Z]:\\[^>]+>", stripped):
                 continue
                 
             for pattern, severity in patterns:

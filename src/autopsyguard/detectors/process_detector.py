@@ -64,6 +64,8 @@ class ProcessDetector(BaseDetector):
                 self._process_lost_reported = False
                 self._zombie_reported = False
                 self._tracked_children = self._snapshot_children(self._tracked_pid)
+                if self._tracked_children:
+                    logger.info("Tracking %d Java child process(es): %s", len(self._tracked_children), self._tracked_children)
             else:
                 # Check for a stale lock file — suggests a crash happened
                 # before we started monitoring
@@ -118,20 +120,25 @@ class ProcessDetector(BaseDetector):
             Only includes children with names in get_java_process_names().
             Handles NoSuchProcess gracefully by returning empty set.
         """
+        import time
+        now = time.time()
+        
         try:
             parent = psutil.Process(pid)
             children = parent.children(recursive=True)
             java_names = [n.lower() for n in get_java_process_names()]
-            java_children = {
-                c.pid for c in children
-                if c.name().lower() in java_names
-            }
-            if java_children:
-                logger.info(
-                    "Tracking %d Java child process(es): %s",
-                    len(java_children),
-                    java_children,
-                )
+            
+            java_children = set()
+            for c in children:
+                if c.name().lower() in java_names:
+                    # Ignore short-lived transient Java processes (e.g. wmic wrappers, version checks)
+                    # Only track processes that have survived at least 15 seconds
+                    try:
+                        if (now - c.create_time()) >= 15.0:
+                            java_children.add(c.pid)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                        
             return java_children
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return set()
@@ -144,6 +151,17 @@ class ProcessDetector(BaseDetector):
     def _handle_process_gone(self) -> list[CrashEvent]:
         """React to the main Autopsy process no longer being present."""
         events: list[CrashEvent] = []
+        
+        # Before assuming a crash, check if another Autopsy process exists.
+        # Autopsy uses a transient launcher that spawns the real app and exits.
+        new_pid = self._pid_finder()
+        if new_pid is not None and new_pid != self._tracked_pid:
+            logger.info("Autopsy process tracking switched from launcher PID %s to real app PID %s", 
+                        self._tracked_pid, new_pid)
+            self._tracked_pid = new_pid
+            self._tracked_children = self._snapshot_children(self._tracked_pid)
+            return events
+
         if not self._process_lost_reported:
             pid = self._tracked_pid
 
@@ -232,6 +250,10 @@ class ProcessDetector(BaseDetector):
                             child_pid, self._tracked_pid)
 
         # Update snapshot so we don't re-report
+        new_tracked = current_children - self._tracked_children
+        if new_tracked:
+            logger.info("Tracking %d NEW Java child process(es): %s", len(new_tracked), new_tracked)
+            
         self._tracked_children = current_children
         return events
 
