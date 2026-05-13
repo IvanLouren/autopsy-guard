@@ -295,7 +295,7 @@ Run tests:
 uv run pytest
 ```
 
-Tests are under `src\autopsyguard\tests`.
+Tests are under `tests/`.
 
 ## Project structure (high level)
 
@@ -307,9 +307,12 @@ pyproject.toml
 scripts/
   setup-autopsyguard.ps1
   setup-autopsyguard.sh
+tests/
 src/
   autopsyguard/
     detectors/
+    notifiers/
+    platform_utils/
     utils/
     __main__.py
     monitor.py
