@@ -138,8 +138,10 @@ def main() -> int:
     
     # Create and run monitor
     monitor = Monitor(config)
-    # Set notifier uptime start on the monitor's EmailNotifier instance
+    # Set notifier uptime start on the monitor's notifiers
     monitor.notifier.set_start_time()
+    monitor.whatsapp.set_start_time()
+    monitor.telegram.set_start_time()
     
     try:
         monitor.run()
