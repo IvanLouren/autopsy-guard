@@ -45,6 +45,7 @@ class MonitorConfig:
     log_stale_timeout: float = 600.0  # 10 minutes
 
     # --- Resource thresholds ---
+    # Process CPU% (psutil process.cpu_percent): may exceed 100 on multi-core systems.
     cpu_warning_percent: float = 95.0
     # Per-core CPU percent threshold (e.g., 90.0 means a single core at 90% will trigger)
     cpu_per_core_warning_percent: float = 90.0
@@ -275,9 +276,15 @@ def _validate_config_types(config: MonitorConfig) -> None:
     if not (1 <= config.solr_port <= 65535):
         raise ValueError(f"Invalid solr_port: {config.solr_port} (must be 1-65535)")
 
-    # Validate percentage thresholds
+    # Validate process CPU threshold separately: process CPU can exceed 100%
+    # when multiple logical cores are used.
+    if config.cpu_warning_percent < 0:
+        raise ValueError(
+            f"Invalid cpu_warning_percent: {config.cpu_warning_percent} (must be >= 0)"
+        )
+
+    # Validate bounded percentage thresholds (0-100)
     percentage_fields = [
-        ("cpu_warning_percent", config.cpu_warning_percent),
         ("cpu_per_core_warning_percent", config.cpu_per_core_warning_percent),
         ("memory_warning_percent", config.memory_warning_percent),
         ("hang_cpu_threshold", config.hang_cpu_threshold),

@@ -725,6 +725,84 @@ class TestSolrCoreStatus:
         solr_events = [e for e in events if e.crash_type == CrashType.SOLR_CRASH]
         assert len(solr_events) == 0
 
+    def test_core_doc_drop_without_deletions_triggers_warning(self, config: MonitorConfig) -> None:
+        detector = SolrDetector(config)
+
+        baseline = {
+            "status": {
+                "textsearch": {
+                    "index": {"numDocs": 1000, "sizeInBytes": 1024000, "hasDeletions": False}
+                }
+            },
+            "initFailures": {},
+        }
+        dropped = {
+            "status": {
+                "textsearch": {
+                    "index": {"numDocs": 700, "sizeInBytes": 800000, "hasDeletions": False}
+                }
+            },
+            "initFailures": {},
+        }
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            response1 = MagicMock()
+            response1.read.return_value = json.dumps(baseline).encode("utf-8")
+            response2 = MagicMock()
+            response2.read.return_value = json.dumps(dropped).encode("utf-8")
+            response3 = MagicMock()
+            response3.read.return_value = json.dumps(dropped).encode("utf-8")
+            mock_urlopen.side_effect = [response1, response2, response3]
+
+            events1 = detector._check_cores()
+            events2 = detector._check_cores()
+            events3 = detector._check_cores()
+
+        assert events1 == []
+        drop_events = [
+            e for e in events2
+            if e.crash_type == CrashType.SOLR_CRASH and "doc count dropped" in e.message.lower()
+        ]
+        assert len(drop_events) == 1
+        assert drop_events[0].severity == Severity.WARNING
+        assert events3 == []
+
+    def test_core_doc_drop_with_deletions_does_not_trigger(self, config: MonitorConfig) -> None:
+        detector = SolrDetector(config)
+
+        baseline = {
+            "status": {
+                "textsearch": {
+                    "index": {"numDocs": 1000, "sizeInBytes": 1024000, "hasDeletions": False}
+                }
+            },
+            "initFailures": {},
+        }
+        dropped_with_deletions = {
+            "status": {
+                "textsearch": {
+                    "index": {"numDocs": 700, "sizeInBytes": 800000, "hasDeletions": True}
+                }
+            },
+            "initFailures": {},
+        }
+
+        with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
+            response1 = MagicMock()
+            response1.read.return_value = json.dumps(baseline).encode("utf-8")
+            response2 = MagicMock()
+            response2.read.return_value = json.dumps(dropped_with_deletions).encode("utf-8")
+            mock_urlopen.side_effect = [response1, response2]
+
+            detector._check_cores()
+            events = detector._check_cores()
+
+        drop_events = [
+            e for e in events
+            if e.crash_type == CrashType.SOLR_CRASH and "doc count dropped" in e.message.lower()
+        ]
+        assert drop_events == []
+
 
 class TestSolrLogMonitoring:
     """Tests for Solr log file monitoring."""

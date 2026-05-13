@@ -99,9 +99,9 @@ log_stale_timeout: 1800.0
 # -----------------------------------------------------------------------------
 
 # Process-level CPU % (psutil). On an 8-core system Autopsy can legitimately
-# show 700–800% during parallel ingest. Because the config validator caps
-# this at 100, this threshold triggers as soon as Autopsy is active (>95% of
-# one core). The real guard is cpu_warning_duration below.
+# show 700–800% during parallel ingest. This threshold is intentionally
+# allowed to exceed 100 for multi-core process usage; the real guard is
+# cpu_warning_duration below.
 cpu_warning_percent: 95.0
 
 # Per-core average CPU % = (process %) / logical_cpu_count.

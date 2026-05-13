@@ -116,3 +116,39 @@ def test_from_sources_loads_solr_settings(tmp_path: Path) -> None:
     assert config.solr_heap_usage_warning == 80.0
     assert config.solr_heap_usage_critical == 93.0
     assert config.solr_cpu_warning == 88.0
+
+
+def test_from_sources_allows_multicore_process_cpu_threshold_over_100(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "cpu_warning_percent: 250.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = MonitorConfig.from_sources(yaml_path=cfg)
+    assert config.cpu_warning_percent == 250.0
+
+
+def test_from_sources_rejects_per_core_cpu_threshold_over_100(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "cpu_per_core_warning_percent: 101.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cpu_per_core_warning_percent"):
+        MonitorConfig.from_sources(yaml_path=cfg)

@@ -19,7 +19,6 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
-from itertools import chain
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
@@ -30,6 +29,7 @@ from autopsyguard.platform_utils import (
     get_autopsy_log_dir,
 )
 from autopsyguard.utils.log_tracker import LogFileTracker
+from autopsyguard.utils.report_tracker import ReportTracker
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +100,19 @@ class SolrDetector(BaseDetector):
       4. Core Errors — indexing failures or corrupt cores
       5. Log Errors — errors detected in Solr log files
     """
+    _CORE_DOC_DROP_MIN_DOCS = 100
+    _CORE_DOC_DROP_MIN_RATIO = 0.20
 
     def __init__(self, config: MonitorConfig, solr_cache=None, monitor_start: float | None = None) -> None:
         super().__init__(config)
         self._solr_cache = solr_cache
+        self._report_tracker = ReportTracker()
         self._solr_down_reported = False
         self._solr_hang_reported = False
         self._consecutive_slow_responses = 0
         self._heap_warning_reported = False
         self._cpu_warning_reported = False
+        self._core_doc_counts: dict[str, int] = {}
         self._reported_log_errors: set[str] = set()
         self._initialized = False
         # Timestamp when the monitor started. If provided, used to
@@ -141,6 +145,7 @@ class SolrDetector(BaseDetector):
                             self.config.solr_port,
                         )
                     self._solr_down_reported = False
+                    self._report_tracker.clear("solr_down")
                 else:
                     # Mark as down but do NOT return early — _check_logs() must
                     # still run so log errors are captured while Solr is crashed.
@@ -200,6 +205,7 @@ class SolrDetector(BaseDetector):
                                 self.config.solr_port,
                             )
                         self._solr_down_reported = False
+                        self._report_tracker.clear("solr_down")
                         core = None
                     else:
                         core = cores[0]
@@ -218,6 +224,7 @@ class SolrDetector(BaseDetector):
                                         self.config.solr_port,
                                     )
                                 self._solr_down_reported = False
+                                self._report_tracker.clear("solr_down")
             except urllib.error.URLError as e:
                 elapsed = time.time() - start_time
                 if self._is_timeout_error(e):
@@ -272,6 +279,7 @@ class SolrDetector(BaseDetector):
                     },
                 ))
                 self._solr_hang_reported = True
+                self._report_tracker.mark_reported("solr_hang")
                 # Inform shared cache that a hang was reported to avoid duplicate alerts
                 try:
                     if self._solr_cache is not None:
@@ -284,6 +292,7 @@ class SolrDetector(BaseDetector):
                 logger.info("Solr response times have normalized (%.2fs).", elapsed)
             self._consecutive_slow_responses = 0
             self._solr_hang_reported = False
+            self._report_tracker.clear("solr_hang")
             
         return events
 
@@ -306,6 +315,7 @@ class SolrDetector(BaseDetector):
                 },
             ))
             self._solr_hang_reported = True
+            self._report_tracker.mark_reported("solr_hang")
             try:
                 if self._solr_cache is not None:
                     self._solr_cache.mark_report("hang")
@@ -326,6 +336,7 @@ class SolrDetector(BaseDetector):
                 details={"error": str(error), "url": url},
             ))
             self._solr_down_reported = True
+            self._report_tracker.mark_reported("solr_down")
             try:
                 if self._solr_cache is not None:
                     self._solr_cache.mark_report("down")
@@ -335,6 +346,7 @@ class SolrDetector(BaseDetector):
         # Reset hang tracking since service is down, not hung
         self._consecutive_slow_responses = 0
         self._solr_hang_reported = False
+        self._report_tracker.clear("solr_hang")
         
         return events
 
@@ -523,37 +535,96 @@ class SolrDetector(BaseDetector):
                 except Exception:
                     pass
             status = data.get("status", {})
+            init_failures = data.get("initFailures", {})
 
             for core_name, core_info in status.items():
                 # Check for index errors
                 index_info = core_info.get("index", {})
-                # The following fields are intentionally read for future alerting
-                # and to keep parsing logic explicit. They are currently unused
-                # by alerts; prefix with underscore to avoid linter warnings.
-                # TODO: emit alerts when num_docs drops unexpectedly (possible core corruption)
-                _has_deletions = index_info.get("hasDeletions", False)
-                _num_docs = index_info.get("numDocs", 0)
-                _size_bytes = index_info.get("sizeInBytes", 0)
+                events.extend(self._check_core_doc_drop(core_name, index_info))
 
-                # Check for initialization failures
-                init_failures = data.get("initFailures", {})
-                if core_name in init_failures:
-                    error_key = f"core_init_{core_name}"
-                    if error_key not in self._reported_log_errors:
-                        events.append(CrashEvent(
-                            crash_type=CrashType.SOLR_CRASH,
-                            severity=Severity.CRITICAL,
-                            message=f"Solr core '{core_name}' failed to initialize",
-                            details={
-                                "core_name": core_name,
-                                "error": init_failures[core_name],
-                            },
-                        ))
-                        self._reported_log_errors.add(error_key)
+            # Check for initialization failures
+            for core_name, failure in init_failures.items():
+                error_key = f"core_init_{core_name}"
+                if not self._report_tracker.has_reported(error_key):
+                    events.append(CrashEvent(
+                        crash_type=CrashType.SOLR_CRASH,
+                        severity=Severity.CRITICAL,
+                        message=f"Solr core '{core_name}' failed to initialize",
+                        details={
+                            "core_name": core_name,
+                            "error": failure,
+                        },
+                    ))
+                    self._report_tracker.mark_reported(error_key)
+
+            # Allow re-alerting only after an observed recovery.
+            for event_key in self._report_tracker.get_reported_events():
+                if not event_key.startswith("core_init_"):
+                    continue
+                tracked_core = event_key.removeprefix("core_init_")
+                if tracked_core not in init_failures:
+                    self._report_tracker.clear(event_key)
 
         except (urllib.error.URLError, json.JSONDecodeError) as e:
             logger.debug("Failed to fetch Solr core status: %s", e)
 
+        return events
+
+    def _check_core_doc_drop(self, core_name: str, index_info: dict) -> list[CrashEvent]:
+        """Detect suspicious Solr doc-count drops that can indicate corruption."""
+        events: list[CrashEvent] = []
+        event_key = f"core_doc_drop_{core_name}"
+
+        try:
+            current_docs = int(index_info.get("numDocs", 0))
+        except (TypeError, ValueError):
+            self._core_doc_counts.pop(core_name, None)
+            self._report_tracker.clear(event_key)
+            return events
+
+        previous_docs = self._core_doc_counts.get(core_name)
+        self._core_doc_counts[core_name] = current_docs
+        if previous_docs is None or previous_docs <= 0:
+            self._report_tracker.clear(event_key)
+            return events
+
+        dropped_docs = previous_docs - current_docs
+        drop_ratio = dropped_docs / previous_docs if previous_docs else 0.0
+        has_deletions = bool(index_info.get("hasDeletions", False))
+
+        suspicious_drop = (
+            dropped_docs >= self._CORE_DOC_DROP_MIN_DOCS
+            and drop_ratio >= self._CORE_DOC_DROP_MIN_RATIO
+            and not has_deletions
+        )
+
+        if not suspicious_drop:
+            self._report_tracker.clear(event_key)
+            return events
+
+        if self._report_tracker.has_reported(event_key):
+            return events
+
+        details = {
+            "core_name": core_name,
+            "previous_num_docs": previous_docs,
+            "current_num_docs": current_docs,
+            "dropped_docs": dropped_docs,
+            "drop_ratio": round(drop_ratio, 3),
+            "has_deletions": has_deletions,
+            "size_bytes": index_info.get("sizeInBytes"),
+        }
+        events.append(CrashEvent(
+            crash_type=CrashType.SOLR_CRASH,
+            severity=Severity.WARNING,
+            message=(
+                f"Solr core '{core_name}' doc count dropped from "
+                f"{previous_docs} to {current_docs} without deletions "
+                f"(possible index corruption)"
+            ),
+            details=details,
+        ))
+        self._report_tracker.mark_reported(event_key)
         return events
 
     def _check_logs(self) -> list[CrashEvent]:

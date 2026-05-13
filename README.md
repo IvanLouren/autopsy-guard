@@ -177,8 +177,7 @@ Hang detection (requires signal correlation; see `src/autopsyguard/detectors/han
 
 Resource thresholds (Autopsy process + system disk for case partition):
 
-- **`cpu_warning_percent`** (percent, default `95.0`): Autopsy process CPU% threshold
-  - Note: process CPU% can exceed 100% on multi-core systems; see `ResourceDetector`.
+- **`cpu_warning_percent`** (percent, default `95.0`): Autopsy process CPU% threshold (`>= 0`, can exceed `100` on multi-core systems)
 - **`cpu_per_core_warning_percent`** (percent, default `90.0`): average per-core CPU threshold
 - **`cpu_warning_duration`** (seconds, default `300.0`): sustained CPU above threshold before warning
 - **`memory_warning_percent`** (percent, default `90.0`): Autopsy RSS as % of system RAM before warning
@@ -273,13 +272,18 @@ whatsapp_phone: "+351912345678"
 
 - **Case log**: `<case_dir>/Log/autopsy.log.0`
 - **Case lock**: `<case_dir>/Log/autopsy.log.0.lck`
-- **Global logs**: `${AUTOPSY_USER_DIR}/var/log/messages.log` and `${AUTOPSY_USER_DIR}/var/log/autopsy.log.0`
-- **Global lock**: `${AUTOPSY_USER_DIR}/var/log/messages.log.lck`
+- **Global logs**: `${AUTOPSY_LOG_DIR}/messages.log` and `${AUTOPSY_LOG_DIR}/autopsy.log.0`
+- **Global lock**: `${AUTOPSY_LOG_DIR}/messages.log.lck`
 
 `AUTOPSY_USER_DIR` is:
 
 - Linux: `~/.autopsy`
 - Windows: `%APPDATA%/autopsy` (fallbacks to `~/AppData/Roaming/autopsy` if needed)
+
+`AUTOPSY_LOG_DIR` is resolved from `AUTOPSY_USER_DIR` and supports both profile layouts:
+
+- `${AUTOPSY_USER_DIR}/var/log`
+- `${AUTOPSY_USER_DIR}/dev/var/log` (preferred when present)
 
 ### AutopsyGuard state (write, outside evidence case)
 

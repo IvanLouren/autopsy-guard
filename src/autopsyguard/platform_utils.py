@@ -76,18 +76,39 @@ def get_autopsy_user_dir() -> Path:
 
 def get_autopsy_log_dir() -> Path:
     """Return the global Autopsy log directory.
-    Checks both ~/.autopsy/var/log and ~/.autopsy/dev/var/log, returns the one that exists.
-    If both exist, prefers ~/.autopsy/dev/var/log.
+
+    Uses `get_autopsy_user_dir()` as the source-of-truth root and then checks
+    compatible variants:
+      - <user_dir>/var/log
+      - <user_dir>/dev/var/log (when user_dir points to base ~/.autopsy)
+      - <user_dir_parent>/var/log (when user_dir points to ~/.autopsy/dev)
+
+    If multiple exist, prefers the dev profile path.
     """
-    home = Path.home()
-    log_paths = [
-        home / ".autopsy" / "dev" / "var" / "log",
-        home / ".autopsy" / "var" / "log",
-    ]
+    user_dir = get_autopsy_user_dir()
+    log_paths: list[Path]
+    user_dir_name = user_dir.name.lower()
+    normalized_user_dir_name = user_dir_name.lstrip(".")
+
+    if user_dir_name == "dev":
+        # user_dir already points at ~/.autopsy/dev (or equivalent); prefer it.
+        log_paths = [
+            user_dir / "var" / "log",
+            user_dir.parent / "var" / "log",
+        ]
+    elif normalized_user_dir_name == "autopsy":
+        # base profile; keep historical preference for dev logs when present.
+        log_paths = [
+            user_dir / "dev" / "var" / "log",
+            user_dir / "var" / "log",
+        ]
+    else:
+        # Generic/future layout.
+        log_paths = [user_dir / "var" / "log"]
+
     for p in log_paths:
         if p.is_dir():
             return p
-    # Fallback to default (dev path)
     return log_paths[0]
 
 
