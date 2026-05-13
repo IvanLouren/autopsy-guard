@@ -84,6 +84,7 @@ class Monitor:
         # Track previous ingest state to detect transitions
         self._was_ingest_running = False
         self._ingest_start_time: float | None = None
+        self._has_ingest_started_ever = False
 
     def _is_autopsy_running(self) -> bool:
         """Check if the Autopsy process is running.
@@ -176,10 +177,12 @@ class Monitor:
         if events:
             # Send immediate alert for critical/warning events
             alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
-            if alert_events:
+            if alert_events and self._has_ingest_started_ever:
                 self.notifier.send_alert(alert_events)
                 self.whatsapp.send_alert(alert_events)
                 self.telegram.send_alert(alert_events)
+            elif alert_events:
+                logger.info("Alerts generated but muted because ingest has not started yet.")
                 
             for event in events:
                 self._handle_event(event)
@@ -191,6 +194,7 @@ class Monitor:
             # Ingest just started
             self._ingest_start_time = self._log_detector.ingest_start_time
             self._was_ingest_running = True
+            self._has_ingest_started_ever = True
             
         elif not is_ingest_running and self._was_ingest_running:
             # Ingest just finished
@@ -210,27 +214,31 @@ class Monitor:
         now = time.time()
         elapsed_hours = (now - self._last_report_time) / 3600.0
         if elapsed_hours >= self.config.report_interval_hours:
-            # Fetch a small buffer before the last report time to ensure
-            # we have enough samples for chart rendering even on the
-            # first/short-interval reports.
-            buffer_seconds = max(60, int(self.config.poll_interval * 3))
-            since_ts = max(0.0, self._last_report_time - buffer_seconds)
-            metrics_samples = self._metrics_store.fetch_samples(since_ts=since_ts)
-            self.notifier.send_report(
-                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
-                events_last_period=self._events_since_last_report,
-                metrics_samples=metrics_samples,
-            )
-            self.whatsapp.send_report(
-                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
-                events_last_period=self._events_since_last_report,
-                metrics_samples=metrics_samples,
-            )
-            self.telegram.send_report(
-                system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
-                events_last_period=self._events_since_last_report,
-                metrics_samples=metrics_samples,
-            )
+            if self._has_ingest_started_ever:
+                # Fetch a small buffer before the last report time to ensure
+                # we have enough samples for chart rendering even on the
+                # first/short-interval reports.
+                buffer_seconds = max(60, int(self.config.poll_interval * 3))
+                since_ts = max(0.0, self._last_report_time - buffer_seconds)
+                metrics_samples = self._metrics_store.fetch_samples(since_ts=since_ts)
+                self.notifier.send_report(
+                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    events_last_period=self._events_since_last_report,
+                    metrics_samples=metrics_samples,
+                )
+                self.whatsapp.send_report(
+                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    events_last_period=self._events_since_last_report,
+                    metrics_samples=metrics_samples,
+                )
+                self.telegram.send_report(
+                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    events_last_period=self._events_since_last_report,
+                    metrics_samples=metrics_samples,
+                )
+            else:
+                logger.info("Heartbeat skipped because ingest has not started yet.")
+                
             self._last_report_time = now
             self._events_since_last_report = 0
             self._report_count += 1
