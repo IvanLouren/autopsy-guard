@@ -54,85 +54,36 @@ Activation requires:
 - OS support: Windows and Linux
 - Package manager/runtime: `uv`
 
-## Installation (UV only)
+## Quick Start (Guided Setup)
 
-From repository root:
+The easiest and recommended way to configure and run AutopsyGuard is using the interactive setup script. This script will automatically validate your Autopsy case directory, configure your notification settings (Email, WhatsApp, Telegram), and safely store your API credentials in a `.env` file.
 
-```bash
-uv sync
+### 1. Run the Setup Wizard
+
+From the repository root, run the setup script for your operating system:
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-autopsyguard.ps1
 ```
 
-For development dependencies:
-
+**Linux / macOS (Bash):**
 ```bash
-uv sync --extra dev
+bash ./scripts/setup-autopsyguard.sh
 ```
 
-## Run (UV only)
+The wizard will ask you a few simple questions, automatically detect your Autopsy installation, and generate a `config.local.yml` file tailored to your needs.
 
-Recommended:
+### 2. Start the Monitor
+
+Once the setup wizard completes, you can start AutopsyGuard using `uv`. The monitor will automatically detect your configuration and load the hidden `.env` file created by the wizard.
 
 ```bash
 uv run autopsyguard --config config.local.yml
 ```
 
-Quick start with example templates:
-
-```powershell
-# PowerShell
-Copy-Item .\config.production.example.yml .\config.local.yml
-# edit config.local.yml
-uv run autopsyguard --config .\config.local.yml
-```
-
-```bash
-# Linux/macOS
-cp ./config.production.example.yml ./config.local.yml
-# edit config.local.yml
-uv run autopsyguard --config ./config.local.yml
-```
-
-For dev-like thresholds, use `config.development.example.yml` instead of `config.production.example.yml`.
-
-## Guided setup scripts (recommended for first run)
-
-To help users create a valid config file and environment variable file in one flow:
-
-- **Windows (PowerShell):**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-autopsyguard.ps1
-```
-
-- **Linux/macOS (bash):**
-
-```bash
-bash ./scripts/setup-autopsyguard.sh
-```
-
-The scripts:
-
-1. Prompt for required/optional settings
-2. Validate case-directory hints (`*.aut`, `Log/` or `autopsy.db`) and show warnings/suggestions
-3. Try to auto-detect `autopsy_install_dir` from common locations (Windows, Linux, Linux snap) and offer it as a suggestion
-4. Create a config file (default: `config.local.yml`)
-5. Create a `.env` file for secrets (default: `.env` in cwd) — loaded automatically at startup
-6. Optionally run `uv sync`
-7. Print exact run commands, debug command, and a setup summary
-
-After script completion, just run:
-
-```powershell
-# PowerShell
-uv run autopsyguard --config .\config.local.yml
-```
-
-```bash
-# Linux/macOS
-uv run autopsyguard --config ./config.local.yml
-```
-
-The `.env` file is picked up automatically — no shell sourcing needed.
+> [!TIP]
+> **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, you can run `uv sync` to install dependencies, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, and edit it by hand.
 
 ## CLI reference
 
