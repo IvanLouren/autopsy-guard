@@ -134,13 +134,13 @@ class ProcessDetector(BaseDetector):
                     # Ignore short-lived transient Java processes (e.g. wmic wrappers, version checks)
                     # Only track processes that have survived at least 15 seconds
                     try:
-                        if (now - c.create_time()) >= 15.0:
+                        if (now - float(c.create_time())) >= 15.0:
                             java_children.add(c.pid)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    except Exception:
                         pass
                         
             return java_children
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except Exception:
             return set()
 
     # NOTE: PID discovery is delegated to an injectable finder (`self._pid_finder`).

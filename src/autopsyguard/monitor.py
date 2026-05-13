@@ -25,9 +25,7 @@ from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.utils.solr_health import SolrHealthCache
 from autopsyguard.models import CrashEvent, Severity
-from autopsyguard.notifier import EmailNotifier
-from autopsyguard.whatsapp_notifier import WhatsAppNotifier
-from autopsyguard.telegram_notifier import TelegramNotifier
+from autopsyguard.notifiers import EmailNotifier, WhatsAppNotifier, TelegramNotifier
 from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_global_lock_file,

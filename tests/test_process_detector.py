@@ -59,6 +59,7 @@ class TestProcessDisappearance:
 
         # Second check: process gone
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            detector._pid_finder = lambda: None
             mock_psutil.pid_exists.return_value = False
             mock_psutil.NoSuchProcess = real_psutil.NoSuchProcess
             mock_psutil.TimeoutExpired = real_psutil.TimeoutExpired
@@ -80,6 +81,7 @@ class TestProcessDisappearance:
         detector._process_lost_reported = False
 
         with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            detector._pid_finder = lambda: None
             mock_psutil.pid_exists.return_value = False
             mock_psutil.NoSuchProcess = real_psutil.NoSuchProcess
             mock_psutil.TimeoutExpired = real_psutil.TimeoutExpired
@@ -145,6 +147,7 @@ class TestAbnormalExit:
             mock_psutil.TimeoutExpired = __import__("psutil").TimeoutExpired
             mock_psutil.AccessDenied = __import__("psutil").AccessDenied
 
+            detector._pid_finder = lambda: None
             events = detector.check()
 
         assert len(events) == 1

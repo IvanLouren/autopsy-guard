@@ -77,6 +77,8 @@ class TestSolrHealthCheck:
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
+            for _ in range(5):
+                detector.check()
             events = detector.check()
 
         assert len(events) == 1
@@ -93,7 +95,9 @@ class TestSolrHealthCheck:
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
-            # First check should report
+            # First check should report after 6 attempts
+            for _ in range(5):
+                detector.check()
             events1 = detector.check()
             # Second check should not report again
             events2 = detector.check()
@@ -109,8 +113,10 @@ class TestSolrHealthCheck:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                # First, Solr is down
+                # First, Solr is down for 6 checks
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+                for _ in range(5):
+                    detector.check()
                 events1 = detector.check()
 
                 # Now Solr recovers with fast response (explicit cores+ping)
@@ -142,9 +148,11 @@ class TestSolrHealthCheck:
 
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             with patch("autopsyguard.detectors.solr_detector.time.time") as mock_time:
-                # First failure - time.time() called twice (start + elapsed in exception handler)
-                mock_time.side_effect = [0.0, 0.1]
+                # First failure - needs 6 checks
+                mock_time.side_effect = [0.0, 0.1] * 6
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+                for _ in range(5):
+                    detector.check()
                 events1 = detector.check()
 
                 # Recovery (explicit cores+ping)
@@ -164,9 +172,11 @@ class TestSolrHealthCheck:
                 mock_urlopen.side_effect = lambda *a, **k: next(g)
                 detector.check()
 
-                # Second failure - time.time() called twice
-                mock_time.side_effect = [0.0, 0.1]
+                # Second failure - needs 6 checks
+                mock_time.side_effect = [0.0, 0.1] * 6
                 mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+                for _ in range(5):
+                    detector.check()
                 events2 = detector.check()
 
         assert len(events1) == 1
@@ -180,6 +190,8 @@ class TestSolrHealthCheck:
         with patch("autopsyguard.detectors.solr_detector.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = ConnectionError("Connection failed")
 
+            for _ in range(5):
+                detector.check()
             events = detector.check()
 
         assert len(events) == 1

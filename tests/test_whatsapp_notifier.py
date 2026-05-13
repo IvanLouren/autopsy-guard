@@ -16,7 +16,7 @@ import pytest
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.whatsapp_notifier import WhatsAppNotifier
+from autopsyguard.notifiers.whatsapp import WhatsAppNotifier
 
 
 @pytest.fixture()
@@ -69,7 +69,7 @@ class TestWhatsAppEnabled:
         notifier = WhatsAppNotifier(wa_config)
         assert notifier.is_enabled() is True
 
-    @patch("autopsyguard.whatsapp_notifier.urllib.request.urlopen")
+    @patch("autopsyguard.notifiers.whatsapp.urllib.request.urlopen")
     def test_send_alert_dispatches(self, mock_urlopen, wa_config: MonitorConfig) -> None:
         """send_alert should trigger an HTTP request to CallMeBot."""
         mock_resp = MagicMock()
@@ -103,7 +103,7 @@ class TestWhatsAppEnabled:
         assert "test-key-123" in url
         assert "callmebot" in url
 
-    @patch("autopsyguard.whatsapp_notifier.urllib.request.urlopen")
+    @patch("autopsyguard.notifiers.whatsapp.urllib.request.urlopen")
     def test_send_report_dispatches(self, mock_urlopen, wa_config: MonitorConfig) -> None:
         """send_report should trigger an HTTP request to CallMeBot."""
         mock_resp = MagicMock()

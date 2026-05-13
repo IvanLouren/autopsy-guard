@@ -8,7 +8,7 @@ import pytest
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.notifier import EmailNotifier
+from autopsyguard.notifiers.email import EmailNotifier
 
 
 def make_config(tmp_path) -> MonitorConfig:
@@ -82,7 +82,7 @@ def test_dispatch_email_retries_and_succeeds(tmp_path):
                 raise smtplib.SMTPException("transient")
             return None
 
-    with patch("autopsyguard.notifier.smtplib.SMTP", DummySMTP):
+    with patch("autopsyguard.notifiers.email.notifier.smtplib.SMTP", DummySMTP):
         with patch("time.sleep", lambda s: None):
             ok = notifier._dispatch_email(subject, html, plain_text=plain)
 
