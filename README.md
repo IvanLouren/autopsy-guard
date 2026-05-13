@@ -280,6 +280,7 @@ The monitor will still work and still detects JVM crash files via fallback searc
 
 ## Troubleshooting
 
+- **Autopsy crashes immediately on Windows 11 (`wmic` error)**: Autopsy 4.22.1 requires the `wmic` command to manage its embedded Solr service, which Microsoft removed in Windows 11 (24H2+). To fix this, go to **Windows Settings > System > Optional Features** and install **WMI Commandline Utility**.
 - **Missing `case_dir`**: provide it in YAML or as positional CLI argument
 - **Invalid case directory error**: ensure the directory has `*.aut` plus `autopsy.db` or `Log\`
 - **No email alerts**: confirm `smtp_host` + `email_recipient`; check SMTP auth settings

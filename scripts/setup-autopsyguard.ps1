@@ -179,6 +179,23 @@ Write-Host "  - SMTP 587 -> smtp_use_ssl=false (STARTTLS), SMTP 465 -> smtp_use_
 Write-Host "  - Install-dir lookup targets Windows defaults: Program Files / Program Files (x86)"
 Write-Host ""
 
+# Pre-flight check for Autopsy 4.22 on Windows 11
+$wmicPath = Get-Command "wmic" -ErrorAction SilentlyContinue
+if (-not $wmicPath) {
+    Write-Host "[WARNING]: 'wmic' command is missing from your system!" -ForegroundColor Red
+    Write-Host "Autopsy 4.22.1 requires 'wmic' to manage its embedded Solr service." -ForegroundColor Yellow
+    Write-Host "Because Windows 11 recently removed 'wmic', Autopsy WILL CRASH on startup." -ForegroundColor Yellow
+    Write-Host "To fix this, go to Windows Settings -> System -> Optional Features and install 'WMI Commandline Utility'." -ForegroundColor Yellow
+    Write-Host ""
+    
+    $continueSetup = Read-YesNo "Do you want to continue setup anyway?" $false
+    if (-not $continueSetup) {
+        Write-Host "Setup aborted." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host ""
+}
+
 if (-not $SkipDependencySync) {
     $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($null -eq $uv) {
@@ -343,6 +360,7 @@ Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
 Write-Host "Config file : $ConfigPath"
 Write-Host "Secrets file: $EnvFilePath  (loaded automatically by AutopsyGuard)"
+
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. uv run autopsyguard --config .\$ConfigPath"
