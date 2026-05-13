@@ -1,367 +1,309 @@
 # AutopsyGuard
 
-Real-time monitoring system for the **Autopsy** digital forensics tool. AutopsyGuard watches Autopsy’s process + logs + embedded Solr health + machine resources and sends **alerts** (email and/or WhatsApp) plus periodic **heartbeat reports** (with charts + raw metrics attachments).
+AutopsyGuard is a real-time monitoring service for the Autopsy digital forensics platform.  
+It detects process failures, JVM crashes, hangs, Solr health issues, and sustained resource pressure, then sends alerts and periodic status reports.
 
-## What it monitors
+This repository is a final-year software engineering project focused on operational reliability for long-running forensic analysis sessions.
 
-AutopsyGuard runs a polling loop and raises events when it detects anomalies. Event types are defined in `src/autopsyguard/models.py`:
+## Key capabilities
 
-- **Process / lifecycle**
-  - `PROCESS_DISAPPEARED`: Autopsy process vanished unexpectedly
-  - `ABNORMAL_EXIT`: Autopsy exited with non-zero exit code (best-effort)
-  - `ZOMBIE`: Autopsy process became a zombie (CRITICAL)
-  - `SOLR_CRASH`: a tracked child Java process disappeared (warning; often Solr)
-- **JVM fatal crash**
-  - `JVM_CRASH`: new `hs_err_pid*.log` file detected (CRITICAL)
-- **Log-based errors**
-  - `OUT_OF_MEMORY`: `java.lang.OutOfMemoryError` in logs (CRITICAL)
-  - `LOG_ERROR`: configured error patterns / SEVERE / exceptions (WARNING/CRITICAL)
-- **Hang detection**
-  - `HANG`: correlation of multiple “freeze” signals (CRITICAL) and/or Solr slow/timeout (WARNING/CRITICAL)
-- **Resource pressure**
-  - `HIGH_RESOURCE_USAGE`: sustained CPU, high RAM, low disk space, Solr heap/CPU warnings
+- Continuous polling-based monitoring while Autopsy is active
+- Multi-signal hang detection (CPU + logs + Solr)
+- Solr health and core checks (availability, latency, heap/CPU, core issues)
+- Email, WhatsApp, and Telegram notifications
+- Heartbeat reporting with metrics attachments and chart
+- Metrics persistence in SQLite outside the case directory
 
-## How it decides when to be “active”
+## Detection coverage
 
-AutopsyGuard only runs the detectors when it believes the case is actively open. In `src/autopsyguard/monitor.py`, the monitor transitions from **WAITING → ACTIVE** when:
+Detectors are wired in `src\autopsyguard\monitor.py` and run in this order:
 
-- Autopsy is running (process detected), and
-- either the **case lock file** exists (`<case_dir>/Log/autopsy.log.0.lck`) **or**
-- the **global lock file** exists (`~/.autopsy/var/log/messages.log.lck` on Linux; similar under `%APPDATA%/autopsy` on Windows)
+1. `ProcessDetector`
+2. `JvmCrashDetector`
+3. `LogDetector`
+4. `HangDetector`
+5. `ResourceDetector`
+6. `SolrDetector`
 
-This avoids false positives when Autopsy is not running, but still catches early startup phases.
+| Detector | What it detects | Event types |
+|---|---|---|
+| `ProcessDetector` | Main Autopsy process disappeared, abnormal exit code, zombie state, missing child Java process (possible Solr subprocess crash), stale lock without running process | `PROCESS_DISAPPEARED`, `ABNORMAL_EXIT`, `ZOMBIE`, `SOLR_CRASH` |
+| `JvmCrashDetector` | New `hs_err_pid*.log` files (fatal HotSpot/JVM crash evidence) | `JVM_CRASH` |
+| `LogDetector` | New error lines in Autopsy logs (`OutOfMemoryError`, `FATAL`, `SEVERE`, exceptions, custom regex patterns); also tracks ingest start/finish state | `OUT_OF_MEMORY`, `LOG_ERROR` |
+| `HangDetector` | Correlated freeze symptoms (low CPU + stale logs + slow/unresponsive Solr), with confirmation window and ingest-aware suppression | `HANG` |
+| `ResourceDetector` | Sustained high Autopsy CPU, high Autopsy memory share, low disk free space on case partition, and external memory pressure from other processes | `HIGH_RESOURCE_USAGE` |
+| `SolrDetector` | Solr down/not responding, consecutive slow responses/timeouts, high heap/CPU, core init failures, suspicious doc-count drops, Solr log errors | `SOLR_CRASH`, `HANG`, `HIGH_RESOURCE_USAGE`, `LOG_ERROR` |
+
+## Runtime state model
+
+The monitor runs as a state machine:
+
+- `WAITING`: Autopsy not active yet
+- `ACTIVE`: process detected and lock evidence present
+- `FINISHED`: process ended and locks were cleaned (graceful completion)
+
+Activation requires:
+
+- Autopsy process is running, and
+- either case lock exists (`<case_dir>\Log\autopsy.log.0.lck`) **or** global lock exists (`<autopsy_user_dir>\var\log\messages.log.lck`).
 
 ## Requirements
 
-- **Python**: 3.11+ (see `pyproject.toml`)
-- **OS**: Linux / Windows (paths and process names are platform-aware; macOS may work but is not explicitly tuned)
-- **Autopsy**: Designed for Autopsy 4.x (production config file mentions 4.22.1 specifically)
-- **Dependencies**: `psutil`, `pyyaml`, `matplotlib` (see `pyproject.toml`)
+- Python 3.11+
+- Autopsy 4.22+ (project config examples target 4.22.1)
+- OS support: Windows and Linux
+- Package manager/runtime: `uv`
 
-## Install
+## Installation (UV only)
 
-### Option A (recommended): uv
-
-This repo includes `uv.lock`.
+From repository root:
 
 ```bash
 uv sync
 ```
 
-For development/testing dependencies:
+For development dependencies:
 
 ```bash
 uv sync --extra dev
 ```
 
-Run via uv:
+## Run (UV only)
+
+Recommended:
 
 ```bash
-uv run autopsyguard --config config.development.yml
+uv run autopsyguard --config config.local.yml
 ```
 
-### Option B: pip (editable)
+Quick start with example templates:
+
+```powershell
+# PowerShell
+Copy-Item .\config.production.example.yml .\config.local.yml
+# edit config.local.yml
+uv run autopsyguard --config .\config.local.yml
+```
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
+# Linux/macOS
+cp ./config.production.example.yml ./config.local.yml
+# edit config.local.yml
+uv run autopsyguard --config ./config.local.yml
 ```
 
-For tests:
+For dev-like thresholds, use `config.development.example.yml` instead of `config.production.example.yml`.
+
+## Guided setup scripts (recommended for first run)
+
+To help users create a valid config file and environment variable file in one flow:
+
+- **Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-autopsyguard.ps1
+```
+
+- **Linux/macOS (bash):**
 
 ```bash
-pip install -e ".[dev]"
+bash ./scripts/setup-autopsyguard.sh
 ```
 
-## Quick start
+The scripts:
 
-### 1) Choose a config file
+1. Prompt for required/optional settings
+2. Validate case-directory hints (`*.aut`, `Log/` or `autopsy.db`) and show warnings/suggestions
+3. Try to auto-detect `autopsy_install_dir` from common locations (Windows, Linux, Linux snap) and offer it as a suggestion
+4. Create a config file (default: `config.local.yml`)
+5. Create an env file for secrets (`autopsyguard-env.ps1` or `autopsyguard-env.sh`)
+6. Optionally run `uv sync`
+7. Print exact run commands, debug command, and a setup summary
 
-This repository ships with two example configs:
+After script completion:
 
-- `config.development.yml`: fast polling and “dev-friendly” thresholds
-- `config.production.yml`: conservative thresholds and detailed operational notes
-
-### 2) Point `case_dir` to an Autopsy case directory
-
-`case_dir` must look like an Autopsy case:
-
-- contains a `*.aut` descriptor file, and
-- contains either `autopsy.db` (single-user) **or** a `Log/` directory (multi-user / PostgreSQL)
-
-### 3) Run
-
-Using the installed CLI:
-
-```bash
-autopsyguard --config config.production.yml
-```
-
-Or via module execution:
-
-```bash
-python -m autopsyguard --config config.production.yml
-```
-
-You can also pass the case directory positionally (overrides YAML):
-
-```bash
-autopsyguard "/cases/active/Evidence-2025-001" --config config.production.yml
-```
+- **Windows PowerShell**
+  - Load env: `. .\autopsyguard-env.ps1`
+  - Run: `uv run autopsyguard --config .\config.local.yml`
+- **Linux/macOS**
+  - Load env: `source ./autopsyguard-env.sh`
+  - Run: `uv run autopsyguard --config ./config.local.yml`
 
 ## CLI reference
-
-Entry point: `autopsyguard = autopsyguard.__main__:main` (see `pyproject.toml`).
 
 ```text
 autopsyguard [case_dir] [options]
 ```
 
-Options (see `src/autopsyguard/__main__.py`):
+Options:
 
-- `case_dir` (positional, optional): path to case directory to monitor
-- `--config PATH`: YAML config file path. If omitted, auto-discovers (in current working directory) in this order:
-  - `config.development.yml`
-  - `config.production.yml`
-  - `config.yml`
-- `--autopsy-dir PATH`: Autopsy install directory (used for JVM crash detection search paths)
-- `--poll-interval SECONDS`: override `poll_interval`
-- `--hang-timeout SECONDS`: override `hang_timeout`
-- `-v, --verbose`: debug logging
-- `--skip-validation`: do not validate `case_dir` on startup (useful for tests)
+- `--config PATH` - YAML config path (if omitted, auto-discovers in current directory: `config.local.yml`, then `config.yml`)
+- `--autopsy-dir PATH` - optional Autopsy install directory (used mainly for JVM crash file search)
+- `--poll-interval SECONDS` - override `poll_interval`
+- `--hang-timeout SECONDS` - override `hang_timeout`
+- `-v`, `--verbose` - debug logging
+- `--skip-validation` - skip case directory validation at startup
+
+## Example config templates
+
+The repository now ships scenario templates only:
+
+- `config.development.example.yml`
+- `config.production.example.yml`
+
+These are **examples**, not your runtime config.  
+Create your own `config.local.yml` from one of them (or use the setup scripts).
 
 ## Configuration
 
-### Source precedence (important)
+Configuration precedence (`MonitorConfig.from_sources()`):
 
-Configuration is built in `MonitorConfig.from_sources()`:
+1. Dataclass defaults (`src\autopsyguard\config.py`)
+2. YAML file values
+3. Environment variable overrides (secrets)
+4. CLI overrides
 
-1. dataclass defaults (`src/autopsyguard/config.py`)
-2. YAML values
-3. environment variable overrides for secrets (below)
-4. explicit CLI overrides
+### Required setting
 
-### Environment variables (recommended for secrets)
+- `case_dir` (must point to a valid Autopsy case directory)
 
-AutopsyGuard reads these environment variables (see `_ENV_OVERRIDES` in `src/autopsyguard/config.py`):
+Validation expects:
 
-- `AUTOPSYGUARD_SMTP_USER` → `smtp_user`
-- `AUTOPSYGUARD_SMTP_PASSWORD` → `smtp_password`
-- `AUTOPSYGUARD_WHATSAPP_APIKEY` → `whatsapp_apikey`
+- At least one `*.aut` file, and
+- either `autopsy.db` or a `Log` directory.
 
-### Full config reference (all keys)
+### Optional but important settings
 
-All supported keys are validated; unknown keys cause startup failure (`Unknown config key(s) ...`).
+- `autopsy_install_dir` (optional): improves JVM crash file search coverage
+- `report_interval_hours`: periodic heartbeat interval
+- notification settings (`smtp_*`, `email_*`, `whatsapp_*`, `telegram_*`)
 
-Paths:
+### Environment variables (supported overrides)
 
-- **`case_dir`** (required): Autopsy case directory to monitor
-- **`autopsy_install_dir`** (optional): Autopsy installation directory (helps JVM crash detection)
+- `AUTOPSYGUARD_SMTP_USER` -> `smtp_user`
+- `AUTOPSYGUARD_SMTP_PASSWORD` -> `smtp_password`
+- `AUTOPSYGUARD_WHATSAPP_APIKEY` -> `whatsapp_apikey`
 
-Polling:
-
-- **`poll_interval`** (float, seconds, default `10.0`): main loop sleep between cycles
-
-Hang detection (requires signal correlation; see `src/autopsyguard/detectors/hang_detector.py`):
-
-- **`hang_cpu_threshold`** (percent, default `1.0`): CPU ≤ this is treated as “idle”
-- **`hang_timeout`** (seconds, default `300.0`): low-CPU must persist this long to become a CPU signal
-- **`hang_confirmation_duration`** (seconds, default `60.0`): correlated signals must persist before firing a HANG event
-- **`log_stale_timeout`** (seconds, default `600.0`): logs unchanged for this long becomes a log-stale signal
-- **`solr_ping_timeout`** (seconds, default `5.0`): Solr ping request timeout used by HangDetector
-- **`solr_ping_slow_threshold`** (seconds, default `3.0`): ping slower than this counts as “slow”
-- **`solr_ping_slow_duration`** (seconds, default `60.0`): slow pings must persist this long to count as a signal
-- **`solr_unresponsive_duration`** (seconds, default `30.0`): Solr unreachable for this long becomes an “unresponsive” signal
-
-Resource thresholds (Autopsy process + system disk for case partition):
-
-- **`cpu_warning_percent`** (percent, default `95.0`): Autopsy process CPU% threshold (`>= 0`, can exceed `100` on multi-core systems)
-- **`cpu_per_core_warning_percent`** (percent, default `90.0`): average per-core CPU threshold
-- **`cpu_warning_duration`** (seconds, default `300.0`): sustained CPU above threshold before warning
-- **`memory_warning_percent`** (percent, default `90.0`): Autopsy RSS as % of system RAM before warning
-- **`disk_min_free_gb`** (GB, default `1.0`): free space on the case partition below this is CRITICAL
-
-Solr (embedded Autopsy Solr health checks; see `src/autopsyguard/detectors/solr_detector.py`):
-
-- **`solr_port`** (int, default `23232`)
-- **`solr_timeout_seconds`** (float, default `5.0`): HTTP timeout for SolrDetector probes
-- **`solr_slow_threshold_seconds`** (float, default `2.0`): response slower than this is “slow”
-- **`solr_slow_count_threshold`** (int, default `3`): consecutive slow responses before warning HANG
-- **`solr_heap_usage_warning`** (percent, default `85.0`)
-- **`solr_heap_usage_critical`** (percent, default `95.0`)
-- **`solr_cpu_warning`** (percent, default `90.0`)
-
-Email notifications (see `src/autopsyguard/notifier.py`):
-
-- **`smtp_host`** (string, default `""`): required if `email_recipient` is set
-- **`smtp_port`** (int, default `587`)
-- **`smtp_use_ssl`** (bool, default `False`): `True` for implicit SSL (typically port 465), `False` for STARTTLS (typically 587)
-- **`smtp_async`** (bool, default `False`): send emails in a background thread (non-blocking)
-- **`smtp_user`** (string, default `""`): prefer env var override
-- **`smtp_password`** (string, default `""`): prefer env var override
-- **`email_sender`** (string, default `"autopsyguard@example.com"`)
-- **`email_recipient`** (string, default `""`): if empty, email is disabled
-- **`email_case_label`** (string, default `""`): optional label shown in emails; if empty, notifier uses a short hash label like `Case #ABCD` to avoid leaking filesystem paths
-
-WhatsApp notifications (CallMeBot; see `src/autopsyguard/whatsapp_notifier.py`):
-
-- **`whatsapp_enabled`** (bool, default `False`)
-- **`whatsapp_phone`** (string, default `""`): phone with country code, e.g. `"+351912345678"`
-- **`whatsapp_apikey`** (string, default `""`): prefer env var override `AUTOPSYGUARD_WHATSAPP_APIKEY`
-
-Periodic reporting:
-
-- **`report_interval_hours`** (float, default `12.0`): heartbeat email/WhatsApp summary interval
-
-Log error patterns (see `src/autopsyguard/detectors/log_detector.py`):
-
-- **`error_patterns`** (list of strings): additional case-insensitive regex patterns that trigger `LOG_ERROR` warnings.
-  - Built-ins are always active: `java.lang.OutOfMemoryError`, `SEVERE`, `Exception`, `FATAL`, `StackOverflowError`
-
-### Example: minimal config (email disabled)
+### Example minimal config
 
 ```yaml
-case_dir: /cases/active/Evidence-2025-001
+case_dir: C:\Cases\Evidence-2025-001
 poll_interval: 30.0
 report_interval_hours: 12.0
 ```
 
-### Example: enable email securely
+### Notification channel enable rules
 
-```bash
-export AUTOPSYGUARD_SMTP_USER="autopsyguard@yourdomain.com"
-export AUTOPSYGUARD_SMTP_PASSWORD="your-app-password"
-```
+- Email enabled when both `smtp_host` and `email_recipient` are set
+- WhatsApp enabled when `whatsapp_enabled: true` and both `whatsapp_phone` + `whatsapp_apikey` are set
+- Telegram enabled when `telegram_enabled: true` and `telegram_user` is set
 
-```yaml
-case_dir: /cases/active/Evidence-2025-001
-smtp_host: smtp.gmail.com
-smtp_port: 587
-smtp_use_ssl: false
-smtp_async: true
-email_sender: autopsyguard@yourdomain.com
-email_recipient: forensic-team@yourdomain.com
-email_case_label: "Evidence Case 2025-001"
-```
+## Filesystem behavior
 
-### Example: enable WhatsApp (CallMeBot)
+### Inputs read from Autopsy
 
-CallMeBot setup (from `src/autopsyguard/whatsapp_notifier.py` and the example YAMLs):
+- Case log: `<case_dir>\Log\autopsy.log.0`
+- Case lock: `<case_dir>\Log\autopsy.log.0.lck`
+- Global logs: `<autopsy_user_dir>\var\log\messages.log`, `<autopsy_user_dir>\var\log\autopsy.log.0`
+- Global lock: `<autopsy_user_dir>\var\log\messages.log.lck`
+- Solr logs: detected from process JVM args (`-Dsolr.log.dir`) or fallback under Autopsy log directories
 
-1. Save `+34 644 31 82 94` in your contacts
-2. Send: `I allow callmebot to send me messages` on WhatsApp
-3. Receive an API key
+### Autopsy user directory detection
 
-Then:
-
-```bash
-export AUTOPSYGUARD_WHATSAPP_APIKEY="your-api-key"
-```
-
-```yaml
-case_dir: /cases/active/Evidence-2025-001
-whatsapp_enabled: true
-whatsapp_phone: "+351912345678"
-```
-
-## Files and directories AutopsyGuard reads/writes
-
-### Autopsy inputs (read)
-
-- **Case log**: `<case_dir>/Log/autopsy.log.0`
-- **Case lock**: `<case_dir>/Log/autopsy.log.0.lck`
-- **Global logs**: `${AUTOPSY_LOG_DIR}/messages.log` and `${AUTOPSY_LOG_DIR}/autopsy.log.0`
-- **Global lock**: `${AUTOPSY_LOG_DIR}/messages.log.lck`
-
-`AUTOPSY_USER_DIR` is:
-
+- Windows: `%APPDATA%\autopsy` (fallback: `~\AppData\Roaming\autopsy`)
 - Linux: `~/.autopsy`
-- Windows: `%APPDATA%/autopsy` (fallbacks to `~/AppData/Roaming/autopsy` if needed)
+- Linux snap layouts are auto-detected (including `~/snap/autopsy/common/.autopsy` and dev profile variants)
 
-`AUTOPSY_LOG_DIR` is resolved from `AUTOPSY_USER_DIR` and supports both profile layouts:
+### AutopsyGuard state directory (outside case)
 
-- `${AUTOPSY_USER_DIR}/var/log`
-- `${AUTOPSY_USER_DIR}/dev/var/log` (preferred when present)
+To avoid writing into evidence case folders, state is stored at:
 
-### AutopsyGuard state (write, outside evidence case)
+- Windows: `%APPDATA%\autopsy\autopsyguard\<case_hash>\`
+- Linux: `~/.autopsy/autopsyguard/<case_hash>/`
+- Linux snap: `~/snap/autopsy/common/.autopsy/autopsyguard/<case_hash>/`
 
-To avoid writing into the evidence case directory, AutopsyGuard stores its own state under:
-
-`$AUTOPSY_USER_DIR/autopsyguard/<case_hash>/`
-
-Where `<case_hash>` is the first 16 hex chars of `sha256(str(case_dir.resolve()))` (see `get_autopsyguard_state_dir()` in `src/autopsyguard/platform_utils.py`).
+Where `<case_hash>` is the first 16 characters of `sha256(str(case_dir.resolve()))`.
 
 Files written there:
 
-- `metrics.db`: SQLite metrics store used for reports/charts (`src/autopsyguard/utils/metrics_store.py`)
-- `log_positions.json`: offsets for Autopsy log tailing (LogDetector)
-- `solr_log_positions.json`: offsets for Solr log tailing (SolrDetector)
+- `metrics.db` (SQLite metrics store)
+- `log_positions.json` (Autopsy log offsets)
+- `solr_log_positions.json` (Solr log offsets)
 
-### Email report attachments
+### Report attachments
 
-Heartbeat reports can attach:
+Email heartbeat reports can include:
 
 - `metrics.json`
 - `metrics.csv`
+- inline PNG chart generated from sampled metrics
 
-and embed a system chart image (PNG) generated by `matplotlib` (`src/autopsyguard/utils/metrics_chart.py`).
+## Is `autopsy_install_dir` mandatory?
+
+No. It is optional.
+
+It is mainly used to expand search locations for `hs_err_pid*.log` files (JVM fatal crash artifacts).  
+Without it, detection still uses fallback paths (home directory, process working directory, and `/tmp` on Linux).
+
+All other core detection paths (process, logs, hangs, resources, Solr health) continue to work without it.
+
+### Install-dir auto-detection coverage
+
+The setup scripts try common install roots:
+
+- **Windows:** `C:\Program Files\Autopsy*`, `C:\Program Files (x86)\Autopsy*`, `%LOCALAPPDATA%\Programs\Autopsy*`
+- **Linux (native):** `/opt/autopsy*`, `/usr/local/autopsy*`, `/usr/share/autopsy`
+- **Linux (snap):** `/snap/autopsy/current`, `/var/lib/snapd/snap/autopsy/current`, `~/snap/autopsy/current`
+
+### When to rely on `autopsy_install_dir`
+
+Set it when you want maximum JVM crash-file coverage, especially:
+
+1. Service/daemon runs (different working directory than interactive shell)
+2. Locked-down systems where process CWD/home may be inaccessible
+3. Environments where `hs_err_pid*.log` is expected near the install tree
+
+### When you can skip it
+
+You can usually leave it empty for normal interactive usage.  
+The monitor will still work and still detects JVM crash files via fallback search paths.
 
 ## Troubleshooting
 
-### “Missing required setting 'case_dir'”
-
-Provide `case_dir` in YAML or as the positional CLI argument.
-
-### “does not look like a valid Autopsy case directory”
-
-AutopsyGuard validates `case_dir` unless you pass `--skip-validation`. A valid case directory must have:
-
-- a `*.aut` file, and
-- either `autopsy.db` or a `Log/` directory.
-
-### Email not sending
-
-Email is enabled only when both:
-
-- `smtp_host` is set, and
-- `email_recipient` is set.
-
-If authentication is required, set credentials via env vars:
-
-- `AUTOPSYGUARD_SMTP_USER`
-- `AUTOPSYGUARD_SMTP_PASSWORD`
-
-### WhatsApp not sending
-
-WhatsApp is enabled only when all three are set:
-
-- `whatsapp_enabled: true`
-- `whatsapp_phone` non-empty
-- `whatsapp_apikey` non-empty (or env var `AUTOPSYGUARD_WHATSAPP_APIKEY`)
-
-### Linux permissions (process I/O counters)
-
-AutopsyGuard tries to read per-process I/O counters for Autopsy. On Linux this may require elevated permissions (e.g., root or `CAP_SYS_PTRACE`) when monitoring processes owned by another user. If denied, it will still run; those per-process I/O metrics become 0/absent.
+- **Missing `case_dir`**: provide it in YAML or as positional CLI argument
+- **Invalid case directory error**: ensure the directory has `*.aut` plus `autopsy.db` or `Log\`
+- **No email alerts**: confirm `smtp_host` + `email_recipient`; check SMTP auth settings
+- **No WhatsApp alerts**: confirm `whatsapp_enabled`, phone, API key
+- **No Telegram alerts**: confirm `telegram_enabled`, `telegram_user`
+- **Linux process I/O metrics missing**: per-process I/O counters can require elevated permissions
 
 ## Development
 
-### Run tests
+Run tests:
 
 ```bash
-pytest
+uv run pytest
 ```
 
-Tests live under `src/autopsyguard/tests` (configured in `pyproject.toml`).
+Tests are under `src\autopsyguard\tests`.
 
-## Notes for production use
+## Project structure (high level)
 
-- Use `config.production.yml` as a starting point; it contains conservative thresholds and operational guidance.
-- Prefer running AutopsyGuard as a service (systemd on Linux, Windows Service) so environment variables and restarts are handled cleanly.
-- For forensic hygiene, AutopsyGuard’s own state is stored outside the case directory; do not override that behavior by placing state files inside evidence mounts.
+```text
+config.development.example.yml
+config.production.example.yml
+pyproject.toml
+scripts/
+  setup-autopsyguard.ps1
+  setup-autopsyguard.sh
+src/
+  autopsyguard/
+    detectors/
+    utils/
+    __main__.py
+    monitor.py
+```
 
 ## License
 
-No license file is currently included in this repository. If this project is intended to be redistributed, add a `LICENSE` and update this section accordingly.
-
+No `LICENSE` file is currently included in this repository.
