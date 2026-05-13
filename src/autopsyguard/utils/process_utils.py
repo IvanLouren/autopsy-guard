@@ -29,10 +29,22 @@ def find_autopsy_pid() -> int | None:
     # Known launcher basenames (script/executable names used by packages)
     launcher_basenames = {"autopsywrapper", "autopsywrapper.sh", "nbexec", "nbexec.sh"}
 
+    # Get our own PID so we don't monitor ourselves
+    import os
+    my_pid = os.getpid()
+
     for proc in psutil.process_iter(["pid", "name", "cmdline", "exe"]):
         try:
+            if proc.info["pid"] == my_pid:
+                continue
+
             name = (proc.info.get("name") or "").lower()
             cmdline = proc.info.get("cmdline") or []
+            cmdline_str = " ".join(str(x) for x in cmdline).lower()
+
+            # Ignore processes that look like the autopsyguard script or module
+            if "autopsyguard" in name or "autopsyguard" in cmdline_str:
+                continue
 
             # Exact executable name match for the Autopsy launcher
             if name in target_names:
