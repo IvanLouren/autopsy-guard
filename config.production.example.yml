@@ -10,7 +10,7 @@
 # normal heavy processing.
 #
 # Usage:
-#   python -m autopsyguard --config config.production.yml
+#   uv run autopsyguard --config config.local.yml
 #
 # BEFORE RUNNING — set credentials as environment variables, never in this file:
 #   Linux / macOS:
@@ -30,15 +30,17 @@
 # Case directory
 # Full absolute path to the Autopsy case being monitored.
 # Windows: C:/Cases/Evidence-2025-001
+# Linux:   /cases/active/Evidence-2025-001
 # The directory must contain a .aut descriptor file and either autopsy.db
 # (single-user) or a Log/ subdirectory (multi-user / PostgreSQL).
 # -----------------------------------------------------------------------------
-case_dir: C:\Users\francisco\Desktop\Universidade\PROJETO\TestCase
+case_dir: C:/Cases/Evidence-2025-001
 
 # Autopsy 4.22.1 installation directory.
 # Used to locate hs_err_pid*.log files on a JVM crash.
 # Windows: C:/Program Files/Autopsy-4.22.1
-autopsy_install_dir: /opt/autopsy-4.22.1
+# Linux:   /opt/autopsy-4.22.1
+autopsy_install_dir: C:/Program Files/Autopsy-4.22.1
 
 
 # -----------------------------------------------------------------------------
