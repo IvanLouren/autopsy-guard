@@ -7,7 +7,6 @@ does not send anything.
 
 from __future__ import annotations
 
-import base64
 import csv
 import io
 import json
@@ -178,18 +177,12 @@ def _build_chart(
         return "", inline_images
 
     inline_images.append(("system_chart", chart_png, "png"))
-    b64 = base64.b64encode(chart_png).decode("ascii")
     chart_html = f"""
     <div style="margin-bottom:20px;">
         <div style="font-size:12px; color:#6b7280; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">
             📈 Tendências de Sistema (desde o último email)
         </div>
-        <!--[if mso]>
-            <img src="cid:system_chart" alt="System chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb; display:block;">
-        <![endif]-->
-        <!--[if !mso]><!-- -->
-            <img src="data:image/png;base64,{b64}" alt="System chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb; display:block;">
-        <!--<![endif]-->
+        <img src="cid:system_chart" alt="System chart" style="width:100%; max-width:520px; border-radius:8px; border:1px solid #e5e7eb; display:block;">
     </div>
     """
     return chart_html, inline_images
