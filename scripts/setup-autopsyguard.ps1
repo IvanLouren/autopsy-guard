@@ -171,6 +171,7 @@ Write-Host ""
 Write-Host "AutopsyGuard Setup Wizard (Windows)" -ForegroundColor Cyan
 Write-Host "This will generate a config file and a .env file for secrets." -ForegroundColor Cyan
 Write-Host "Secrets in .env are loaded automatically by AutopsyGuard at startup." -ForegroundColor Cyan
+Write-Host "OAuth web login for Gmail/Microsoft is supported via autopsyguard-oauth." -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Quick guidance:" -ForegroundColor DarkCyan
 Write-Host "  - case_dir should contain *.aut and (Log\ or autopsy.db)"
@@ -226,17 +227,33 @@ $installCandidates = @(Get-AutopsyInstallCandidates)
 if ($installCandidates.Count -gt 0) {
     Write-Host ""
     Write-Host "Detected Autopsy install-dir candidates:" -ForegroundColor Cyan
-    $max = [Math]::Min(5, $installCandidates.Count)
+    $max = [Math]::Min(10, $installCandidates.Count)
     for ($i = 0; $i -lt $max; $i++) {
         Write-Host ("  [{0}] {1}" -f ($i + 1), $installCandidates[$i])
     }
-    if ($installCandidates.Count -gt 5) {
-        Write-Host ("  ... plus {0} more" -f ($installCandidates.Count - 5))
+    if ($installCandidates.Count -gt 10) {
+        Write-Host ("  ... plus {0} more" -f ($installCandidates.Count - 10))
     }
-    if (Read-YesNo "Use detected install dir '$($installCandidates[0])'?" $true) {
-        $autopsyInstallDir = $installCandidates[0]
-    } else {
-        $autopsyInstallDir = Read-Host "Autopsy install directory (optional, for hs_err_pid*.log search)"
+    while ($true) {
+        $selection = Read-Host "Choose candidate number [1], M for manual path, or S to skip"
+        if ([string]::IsNullOrWhiteSpace($selection)) {
+            $selection = "1"
+        }
+        $selection = $selection.Trim()
+        if ($selection.Equals("M", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $autopsyInstallDir = Read-Host "Autopsy install directory (optional, for hs_err_pid*.log search)"
+            break
+        }
+        if ($selection.Equals("S", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $autopsyInstallDir = ""
+            break
+        }
+        $idx = 0
+        if ([int]::TryParse($selection, [ref]$idx) -and $idx -ge 1 -and $idx -le $installCandidates.Count) {
+            $autopsyInstallDir = $installCandidates[$idx - 1]
+            break
+        }
+        Write-Host "Invalid selection. Please choose a valid number, M, or S." -ForegroundColor Yellow
     }
 } else {
     Write-Host "No install dir auto-detected. You can leave it blank (optional)." -ForegroundColor Yellow
@@ -252,7 +269,7 @@ $reportInterval = Read-Default "report_interval_hours (e.g., 12.0 for half-day, 
 Write-Host ""
 Write-Host "--- 3. Notifications (Email) ---" -ForegroundColor Cyan
 Write-Host "Configure email alerts for crashes, warnings, and periodic status reports." -ForegroundColor Gray
-Write-Host "We recommend using an App Password if using Gmail/O365." -ForegroundColor Gray
+Write-Host "Use App Passwords for Gmail/O365. Avoid sharing your main account password." -ForegroundColor Gray
 $emailEnabled = Read-YesNo "Configure email notifications?" $true
 $smtpHost = ""
 $smtpPort = "587"
@@ -263,23 +280,111 @@ $emailRecipient = ""
 $emailCaseLabel = ""
 $smtpUser = ""
 $smtpPassword = ""
+$smtpAuthMode = "password"
+$smtpOauthProvider = ""
+$smtpOauthClientId = ""
+$smtpOauthClientSecret = ""
+$smtpOauthTenant = "common"
+$smtpOauthTokenFile = ""
 
 if ($emailEnabled) {
-    $smtpHost = Read-Required "SMTP host (smtp_host)"
-    $smtpPort = Read-Default "SMTP port (smtp_port)" "587"
-    $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" $false
+    Write-Host "Email provider presets:" -ForegroundColor Cyan
+    Write-Host "  [1] Gmail (smtp.gmail.com:587 STARTTLS)"
+    Write-Host "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
+    Write-Host "  [3] Custom SMTP"
+    $providerConfigured = $false
+    while ($true) {
+        $providerChoice = Read-Host "Provider [3]"
+        if ([string]::IsNullOrWhiteSpace($providerChoice)) {
+            $providerChoice = "3"
+        }
+        switch ($providerChoice.Trim()) {
+            "1" {
+                $smtpHost = "smtp.gmail.com"
+                $smtpPort = "587"
+                $smtpUseSsl = $false
+                Write-Host "Preset selected: Gmail (STARTTLS on port 587)." -ForegroundColor Green
+                $providerConfigured = $true
+                continue
+            }
+            "2" {
+                $smtpHost = "smtp.office365.com"
+                $smtpPort = "587"
+                $smtpUseSsl = $false
+                Write-Host "Preset selected: Office 365 (STARTTLS on port 587)." -ForegroundColor Green
+                $providerConfigured = $true
+                continue
+            }
+            "3" {
+                $smtpHost = Read-Required "SMTP host (smtp_host)"
+                $smtpPort = Read-Default "SMTP port (smtp_port)" "587"
+                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" $false
+                $providerConfigured = $true
+                continue
+            }
+            default {
+                Write-Host "Please choose 1, 2, or 3." -ForegroundColor Yellow
+            }
+        }
+        if ($providerConfigured) {
+            break
+        }
+    }
     $smtpAsync = Read-YesNo "Send email asynchronously (smtp_async)?" $true
     $emailSender = Read-Default "Email sender (email_sender)" "autopsyguard@example.com"
     $emailRecipient = Read-Required "Email recipient (email_recipient)"
     $emailCaseLabel = Read-Host "Email case label (email_case_label, optional)"
-    $smtpUser = Read-Host "SMTP user (optional, stored in env script as AUTOPSYGUARD_SMTP_USER)"
-    $secure = Read-Host "SMTP password (optional, stored in env script as AUTOPSYGUARD_SMTP_PASSWORD)" -AsSecureString
-    if ($secure.Length -gt 0) {
-        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try {
-            $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        } finally {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+    $defaultOauth = $smtpHost -in @("smtp.gmail.com", "smtp.office365.com")
+    if (Read-YesNo "Use OAuth2 web login for SMTP (recommended for Gmail/O365)?" $defaultOauth) {
+        $smtpAuthMode = "oauth"
+        Write-Host ""
+        Write-Host "OAuth setup needs an app registration first (Client ID)." -ForegroundColor Cyan
+        Write-Host "  - Google: Google Cloud Console > APIs & Services > Credentials > OAuth client ID" -ForegroundColor Gray
+        Write-Host "  - Microsoft: Azure/Entra > App registrations > Application (client) ID" -ForegroundColor Gray
+        if (-not (Read-YesNo "Do you already have an OAuth Client ID ready?" $true)) {
+            Write-Host "Switching email auth mode to password for now. You can re-run setup later to enable OAuth." -ForegroundColor Yellow
+            $smtpAuthMode = "password"
+        }
+    }
+
+    if ($smtpAuthMode -eq "oauth") {
+        if ($smtpHost -eq "smtp.gmail.com") {
+            $smtpOauthProvider = "google"
+        } elseif ($smtpHost -eq "smtp.office365.com") {
+            $smtpOauthProvider = "microsoft"
+        } else {
+            while ($true) {
+                $providerChoice = Read-Host "OAuth provider [1=Google, 2=Microsoft]"
+                switch ($providerChoice.Trim()) {
+                    "1" { $smtpOauthProvider = "google"; break }
+                    "2" { $smtpOauthProvider = "microsoft"; break }
+                    default { Write-Host "Please choose 1 or 2." -ForegroundColor Yellow }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($smtpOauthProvider)) { break }
+            }
+        }
+
+        $smtpUser = Read-Required "SMTP user / account email (smtp_user)"
+        $smtpOauthClientId = Read-Required "OAuth client id (smtp_oauth_client_id) [from your app registration]"
+        $smtpOauthClientSecret = Read-Host "OAuth client secret (optional; store in env as AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET)"
+        if ($smtpOauthProvider -eq "microsoft") {
+            $smtpOauthTenant = Read-Default "Microsoft tenant (smtp_oauth_tenant)" "common"
+        }
+        $safeUser = $smtpUser.ToLowerInvariant().Replace("@", "_at_")
+        $defaultTokenFile = ".autopsyguard\oauth\$($smtpOauthProvider)_$safeUser.json"
+        $smtpOauthTokenFile = Read-Default "OAuth token file path (smtp_oauth_token_file)" $defaultTokenFile
+    } else {
+        $smtpAuthMode = "password"
+        $smtpUser = Read-Host "SMTP user (optional, stored in env as AUTOPSYGUARD_SMTP_USER)"
+        $secure = Read-Host "SMTP password (optional, stored in env as AUTOPSYGUARD_SMTP_PASSWORD)" -AsSecureString
+        if ($secure.Length -gt 0) {
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            try {
+                $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            } finally {
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
         }
     }
 
@@ -292,7 +397,8 @@ if ($emailEnabled) {
 }
 Write-Host ""
 Write-Host "--- 4. Notifications (WhatsApp) ---" -ForegroundColor Cyan
-Write-Host "You can receive instant text alerts on WhatsApp via the free CallMeBot API." -ForegroundColor Gray
+Write-Host "You can receive alerts on WhatsApp via CallMeBot API (availability/limits depend on account/region)." -ForegroundColor Gray
+Write-Host "If WhatsApp setup is not available for you, Telegram is usually simpler." -ForegroundColor Gray
 $whatsappEnabled = Read-YesNo "Configure WhatsApp notifications?" $false
 $whatsappPhone = ""
 $whatsappApiKey = ""
@@ -328,6 +434,12 @@ $configLines += "smtp_host: $(Escape-YamlSingleQuoted $smtpHost)"
 $configLines += "smtp_port: $smtpPort"
 $configLines += "smtp_use_ssl: $($smtpUseSsl.ToString().ToLowerInvariant())"
 $configLines += "smtp_async: $($smtpAsync.ToString().ToLowerInvariant())"
+$configLines += "smtp_auth_mode: $(Escape-YamlSingleQuoted $smtpAuthMode)"
+$configLines += "smtp_oauth_provider: $(Escape-YamlSingleQuoted $smtpOauthProvider)"
+$configLines += "smtp_oauth_client_id: $(Escape-YamlSingleQuoted $smtpOauthClientId)"
+$configLines += "smtp_oauth_client_secret: ''"
+$configLines += "smtp_oauth_tenant: $(Escape-YamlSingleQuoted $smtpOauthTenant)"
+$configLines += "smtp_oauth_token_file: $(Escape-YamlSingleQuoted $smtpOauthTokenFile)"
 $configLines += "email_sender: $(Escape-YamlSingleQuoted $emailSender)"
 $configLines += "email_recipient: $(Escape-YamlSingleQuoted $emailRecipient)"
 $configLines += "email_case_label: $(Escape-YamlSingleQuoted $emailCaseLabel)"
@@ -358,6 +470,9 @@ if (-not [string]::IsNullOrWhiteSpace($smtpUser)) {
 if (-not [string]::IsNullOrWhiteSpace($smtpPassword)) {
     $envLines += "AUTOPSYGUARD_SMTP_PASSWORD=" + $smtpPassword
 }
+if (-not [string]::IsNullOrWhiteSpace($smtpOauthClientSecret)) {
+    $envLines += "AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET=" + $smtpOauthClientSecret.Trim()
+}
 if (-not [string]::IsNullOrWhiteSpace($whatsappApiKey)) {
     $envLines += "AUTOPSYGUARD_WHATSAPP_APIKEY=" + $whatsappApiKey.Trim()
 }
@@ -366,6 +481,7 @@ if ($envLines.Count -le 3) {
     $envLines += "# Example:"
     $envLines += "#   AUTOPSYGUARD_SMTP_USER=your-user"
     $envLines += "#   AUTOPSYGUARD_SMTP_PASSWORD=your-password"
+    $envLines += "#   AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET=your-oauth-client-secret"
     $envLines += "#   AUTOPSYGUARD_WHATSAPP_APIKEY=your-callmebot-key"
 }
 $envTarget = Join-Path -Path (Get-Location) -ChildPath $EnvFilePath
@@ -382,11 +498,32 @@ Write-Host "Secrets file: $EnvFilePath  (loaded automatically by AutopsyGuard)"
 
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. uv run autopsyguard --config .\$ConfigPath"
-Write-Host "  2. Optional debug run: uv run autopsyguard --config .\$ConfigPath --verbose"
+if ($emailEnabled -and $smtpAuthMode -eq "oauth") {
+    $oauthCmd = "uv run autopsyguard-oauth --provider $smtpOauthProvider --email $smtpUser --client-id `"$smtpOauthClientId`" --token-file `"$smtpOauthTokenFile`""
+    if (-not [string]::IsNullOrWhiteSpace($smtpOauthClientSecret)) {
+        $oauthCmd += " --client-secret `"$smtpOauthClientSecret`""
+    }
+    if ($smtpOauthProvider -eq "microsoft" -and -not [string]::IsNullOrWhiteSpace($smtpOauthTenant)) {
+        $oauthCmd += " --tenant `"$smtpOauthTenant`""
+    }
+    Write-Host "  1. Run OAuth login once to create local refresh token:"
+    Write-Host "     $oauthCmd"
+    Write-Host "  2. uv run autopsyguard --config .\$ConfigPath"
+    Write-Host "  3. Optional debug run: uv run autopsyguard --config .\$ConfigPath --verbose"
+} else {
+    Write-Host "  1. uv run autopsyguard --config .\$ConfigPath"
+    Write-Host "  2. Optional debug run: uv run autopsyguard --config .\$ConfigPath --verbose"
+}
 Write-Host ""
 Write-Host "Configuration summary:" -ForegroundColor Cyan
 Write-Host "  - Email:     $($emailEnabled)"
+if ($emailEnabled) {
+    Write-Host "  - Email auth mode: $smtpAuthMode"
+    if ($smtpAuthMode -eq "oauth") {
+        Write-Host "  - OAuth provider: $smtpOauthProvider"
+        Write-Host "  - OAuth token file: $smtpOauthTokenFile"
+    }
+}
 Write-Host "  - WhatsApp:  $($whatsappEnabled)"
 Write-Host "  - Telegram:  $($telegramEnabled)"
 Write-Host "  - Polling:   $pollInterval s"

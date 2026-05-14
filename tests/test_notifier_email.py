@@ -88,3 +88,42 @@ def test_dispatch_email_retries_and_succeeds(tmp_path):
 
     assert ok is True
     assert calls['count'] == 3
+
+
+def test_dispatch_email_uses_oauth_xoauth2(tmp_path):
+    cfg = make_config(tmp_path)
+    cfg.smtp_auth_mode = "oauth"
+    cfg.smtp_password = ""
+    notifier = EmailNotifier(cfg)
+
+    calls = {"auth": 0, "send": 0}
+
+    class DummySMTP:
+        def __init__(self, *a, **k):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def ehlo(self):
+            return None
+        def has_extn(self, name):
+            return False
+        def starttls(self):
+            return None
+        def docmd(self, cmd, arg):
+            if cmd == "AUTH" and arg.startswith("XOAUTH2 "):
+                calls["auth"] += 1
+                return 235, b"2.7.0 Authentication successful"
+            return 500, b"bad"
+        def send_message(self, msg):
+            calls["send"] += 1
+            return None
+
+    with patch("autopsyguard.notifiers.email.notifier.smtplib.SMTP", DummySMTP):
+        with patch.object(EmailNotifier, "_get_oauth_access_token", return_value="token-abc"):
+            ok = notifier._dispatch_email("subj", "<b>hi</b>", plain_text="hi")
+
+    assert ok is True
+    assert calls["auth"] == 1
+    assert calls["send"] == 1

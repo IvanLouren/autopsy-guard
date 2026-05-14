@@ -79,8 +79,14 @@ smtp_host: "localhost"
 smtp_port: 1025
 smtp_use_ssl: false
 smtp_async: true
+smtp_auth_mode: "password"
 smtp_user: ""
 smtp_password: ""
+smtp_oauth_provider: ""
+smtp_oauth_client_id: ""
+smtp_oauth_client_secret: ""
+smtp_oauth_tenant: "common"
+smtp_oauth_token_file: ""
 email_sender: "autopsyguard-dev@local"
 email_recipient: "dev@local"
 email_case_label: "Dev Test Case"

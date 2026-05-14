@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 _OOM_PATTERN = re.compile(r"java\.lang\.OutOfMemoryError", re.IGNORECASE)
 _STACK_OVERFLOW_PATTERN = re.compile(r"java\.lang\.StackOverflowError", re.IGNORECASE)
 _FATAL_PATTERN = re.compile(r"\bFATAL\b", re.IGNORECASE)
+_SOLR_CONNECTION_PATTERN = re.compile(
+    r"org\.apache\.solr\.client\.solrj\.SolrServerException|Server refused connection|Connection refused",
+    re.IGNORECASE,
+)
 
 # Ingest lifecycle patterns (from Autopsy IngestJobExecutor.java)
 _INGEST_START_PATTERN = re.compile(r"Starting ingest job", re.IGNORECASE)
@@ -60,6 +64,7 @@ class LogDetector(BaseDetector):
         # Compile pattern list from built-in constants and operator-configured patterns
         self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
             (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
+            (_SOLR_CONNECTION_PATTERN, CrashType.SOLR_CRASH, Severity.WARNING),
             (_STACK_OVERFLOW_PATTERN, CrashType.LOG_ERROR, Severity.CRITICAL),
             (_FATAL_PATTERN, CrashType.LOG_ERROR, Severity.CRITICAL),
         ]

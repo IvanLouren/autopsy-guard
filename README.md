@@ -15,39 +15,6 @@ This repository is a final-year software engineering project focused on operatio
 - Heartbeat reporting with metrics attachments and chart
 - Metrics persistence in SQLite outside the case directory
 
-## Detection coverage
-
-Detectors are wired in `src\autopsyguard\monitor.py` and run in this order:
-
-1. `ProcessDetector`
-2. `JvmCrashDetector`
-3. `LogDetector`
-4. `HangDetector`
-5. `ResourceDetector`
-6. `SolrDetector`
-
-| Detector | What it detects | Event types |
-|---|---|---|
-| `ProcessDetector` | Main Autopsy process disappeared, abnormal exit code, zombie state, missing child Java process (possible Solr subprocess crash), stale lock without running process | `PROCESS_DISAPPEARED`, `ABNORMAL_EXIT`, `ZOMBIE`, `SOLR_CRASH` |
-| `JvmCrashDetector` | New `hs_err_pid*.log` files (fatal HotSpot/JVM crash evidence) | `JVM_CRASH` |
-| `LogDetector` | New error lines in Autopsy logs (`OutOfMemoryError`, `FATAL`, `SEVERE`, exceptions, custom regex patterns); also tracks ingest start/finish state | `OUT_OF_MEMORY`, `LOG_ERROR` |
-| `HangDetector` | Correlated freeze symptoms (low CPU + stale logs + slow/unresponsive Solr), with confirmation window and ingest-aware suppression | `HANG` |
-| `ResourceDetector` | Sustained high Autopsy CPU, high Autopsy memory share, low disk free space on case partition, and external memory pressure from other processes | `HIGH_RESOURCE_USAGE` |
-| `SolrDetector` | Solr down/not responding, consecutive slow responses/timeouts, high heap/CPU, core init failures, suspicious doc-count drops, Solr log errors | `SOLR_CRASH`, `HANG`, `HIGH_RESOURCE_USAGE`, `LOG_ERROR` |
-
-## Runtime state model
-
-The monitor runs as a state machine:
-
-- `WAITING`: Autopsy not active yet
-- `ACTIVE`: process detected and lock evidence present
-- `FINISHED`: process ended and locks were cleaned (graceful completion)
-
-Activation requires:
-
-- Autopsy process is running, and
-- either case lock exists (`<case_dir>\Log\autopsy.log.0.lck`) **or** global lock exists (`<autopsy_user_dir>\var\log\messages.log.lck`).
-
 ## Requirements
 
 - Python 3.11+
@@ -84,7 +51,23 @@ uv run autopsyguard --config config.local.yml
 ```
 
 > [!TIP]
-> **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, you can run `uv sync` to install dependencies, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, and edit it by hand.
+> **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, edit it by hand, and run with `uv run autopsyguard --config config.local.yml`.
+
+### 3. Optional: OAuth Setup for Gmail/Microsoft SMTP
+
+If you set `smtp_auth_mode: oauth`, run one interactive web login to create a local refresh-token file:
+
+```bash
+uv run autopsyguard-oauth --provider google --email you@example.com --client-id YOUR_CLIENT_ID --token-file .autopsyguard/oauth/google_you_at_example.com.json
+```
+
+Or for Microsoft 365:
+
+```bash
+uv run autopsyguard-oauth --provider microsoft --email you@outlook.com --client-id YOUR_CLIENT_ID --tenant common --token-file .autopsyguard/oauth/microsoft_you_at_outlook.com.json
+```
+
+Your OAuth app registration must include the redirect URI `http://127.0.0.1:8765/callback` (or the port you pass via `--port`).
 
 ## CLI reference
 
@@ -142,6 +125,12 @@ Set these in your `.env` file (auto-loaded) or in the real environment:
 
 - `AUTOPSYGUARD_SMTP_USER` -> `smtp_user`
 - `AUTOPSYGUARD_SMTP_PASSWORD` -> `smtp_password`
+- `AUTOPSYGUARD_SMTP_AUTH_MODE` -> `smtp_auth_mode`
+- `AUTOPSYGUARD_SMTP_OAUTH_PROVIDER` -> `smtp_oauth_provider`
+- `AUTOPSYGUARD_SMTP_OAUTH_CLIENT_ID` -> `smtp_oauth_client_id`
+- `AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET` -> `smtp_oauth_client_secret`
+- `AUTOPSYGUARD_SMTP_OAUTH_TENANT` -> `smtp_oauth_tenant`
+- `AUTOPSYGUARD_SMTP_OAUTH_TOKEN_FILE` -> `smtp_oauth_token_file`
 - `AUTOPSYGUARD_WHATSAPP_APIKEY` -> `whatsapp_apikey`
 
 Real environment variables always take priority over `.env` values, so you can always override from the shell.
@@ -235,8 +224,8 @@ The monitor will still work and still detects JVM crash files via fallback searc
 - **Autopsy crashes immediately on Windows 11 (`wmic` error)**: Autopsy 4.22.1 requires the `wmic` command to manage its embedded Solr service, which Microsoft removed in Windows 11 (24H2+). To fix this, go to **Windows Settings > System > Optional Features** and install **WMI Commandline Utility**.
 - **Missing `case_dir`**: provide it in YAML or as positional CLI argument
 - **Invalid case directory error**: ensure the directory has `*.aut` plus `autopsy.db` or `Log\`
-- **No email alerts**: confirm `smtp_host` + `email_recipient`; check SMTP auth settings
-- **No WhatsApp alerts**: confirm `whatsapp_enabled`, phone, API key
+- **No email alerts**: confirm `smtp_host` + `email_recipient`; check SMTP auth settings; for Gmail/O365 prefer App Passwords
+- **No WhatsApp alerts**: confirm `whatsapp_enabled`, phone, API key, and that CallMeBot is available for your account/region
 - **No Telegram alerts**: confirm `telegram_enabled`, `telegram_user`
 - **Linux process I/O metrics missing**: per-process I/O counters can require elevated permissions
 
@@ -270,6 +259,39 @@ src/
     __main__.py
     monitor.py
 ```
+
+## Detection coverage
+
+Detectors are wired in `src\autopsyguard\monitor.py` and run in this order:
+
+1. `ProcessDetector`
+2. `JvmCrashDetector`
+3. `LogDetector`
+4. `HangDetector`
+5. `ResourceDetector`
+6. `SolrDetector`
+
+| Detector | What it detects | Event types |
+|---|---|---|
+| `ProcessDetector` | Main Autopsy process disappeared, abnormal exit code, zombie state, missing child Java process (possible Solr subprocess crash), stale lock without running process | `PROCESS_DISAPPEARED`, `ABNORMAL_EXIT`, `ZOMBIE`, `SOLR_CRASH` |
+| `JvmCrashDetector` | New `hs_err_pid*.log` files (fatal HotSpot/JVM crash evidence) | `JVM_CRASH` |
+| `LogDetector` | New error lines in Autopsy logs (`OutOfMemoryError`, `FATAL`, `SEVERE`, exceptions, custom regex patterns, Solr connection exceptions); also tracks ingest start/finish state | `OUT_OF_MEMORY`, `SOLR_CRASH`, `LOG_ERROR` |
+| `HangDetector` | Correlated freeze symptoms (low CPU + stale logs + slow/unresponsive Solr), with confirmation window and ingest-aware suppression | `HANG` |
+| `ResourceDetector` | Sustained high Autopsy CPU, high Autopsy memory share, low disk free space on case partition, and external memory pressure from other processes | `HIGH_RESOURCE_USAGE` |
+| `SolrDetector` | Solr down/not responding, consecutive slow responses/timeouts, high heap/CPU, core init failures, suspicious doc-count drops, Solr log errors | `SOLR_CRASH`, `HANG`, `HIGH_RESOURCE_USAGE`, `LOG_ERROR` |
+
+## Runtime state model
+
+The monitor runs as a state machine:
+
+- `WAITING`: Autopsy not active yet
+- `ACTIVE`: process detected and lock evidence present
+- `FINISHED`: process ended and locks were cleaned (graceful completion)
+
+Activation requires:
+
+- Autopsy process is running, and
+- either case lock exists (`<case_dir>\Log\autopsy.log.0.lck`) **or** global lock exists (`<autopsy_user_dir>\var\log\messages.log.lck`).
 
 ## License
 

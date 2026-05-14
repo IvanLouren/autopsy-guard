@@ -152,6 +152,7 @@ echo
 echo "AutopsyGuard Setup Wizard (Linux/macOS)"
 echo "This will generate a config file and a .env file for secrets."
 echo "Secrets in .env are loaded automatically by AutopsyGuard at startup."
+echo "OAuth web login for Gmail/Microsoft is supported via autopsyguard-oauth."
 echo
 echo "Quick guidance:"
 echo "  - case_dir should contain *.aut and (Log/ or autopsy.db)"
@@ -190,24 +191,42 @@ if [[ -n "${install_candidates_raw// }" ]]; then
   echo
   echo "Detected Autopsy install-dir candidates:"
   c=0
+  shown=10
   first_candidate=""
   while IFS= read -r line; do
     [[ -z "${line// }" ]] && continue
     c=$((c + 1))
     [[ $c -eq 1 ]] && first_candidate="$line"
-    if [[ $c -le 5 ]]; then
+    if [[ $c -le $shown ]]; then
       echo "  [$c] $line"
     fi
   done <<< "$install_candidates_raw"
-  if [[ $c -gt 5 ]]; then
-    echo "  ... plus $((c - 5)) more"
+  if [[ $c -gt $shown ]]; then
+    echo "  ... plus $((c - shown)) more"
   fi
 
-  if prompt_yes_no "Use detected install dir '$first_candidate'?" "y"; then
-    autopsy_install_dir="$first_candidate"
-  else
-    read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
-  fi
+  while true; do
+    read -r -p "Choose candidate number [1], M for manual path, or S to skip: " selected_candidate
+    selected_candidate="${selected_candidate// }"
+    if [[ -z "$selected_candidate" ]]; then
+      selected_candidate="1"
+    fi
+
+    lower_choice="${selected_candidate,,}"
+    if [[ "$lower_choice" == "m" ]]; then
+      read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
+      break
+    fi
+    if [[ "$lower_choice" == "s" ]]; then
+      autopsy_install_dir=""
+      break
+    fi
+    if [[ "$selected_candidate" =~ ^[0-9]+$ ]] && (( selected_candidate >= 1 && selected_candidate <= c )); then
+      autopsy_install_dir="$(printf "%s\n" "$install_candidates_raw" | sed -n "${selected_candidate}p")"
+      break
+    fi
+    echo "Invalid selection. Please choose a valid number, M, or S."
+  done
 else
   echo "No install dir auto-detected. You can leave it blank (optional)."
   read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
@@ -233,14 +252,45 @@ smtp_password=""
 echo
 echo "--- 3. Notifications (Email) ---"
 echo "Configure email alerts for crashes, warnings, and periodic status reports."
-echo "We recommend using an App Password if using Gmail/O365."
+echo "Use App Passwords for Gmail/O365. Avoid sharing your main account password."
 if prompt_yes_no "Configure email notifications?" "y"; then
   email_enabled=true
-  smtp_host="$(prompt_required "SMTP host (smtp_host)")"
-  smtp_port="$(prompt_default "SMTP port (smtp_port)" "587")"
-  if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" "n"; then
-    smtp_use_ssl=true
-  fi
+  echo "Email provider presets:"
+  echo "  [1] Gmail (smtp.gmail.com:587 STARTTLS)"
+  echo "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
+  echo "  [3] Custom SMTP"
+  while true; do
+    read -r -p "Provider [3]: " provider_choice
+    provider_choice="${provider_choice// }"
+    [[ -z "$provider_choice" ]] && provider_choice="3"
+    case "$provider_choice" in
+      1)
+        smtp_host="smtp.gmail.com"
+        smtp_port="587"
+        smtp_use_ssl=false
+        echo "Preset selected: Gmail (STARTTLS on port 587)."
+        break
+        ;;
+      2)
+        smtp_host="smtp.office365.com"
+        smtp_port="587"
+        smtp_use_ssl=false
+        echo "Preset selected: Office 365 (STARTTLS on port 587)."
+        break
+        ;;
+      3)
+        smtp_host="$(prompt_required "SMTP host (smtp_host)")"
+        smtp_port="$(prompt_default "SMTP port (smtp_port)" "587")"
+        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" "n"; then
+          smtp_use_ssl=true
+        fi
+        break
+        ;;
+      *)
+        echo "Please choose 1, 2, or 3."
+        ;;
+    esac
+  done
   if prompt_yes_no "Send email asynchronously (smtp_async)?" "y"; then
     smtp_async=true
   else
@@ -262,7 +312,8 @@ if prompt_yes_no "Configure email notifications?" "y"; then
 fi
 echo
 echo "--- 4. Notifications (WhatsApp) ---"
-echo "You can receive instant text alerts on WhatsApp via the free CallMeBot API."
+echo "You can receive alerts on WhatsApp via CallMeBot API (availability/limits depend on account/region)."
+echo "If WhatsApp setup is not available for you, Telegram is usually simpler."
 whatsapp_enabled=false
 whatsapp_phone=""
 whatsapp_apikey=""

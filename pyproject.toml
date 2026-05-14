@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 autopsyguard = "autopsyguard.__main__:main"
+autopsyguard-oauth = "autopsyguard.oauth_setup:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from autopsyguard.config import MonitorConfig
+from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.monitor import Monitor, MonitorState
 
 
@@ -43,3 +44,41 @@ def test_active_to_finished_on_shutdown(tmp_path: Path) -> None:
         # Call _handle_active which should set state to FINISHED when pid is None and no lock
         monitor._handle_active()
         assert monitor._state == MonitorState.FINISHED
+
+
+def test_priority_alert_flushes_immediately(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 1000.0
+
+    event = CrashEvent(
+        crash_type=CrashType.SOLR_CRASH,
+        severity=Severity.WARNING,
+        message="Solr refused connection",
+    )
+    ready = monitor._collect_alert_notifications([event], now)
+    assert len(ready) == 1
+
+
+def test_non_priority_alert_respects_correlation_window(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.poll_interval = 30.0
+    monitor = Monitor(cfg)
+    now = 2000.0
+
+    event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Generic warning",
+    )
+    # First cycle should buffer.
+    ready = monitor._collect_alert_notifications([event], now)
+    assert ready == []
+
+    # Before window expiry, still buffered.
+    ready = monitor._collect_alert_notifications([], now + 30.0)
+    assert ready == []
+
+    # After expiry, alert should flush.
+    ready = monitor._collect_alert_notifications([], now + 61.0)
+    assert len(ready) == 1

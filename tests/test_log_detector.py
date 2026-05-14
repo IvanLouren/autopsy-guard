@@ -103,6 +103,26 @@ class TestLogErrorDetection:
         assert len(events) == 1
         assert events[0].crash_type == CrashType.LOG_ERROR
 
+    def test_solr_connection_error_classified_as_solr_crash(self, config: MonitorConfig) -> None:
+        log_file = config.case_dir / "Log" / "autopsy.log.0"
+        log_file.write_text("", encoding="utf-8")
+
+        detector = LogDetector(config)
+        with patch.object(LogDetector, "_get_log_files", return_value=[log_file]):
+            detector.check()  # init
+
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(
+                    "org.apache.solr.client.solrj.SolrServerException: Server refused connection at: "
+                    "http://localhost:23232/solr/core0\n"
+                )
+
+            events = detector.check()
+
+        assert len(events) == 1
+        assert events[0].crash_type == CrashType.SOLR_CRASH
+        assert events[0].severity == Severity.WARNING
+
     def test_log_rotation_handled(self, config: MonitorConfig) -> None:
         """When a log file is rotated (gets smaller), re-read from start."""
         log_file = config.case_dir / "Log" / "autopsy.log.0"

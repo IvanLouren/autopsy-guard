@@ -91,6 +91,16 @@ class Monitor:
         self._pending_alert_events: list[CrashEvent] = []
         self._pending_alert_keys: set[str] = set()
         self._pending_alert_started_at: float | None = None
+        # Crash types that should bypass the correlation delay and alert
+        # immediately after detection.
+        self._priority_alert_types: set[CrashType] = {
+            CrashType.PROCESS_DISAPPEARED,
+            CrashType.ABNORMAL_EXIT,
+            CrashType.JVM_CRASH,
+            CrashType.SOLR_CRASH,
+            CrashType.OUT_OF_MEMORY,
+            CrashType.ZOMBIE,
+        }
 
     def _is_autopsy_running(self) -> bool:
         """Check if the Autopsy process is running.
@@ -351,6 +361,11 @@ class Monitor:
     def _collect_alert_notifications(self, alert_events: list[CrashEvent], now: float) -> list[CrashEvent]:
         """Collect and flush correlated alert notifications for this cycle."""
         self._buffer_alert_events(alert_events, now)
+        if any(
+            (e.severity == Severity.CRITICAL) or (e.crash_type in self._priority_alert_types)
+            for e in alert_events
+        ):
+            return self._flush_pending_alerts(now, force=True)
         return self._flush_pending_alerts(now, force=False)
 
     @staticmethod
