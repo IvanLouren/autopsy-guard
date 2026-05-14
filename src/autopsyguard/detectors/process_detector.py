@@ -19,7 +19,6 @@ from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.platform_utils import (
     get_case_lock_file,
     get_java_process_names,
-    get_autopsy_process_names,
     get_global_lock_file,
 )
 from typing import Callable
@@ -38,6 +37,8 @@ class ProcessDetector(BaseDetector):
         self._tracked_pid: int | None = None
         # PIDs of known child Java processes (includes Solr)
         self._tracked_children: set[int] = set()
+        # Source metadata for each tracked PID: "tree", "global", or "both".
+        self._tracked_child_sources: dict[int, str] = {}
         # Whether we already fired a "process disappeared" event
         self._process_lost_reported = False
         # Whether we already reported a stale lock while no process was running
@@ -132,35 +133,6 @@ class ProcessDetector(BaseDetector):
             parent = psutil.Process(pid)
             children = parent.children(recursive=True)
             java_names = [n.lower() for n in get_java_process_names()]
-            if logger.isEnabledFor(logging.DEBUG):
-                snapshot_rows: list[str] = []
-                for c in children:
-                    try:
-                        age_s = now - float(c.create_time())
-                    except Exception:
-                        age_s = -1.0
-                    try:
-                        cmd = " ".join(c.cmdline())[:200]
-                    except Exception:
-                        cmd = "<unavailable>"
-                    try:
-                        ppid = c.ppid()
-                    except Exception:
-                        ppid = -1
-                    try:
-                        name = c.name()
-                    except Exception:
-                        name = "<unavailable>"
-                    snapshot_rows.append(
-                        f"pid={c.pid} ppid={ppid} name={name} age_s={age_s:.1f} cmd={cmd}"
-                    )
-                logger.debug(
-                    "ProcessDetector child snapshot for parent PID %d: %d recursive children -> %s",
-                    pid,
-                    len(children),
-                    snapshot_rows,
-                )
-            
             java_children = set()
             for c in children:
                 if c.name().lower() in java_names:
@@ -176,12 +148,22 @@ class ProcessDetector(BaseDetector):
             # Solr may be launched outside the tracked Autopsy process tree.
             solr_global = self._snapshot_global_solr_java_pids(now=now)
             combined = java_children | solr_global
+            self._tracked_child_sources = {
+                child_pid: (
+                    "both"
+                    if child_pid in java_children and child_pid in solr_global
+                    else "tree"
+                    if child_pid in java_children
+                    else "global"
+                )
+                for child_pid in combined
+            }
             logger.debug(
-                "ProcessDetector combined Java snapshot for parent PID %d: tree=%s global_solr=%s combined=%s",
+                "ProcessDetector Java snapshot for parent PID %d: tree=%d global_solr=%d combined=%d",
                 pid,
-                sorted(java_children),
-                sorted(solr_global),
-                sorted(combined),
+                len(java_children),
+                len(solr_global),
+                len(combined),
             )
             return combined
         except Exception:
@@ -333,6 +315,7 @@ class ProcessDetector(BaseDetector):
         # Reset tracking so we can pick up a restarted instance
         self._tracked_pid = None
         self._tracked_children.clear()
+        self._tracked_child_sources.clear()
         return events
 
     def _check_children(self) -> list[CrashEvent]:
@@ -359,17 +342,26 @@ class ProcessDetector(BaseDetector):
             )
 
             if should_report_missing_child:
-                events.append(CrashEvent(
-                    crash_type=CrashType.SOLR_CRASH,
-                    severity=Severity.WARNING,
-                    message=(
+                source = self._tracked_child_sources.get(child_pid, "tree")
+                if source == "global":
+                    message = (
+                        f"Tracked Solr JVM (PID {child_pid}) has disappeared while "
+                        f"Autopsy (PID {self._tracked_pid}) is still running"
+                    )
+                else:
+                    message = (
                         f"Child Java process (PID {child_pid}) of Autopsy "
                         f"(PID {self._tracked_pid}) has disappeared — "
                         f"possible Solr or module subprocess crash"
-                    ),
+                    )
+                events.append(CrashEvent(
+                    crash_type=CrashType.SOLR_CRASH,
+                    severity=Severity.WARNING,
+                    message=message,
                     details={
                         "parent_pid": self._tracked_pid,
                         "child_pid": child_pid,
+                        "tracking_source": source,
                     },
                 ))
             else:
