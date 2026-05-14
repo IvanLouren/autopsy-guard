@@ -10,6 +10,7 @@ Covers crash types:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import hashlib
 import json
 import logging
@@ -102,6 +103,7 @@ class SolrDetector(BaseDetector):
     """
     _CORE_DOC_DROP_MIN_DOCS = 100
     _CORE_DOC_DROP_MIN_RATIO = 0.20
+    _MAX_REPORTED_LOG_ERRORS = 5000
 
     def __init__(self, config: MonitorConfig, solr_cache=None, monitor_start: float | None = None) -> None:
         super().__init__(config)
@@ -114,7 +116,10 @@ class SolrDetector(BaseDetector):
         self._heap_warning_reported = False
         self._cpu_warning_reported = False
         self._core_doc_counts: dict[str, int] = {}
-        self._reported_log_errors: set[str] = set()
+        # Keep a bounded LRU cache of reported log error keys so long-running
+        # sessions do not grow memory indefinitely.
+        self._reported_log_errors: OrderedDict[str, None] = OrderedDict()
+        self._max_reported_log_errors = self._MAX_REPORTED_LOG_ERRORS
         self._initialized = False
         # Timestamp when the monitor started. If provided, used to
         # heuristic-ignore log files that predate monitor startup.
@@ -129,6 +134,26 @@ class SolrDetector(BaseDetector):
     @property
     def name(self) -> str:
         return "SolrDetector"
+
+    def _has_reported_log_error(self, error_key: str) -> bool:
+        """Return whether this log error key has already been reported."""
+        if error_key in self._reported_log_errors:
+            # Refresh recency so frequently repeated errors are retained.
+            self._reported_log_errors.move_to_end(error_key)
+            return True
+        return False
+
+    def _remember_reported_log_error(self, error_key: str) -> None:
+        """Remember a reported log error key while enforcing bounded size."""
+        if self._max_reported_log_errors <= 0:
+            self._reported_log_errors.clear()
+            return
+
+        self._reported_log_errors[error_key] = None
+        self._reported_log_errors.move_to_end(error_key)
+
+        while len(self._reported_log_errors) > self._max_reported_log_errors:
+            self._reported_log_errors.popitem(last=False)
 
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
@@ -807,7 +832,7 @@ class SolrDetector(BaseDetector):
                     error_key = f"{log_file.name}:{line_hash}"
                     
                     # Skip if already reported (persistent) or in current batch
-                    if error_key not in self._reported_log_errors and error_key not in batch_reported:
+                    if not self._has_reported_log_error(error_key) and error_key not in batch_reported:
                         # For stack traces: only report the first line (the one with timestamp)
                         # Stack trace continuation lines typically start with whitespace or "Caused by:"
                         if line[0].isspace() or line.strip().startswith("Caused by:") or line.strip().startswith("=>"):
@@ -823,7 +848,7 @@ class SolrDetector(BaseDetector):
                                 "log_line": line[:500],  # Truncate long lines
                             },
                         ))
-                        self._reported_log_errors.add(error_key)
+                        self._remember_reported_log_error(error_key)
                         batch_reported.add(error_key)
                         # Limit to first matching pattern per line
                         break

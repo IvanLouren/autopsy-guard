@@ -1017,6 +1017,38 @@ class TestSolrLogMonitoring:
         log_events = [e for e in events if e.crash_type == CrashType.LOG_ERROR]
         assert len(log_events) == 0
 
+    def test_reported_log_error_cache_is_bounded(self, config: MonitorConfig) -> None:
+        detector = SolrDetector(config)
+        detector._max_reported_log_errors = 3
+
+        detector._remember_reported_log_error("solr.log:err-1")
+        detector._remember_reported_log_error("solr.log:err-2")
+        detector._remember_reported_log_error("solr.log:err-3")
+        detector._remember_reported_log_error("solr.log:err-4")
+
+        assert len(detector._reported_log_errors) == 3
+        assert "solr.log:err-1" not in detector._reported_log_errors
+        assert "solr.log:err-2" in detector._reported_log_errors
+        assert "solr.log:err-3" in detector._reported_log_errors
+        assert "solr.log:err-4" in detector._reported_log_errors
+
+    def test_reported_log_error_cache_refreshes_recent_keys(self, config: MonitorConfig) -> None:
+        detector = SolrDetector(config)
+        detector._max_reported_log_errors = 3
+
+        detector._remember_reported_log_error("solr.log:err-1")
+        detector._remember_reported_log_error("solr.log:err-2")
+        detector._remember_reported_log_error("solr.log:err-3")
+
+        assert detector._has_reported_log_error("solr.log:err-1") is True
+        detector._remember_reported_log_error("solr.log:err-4")
+
+        assert len(detector._reported_log_errors) == 3
+        assert "solr.log:err-1" in detector._reported_log_errors
+        assert "solr.log:err-2" not in detector._reported_log_errors
+        assert "solr.log:err-3" in detector._reported_log_errors
+        assert "solr.log:err-4" in detector._reported_log_errors
+
 
 class TestSolrMetricsDataclass:
     """Tests for SolrMetrics dataclass."""
