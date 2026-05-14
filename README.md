@@ -11,6 +11,7 @@ This repository is a final-year software engineering project focused on operatio
 - Multi-signal hang detection (CPU + logs + Solr)
 - Solr health and core checks (availability, latency, heap/CPU, core issues)
 - Email, WhatsApp, and Telegram notifications
+- Correlated incident alerts that group multi-detector cascades into one report
 - Heartbeat reporting with metrics attachments and chart
 - Metrics persistence in SQLite outside the case directory
 

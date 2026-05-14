@@ -201,6 +201,7 @@ def get_event_icon(crash_type: str) -> tuple[str, str]:
         "OUT_OF_MEMORY": ("🧠", "#fee2e2"),
         "ABNORMAL_EXIT": ("🚪", "#fed7aa"),
         "ZOMBIE": ("🧟", "#e0e7ff"),
+        "CORRELATED_INCIDENT": ("🧩", "#dbeafe"),
     }
     return icons.get(crash_type, ("⚠️", "#f3f4f6"))
 
@@ -300,6 +301,7 @@ def suggestion_for_event(event: CrashEvent) -> str:
         "HIGH_RESOURCE_USAGE": "Identificar processos consumidores; considerar limitar ou reiniciar.",
         "SOLR_CRASH": "Verificar saúde do Solr, arquivos de log e configuração de heap.",
         "LOG_ERROR": "Investigar mensagens de erro no ficheiro de logs indicado.",
+        "CORRELATED_INCIDENT": "Tratar o incidente como cadeia única e priorizar a causa raiz mais precoce.",
     }
     return hints.get(name, "Verificar logs e estado do sistema para mais detalhes.")
 

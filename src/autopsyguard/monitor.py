@@ -24,7 +24,7 @@ from autopsyguard.detectors.process_detector import ProcessDetector
 from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.utils.solr_health import SolrHealthCache
-from autopsyguard.models import CrashEvent, Severity
+from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.notifiers import EmailNotifier, WhatsAppNotifier, TelegramNotifier
 from autopsyguard.platform_utils import (
     get_case_lock_file,
@@ -85,6 +85,12 @@ class Monitor:
         self._was_ingest_running = False
         self._ingest_start_time: float | None = None
         self._has_ingest_started_ever = False
+        # Correlate bursts of detector alerts into a single incident to reduce
+        # multi-detector alert noise (e.g., OOM -> HANG -> SOLR down chains).
+        self._correlation_window_seconds = max(15.0, self.config.poll_interval * 2.0)
+        self._pending_alert_events: list[CrashEvent] = []
+        self._pending_alert_keys: set[str] = set()
+        self._pending_alert_started_at: float | None = None
 
     def _is_autopsy_running(self) -> bool:
         """Check if the Autopsy process is running.
@@ -173,17 +179,20 @@ class Monitor:
         """Run detectors while the case is being processed."""
         self._metrics_store.record_sample()
         events = self.run_once()
-        
+        now = time.time()
+
+        # Send immediate alerts for critical/warning events, but correlate
+        # multi-detector bursts into one incident before dispatching.
+        alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
+        ready_alerts = self._collect_alert_notifications(alert_events, now)
+        if ready_alerts and self._has_ingest_started_ever:
+            self.notifier.send_alert(ready_alerts)
+            self.whatsapp.send_alert(ready_alerts)
+            self.telegram.send_alert(ready_alerts)
+        elif ready_alerts:
+            logger.info("Alerts generated but muted because ingest has not started yet.")
+
         if events:
-            # Send immediate alert for critical/warning events
-            alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
-            if alert_events and self._has_ingest_started_ever:
-                self.notifier.send_alert(alert_events)
-                self.whatsapp.send_alert(alert_events)
-                self.telegram.send_alert(alert_events)
-            elif alert_events:
-                logger.info("Alerts generated but muted because ingest has not started yet.")
-                
             for event in events:
                 self._handle_event(event)
                 self._events_since_last_report += 1
@@ -216,7 +225,6 @@ class Monitor:
 
         # Check periodic reporting (Heartbeat)
         if self._has_ingest_started_ever:
-            now = time.time()
             elapsed_hours = (now - self._last_report_time) / 3600.0
             if elapsed_hours >= self.config.report_interval_hours:
                 # Fetch a small buffer before the last report time to ensure
@@ -254,6 +262,12 @@ class Monitor:
         )
 
         if pid is None and not lock_exists:
+            # Flush any buffered correlation incident before shutdown.
+            final_alerts = self._flush_pending_alerts(time.time(), force=True)
+            if final_alerts and self._has_ingest_started_ever:
+                self.notifier.send_alert(final_alerts)
+                self.whatsapp.send_alert(final_alerts)
+                self.telegram.send_alert(final_alerts)
             # Graceful shutdown: process exited and lock file was cleaned up
             self._state = MonitorState.FINISHED
             logger.info("Autopsy finished — case complete")
@@ -261,6 +275,83 @@ class Monitor:
             # Process gone but lock file remains — crash already detected
             # by ProcessDetector; stay active in case Autopsy restarts
             pass
+
+    @staticmethod
+    def _alert_event_key(event: CrashEvent) -> str:
+        """Return a stable key for deduplicating buffered alert events."""
+        return (
+            f"{event.crash_type.value}|{event.severity.value}|{event.message}"
+        )
+
+    def _buffer_alert_events(self, events: list[CrashEvent], now: float) -> None:
+        """Add alert events to the correlation buffer (deduplicated)."""
+        if not events:
+            return
+        if self._pending_alert_started_at is None:
+            self._pending_alert_started_at = now
+        for event in events:
+            key = self._alert_event_key(event)
+            if key in self._pending_alert_keys:
+                continue
+            self._pending_alert_keys.add(key)
+            self._pending_alert_events.append(event)
+
+    def _build_correlated_incident(self, events: list[CrashEvent]) -> CrashEvent:
+        """Build a single incident event from multiple correlated alerts."""
+        critical_count = sum(1 for e in events if e.severity == Severity.CRITICAL)
+        warning_count = sum(1 for e in events if e.severity == Severity.WARNING)
+        event_types = sorted({e.crash_type.name for e in events})
+        summary = " -> ".join(event_types)
+        severity = Severity.CRITICAL if critical_count > 0 else Severity.WARNING
+        return CrashEvent(
+            crash_type=CrashType.CORRELATED_INCIDENT,
+            severity=severity,
+            message=f"Incidente correlacionado detectado: {summary}",
+            details={
+                "event_count": len(events),
+                "critical_count": critical_count,
+                "warning_count": warning_count,
+                "event_types": event_types,
+                "correlation_window_seconds": self._correlation_window_seconds,
+                "events": [
+                    {
+                        "crash_type": e.crash_type.name,
+                        "severity": e.severity.name,
+                        "message": e.message[:180],
+                    }
+                    for e in events
+                ],
+            },
+        )
+
+    def _materialize_alert_batch(self, events: list[CrashEvent]) -> list[CrashEvent]:
+        """Convert buffered events into dispatchable alert payload."""
+        if not events:
+            return []
+        distinct_types = {e.crash_type for e in events}
+        if len(distinct_types) >= 2:
+            return [self._build_correlated_incident(events)]
+        return list(events)
+
+    def _flush_pending_alerts(self, now: float, *, force: bool = False) -> list[CrashEvent]:
+        """Flush buffered alerts when correlation window expires or forced."""
+        if not self._pending_alert_events:
+            return []
+        if not force and self._pending_alert_started_at is not None:
+            age = now - self._pending_alert_started_at
+            if age < self._correlation_window_seconds:
+                return []
+
+        ready = self._materialize_alert_batch(self._pending_alert_events)
+        self._pending_alert_events = []
+        self._pending_alert_keys.clear()
+        self._pending_alert_started_at = None
+        return ready
+
+    def _collect_alert_notifications(self, alert_events: list[CrashEvent], now: float) -> list[CrashEvent]:
+        """Collect and flush correlated alert notifications for this cycle."""
+        self._buffer_alert_events(alert_events, now)
+        return self._flush_pending_alerts(now, force=False)
 
     @staticmethod
     def _handle_event(event: CrashEvent) -> None:

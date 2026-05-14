@@ -19,6 +19,7 @@ class CrashType(enum.Enum):
     ABNORMAL_EXIT = "abnormal_exit"
     LOG_ERROR = "log_error"
     ZOMBIE = "zombie"
+    CORRELATED_INCIDENT = "correlated_incident"
 
 
 class Severity(enum.Enum):
