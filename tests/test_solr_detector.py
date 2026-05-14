@@ -106,6 +106,34 @@ class TestSolrHealthCheck:
         assert len(events2) == 0
         assert detector._solr_down_reported is True
 
+    def test_solr_flapping_still_triggers_down_alert(self, config: MonitorConfig) -> None:
+        """Intermittent recoveries should not hide sustained connection failures."""
+        detector = SolrDetector(config)
+        _patch_extra_checks(detector)
+
+        error = urllib.error.URLError("Connection refused")
+
+        # Five failures are below threshold.
+        for _ in range(5):
+            events = detector._handle_connection_error(
+                error,
+                f"http://localhost:{config.solr_port}/solr/admin/ping",
+            )
+            assert events == []
+
+        # A short recovery should not clear pre-threshold history.
+        detector._handle_connection_recovered()
+
+        # Sixth failure inside the sliding window should trigger alert.
+        events = detector._handle_connection_error(
+            error,
+            f"http://localhost:{config.solr_port}/solr/admin/ping",
+        )
+        assert len(events) == 1
+        assert events[0].crash_type == CrashType.SOLR_CRASH
+        assert events[0].severity == Severity.CRITICAL
+        assert events[0].details["failures_in_window"] >= 6
+
     def test_solr_recovery_resets_flag(self, config: MonitorConfig) -> None:
         """When Solr recovers, the reported flag should reset."""
         detector = SolrDetector(config)

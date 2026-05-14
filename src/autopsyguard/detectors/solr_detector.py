@@ -10,7 +10,7 @@ Covers crash types:
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import hashlib
 import json
 import logging
@@ -104,6 +104,8 @@ class SolrDetector(BaseDetector):
     _CORE_DOC_DROP_MIN_DOCS = 100
     _CORE_DOC_DROP_MIN_RATIO = 0.20
     _MAX_REPORTED_LOG_ERRORS = 5000
+    _CONNECTION_ERROR_THRESHOLD = 6
+    _CONNECTION_ERROR_WINDOW_SECONDS = 120.0
 
     def __init__(self, config: MonitorConfig, solr_cache=None, monitor_start: float | None = None) -> None:
         super().__init__(config)
@@ -112,7 +114,7 @@ class SolrDetector(BaseDetector):
         self._solr_down_reported = False
         self._solr_hang_reported = False
         self._consecutive_slow_responses = 0
-        self._consecutive_connection_errors = 0
+        self._recent_connection_failures: deque[float] = deque()
         self._heap_warning_reported = False
         self._cpu_warning_reported = False
         self._core_doc_counts: dict[str, int] = {}
@@ -155,6 +157,32 @@ class SolrDetector(BaseDetector):
         while len(self._reported_log_errors) > self._max_reported_log_errors:
             self._reported_log_errors.popitem(last=False)
 
+    def _prune_connection_failures(self, now: float | None = None) -> None:
+        """Drop connection failures older than the sliding-window horizon."""
+        if now is None:
+            now = time.monotonic()
+        cutoff = now - self._CONNECTION_ERROR_WINDOW_SECONDS
+        while self._recent_connection_failures and self._recent_connection_failures[0] < cutoff:
+            self._recent_connection_failures.popleft()
+
+    def _record_connection_failure(self) -> int:
+        """Record one failure and return count of failures in the active window."""
+        now = time.monotonic()
+        self._prune_connection_failures(now)
+        self._recent_connection_failures.append(now)
+        return len(self._recent_connection_failures)
+
+    def _handle_connection_recovered(self) -> None:
+        """Handle Solr recovery from connection failures."""
+        self._prune_connection_failures()
+        was_reported_down = self._solr_down_reported
+        self._solr_down_reported = False
+        self._report_tracker.clear("solr_down")
+        # After an acknowledged outage, require a fresh failure window for
+        # the next alert; otherwise keep recent failures to detect flapping.
+        if was_reported_down:
+            self._recent_connection_failures.clear()
+
     def check(self) -> list[CrashEvent]:
         events: list[CrashEvent] = []
         # Use shared solr cache if available for the health probe
@@ -170,9 +198,7 @@ class SolrDetector(BaseDetector):
                             "Solr service has recovered and is responding on port %d.",
                             self.config.solr_port,
                         )
-                    self._consecutive_connection_errors = 0
-                    self._solr_down_reported = False
-                    self._report_tracker.clear("solr_down")
+                    self._handle_connection_recovered()
                 else:
                     # Mark as down but do NOT return early — _check_logs() must
                     # still run so log errors are captured while Solr is crashed.
@@ -231,9 +257,7 @@ class SolrDetector(BaseDetector):
                                 "Solr service has recovered and is responding on port %d.",
                                 self.config.solr_port,
                             )
-                        self._consecutive_connection_errors = 0
-                        self._solr_down_reported = False
-                        self._report_tracker.clear("solr_down")
+                        self._handle_connection_recovered()
                         core = None
                     else:
                         core = cores[0]
@@ -251,9 +275,7 @@ class SolrDetector(BaseDetector):
                                         "Solr service has recovered and is responding on port %d.",
                                         self.config.solr_port,
                                     )
-                                self._consecutive_connection_errors = 0
-                                self._solr_down_reported = False
-                                self._report_tracker.clear("solr_down")
+                                self._handle_connection_recovered()
             except urllib.error.URLError as e:
                 elapsed = time.time() - start_time
                 if self._is_timeout_error(e):
@@ -356,17 +378,26 @@ class SolrDetector(BaseDetector):
     def _handle_connection_error(self, error: Exception, url: str) -> list[CrashEvent]:
         """Handle connection refused or other network errors."""
         events: list[CrashEvent] = []
-        
-        self._consecutive_connection_errors += 1
-        
-        # Only report down if it's been down for multiple consecutive checks
-        # (Allows Solr time to boot up when Autopsy starts)
-        if self._consecutive_connection_errors >= 6 and not self._solr_down_reported:
+
+        failures_in_window = self._record_connection_failure()
+
+        # Report down when failure density exceeds threshold within the
+        # configured sliding time window, so intermittent recoveries do not
+        # mask sustained flapping.
+        if (
+            failures_in_window >= self._CONNECTION_ERROR_THRESHOLD
+            and not self._solr_down_reported
+        ):
             events.append(CrashEvent(
                 crash_type=CrashType.SOLR_CRASH,
                 severity=Severity.CRITICAL,
                 message=f"Solr service not responding on port {self.config.solr_port}",
-                details={"error": str(error), "url": url},
+                details={
+                    "error": str(error),
+                    "url": url,
+                    "failures_in_window": failures_in_window,
+                    "window_seconds": self._CONNECTION_ERROR_WINDOW_SECONDS,
+                },
             ))
             self._solr_down_reported = True
             self._report_tracker.mark_reported("solr_down")
