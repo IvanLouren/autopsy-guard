@@ -153,6 +153,51 @@ class TestSolrSubprocessCrash:
         assert len(solr_events) == 1
         assert "2000" in solr_events[0].message
 
+    def test_global_solr_fallback_detects_disappearance_when_child_tree_empty(self, config: MonitorConfig) -> None:
+        """If Autopsy child tree is empty, fallback Solr JVM tracking should still work."""
+        detector = ProcessDetector(config)
+        detector._tracked_pid = 1000
+        detector._tracked_children = {4321}  # Previously discovered global Solr JVM
+
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            mock_psutil.pid_exists.return_value = True
+            parent_proc = MagicMock()
+            parent_proc.status.return_value = "running"
+            parent_proc.children.return_value = []
+            mock_psutil.Process.return_value = parent_proc
+            mock_psutil.process_iter.return_value = []  # No current global Solr JVM found
+
+            events = detector.check()
+
+        solr_events = [e for e in events if e.crash_type == CrashType.SOLR_CRASH]
+        assert len(solr_events) == 1
+        assert "4321" in solr_events[0].message
+
+    def test_global_solr_fallback_tracks_solr_without_parent_child_relation(self, config: MonitorConfig) -> None:
+        """Global Solr JVM should be tracked even if not in Autopsy recursive children."""
+        detector = ProcessDetector(config)
+        detector._tracked_pid = 1000
+        detector._tracked_children = set()
+
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            parent_proc = MagicMock()
+            parent_proc.children.return_value = []  # Parent tree does not expose Solr
+
+            solr_proc = MagicMock()
+            solr_proc.info = {
+                "pid": 5555,
+                "name": "java.exe",
+                "cmdline": ["java.exe", "-Dsolr.solr.home=C:/solr", f"-Djetty.port={config.solr_port}"],
+                "create_time": 100.0,
+                "exe": "C:/Program Files/Java/bin/java.exe",
+            }
+            mock_psutil.Process.return_value = parent_proc
+            mock_psutil.process_iter.return_value = [solr_proc]
+
+            tracked = detector._snapshot_children(1000)
+
+        assert 5555 in tracked
+
 
 class TestChildRelationshipValidation:
     """Behavior of missing-child validation helper."""

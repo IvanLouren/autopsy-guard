@@ -9,6 +9,7 @@ Covers crash types:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import psutil
 
@@ -109,14 +110,16 @@ class ProcessDetector(BaseDetector):
     # ------------------------------------------------------------------
 
     def _snapshot_children(self, pid: int) -> set[int]:
-        """Snapshot current child PIDs of the Autopsy process.
+        """Snapshot current Java PIDs related to Autopsy/Solr.
         
         Args:
             pid: The parent Autopsy process PID to find children for.
             
         Returns:
-            Set of child process PIDs that are Java processes (includes grandchildren).
-            Empty set if parent doesn't exist or has no Java children.
+            Set of Java process PIDs that should be tracked for disappearance:
+            - Java descendants of the tracked Autopsy PID.
+            - Solr-like Java processes discovered globally (Windows fallback).
+            Empty set when none are discoverable.
             
         Note:
             Only includes children with names in get_java_process_names().
@@ -169,10 +172,94 @@ class ProcessDetector(BaseDetector):
                     except Exception:
                         pass
                         
-            return java_children
+            # Windows/process-chain fallback:
+            # Solr may be launched outside the tracked Autopsy process tree.
+            solr_global = self._snapshot_global_solr_java_pids(now=now)
+            combined = java_children | solr_global
+            logger.debug(
+                "ProcessDetector combined Java snapshot for parent PID %d: tree=%s global_solr=%s combined=%s",
+                pid,
+                sorted(java_children),
+                sorted(solr_global),
+                sorted(combined),
+            )
+            return combined
         except Exception:
             logger.debug("ProcessDetector child snapshot failed for parent PID %d", pid, exc_info=True)
             return set()
+
+    def _snapshot_global_solr_java_pids(self, *, now: float | None = None) -> set[int]:
+        """Find Solr JVMs even when they are not parented under Autopsy.
+
+        This is primarily for Windows where launcher/wrapper chains can break
+        parent-child visibility from the tracked Autopsy PID.
+        """
+        if now is None:
+            import time
+            now = time.time()
+
+        java_names = {n.lower() for n in get_java_process_names()}
+        solr_pids: set[int] = set()
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time", "exe"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                cmdline = proc.info.get("cmdline") or []
+                exe = proc.info.get("exe")
+                create_time = float(proc.info.get("create_time") or 0.0)
+                age_s = now - create_time if create_time > 0 else 0.0
+
+                # Determine whether this process is a JVM.
+                is_java = False
+                if name in java_names:
+                    is_java = True
+                elif cmdline:
+                    first = Path(str(cmdline[0])).name.lower()
+                    if first in java_names:
+                        is_java = True
+                if not is_java and exe:
+                    try:
+                        if Path(str(exe)).name.lower() in java_names:
+                            is_java = True
+                    except Exception:
+                        pass
+                if not is_java:
+                    continue
+
+                if self._looks_like_solr_java_cmdline(cmdline):
+                    # Solr signature match is trusted: do not enforce 15s age gate.
+                    solr_pids.add(proc.info["pid"])
+                elif age_s >= 15.0:
+                    # Keep legacy age guard for generic Java candidates.
+                    # We only include these if command-line inspection was unavailable.
+                    try:
+                        if not cmdline and self._looks_like_solr_java_cmdline(proc.cmdline()):
+                            solr_pids.add(proc.info["pid"])
+                    except Exception:
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception:
+                continue
+
+        return solr_pids
+
+    def _looks_like_solr_java_cmdline(self, cmdline: list[object]) -> bool:
+        """Best-effort Solr JVM matcher based on Java command-line markers."""
+        if not cmdline:
+            return False
+        cmd = " ".join(str(x).lower() for x in cmdline)
+        port_token = f":{self.config.solr_port}"
+        markers = (
+            "solr",
+            "start.jar",
+            "org.apache.solr",
+            "-dsolr.",
+            "solr.port",
+        )
+        if any(m in cmd for m in markers):
+            return True
+        return port_token in cmd
 
     # NOTE: PID discovery is delegated to an injectable finder (`self._pid_finder`).
     # The previous implementation attempted to detect test mocks at runtime
