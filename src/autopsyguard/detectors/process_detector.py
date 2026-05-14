@@ -129,6 +129,34 @@ class ProcessDetector(BaseDetector):
             parent = psutil.Process(pid)
             children = parent.children(recursive=True)
             java_names = [n.lower() for n in get_java_process_names()]
+            if logger.isEnabledFor(logging.DEBUG):
+                snapshot_rows: list[str] = []
+                for c in children:
+                    try:
+                        age_s = now - float(c.create_time())
+                    except Exception:
+                        age_s = -1.0
+                    try:
+                        cmd = " ".join(c.cmdline())[:200]
+                    except Exception:
+                        cmd = "<unavailable>"
+                    try:
+                        ppid = c.ppid()
+                    except Exception:
+                        ppid = -1
+                    try:
+                        name = c.name()
+                    except Exception:
+                        name = "<unavailable>"
+                    snapshot_rows.append(
+                        f"pid={c.pid} ppid={ppid} name={name} age_s={age_s:.1f} cmd={cmd}"
+                    )
+                logger.debug(
+                    "ProcessDetector child snapshot for parent PID %d: %d recursive children -> %s",
+                    pid,
+                    len(children),
+                    snapshot_rows,
+                )
             
             java_children = set()
             for c in children:
@@ -143,6 +171,7 @@ class ProcessDetector(BaseDetector):
                         
             return java_children
         except Exception:
+            logger.debug("ProcessDetector child snapshot failed for parent PID %d", pid, exc_info=True)
             return set()
 
     # NOTE: PID discovery is delegated to an injectable finder (`self._pid_finder`).
@@ -226,6 +255,13 @@ class ProcessDetector(BaseDetector):
 
         current_children = self._snapshot_children(self._tracked_pid)
         missing = self._tracked_children - current_children
+        logger.debug(
+            "ProcessDetector child diff for parent PID %d: tracked=%s current=%s missing=%s",
+            self._tracked_pid,
+            sorted(self._tracked_children),
+            sorted(current_children),
+            sorted(missing),
+        )
 
         events: list[CrashEvent] = []
         for child_pid in missing:
