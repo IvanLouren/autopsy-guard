@@ -38,6 +38,21 @@ class TestProcessDisappearance:
         assert events[0].crash_type == CrashType.PROCESS_DISAPPEARED
         assert "lock file" in events[0].message.lower()
 
+    def test_stale_lock_file_is_only_reported_once(self, config: MonitorConfig) -> None:
+        """Repeated polls should not re-emit the same stale-lock warning."""
+        lock_file = config.case_dir / "Log" / "autopsy.log.0.lck"
+        lock_file.write_text("", encoding="utf-8")
+
+        detector = ProcessDetector(config, _pid_finder=lambda: None)
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            mock_psutil.process_iter.return_value = []
+            first_events = detector.check()
+            second_events = detector.check()
+
+        assert len(first_events) == 1
+        assert first_events[0].crash_type == CrashType.PROCESS_DISAPPEARED
+        assert second_events == []
+
     def test_process_found_then_disappears(self, config: MonitorConfig) -> None:
         """Simulate: process is discovered, then vanishes on next check."""
         import psutil as real_psutil

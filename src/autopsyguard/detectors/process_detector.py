@@ -39,6 +39,8 @@ class ProcessDetector(BaseDetector):
         self._tracked_children: set[int] = set()
         # Whether we already fired a "process disappeared" event
         self._process_lost_reported = False
+        # Whether we already reported a stale lock while no process was running
+        self._stale_lock_reported = False
         # Whether we already reported zombie state
         self._zombie_reported = False
         # PID finder function (injectable for tests). Default uses shared utility.
@@ -267,6 +269,9 @@ class ProcessDetector(BaseDetector):
         a previous session likely crashed."""
         lock_file = get_case_lock_file(self.config.case_dir)
         if lock_file.exists():
+            if self._stale_lock_reported:
+                return []
+            self._stale_lock_reported = True
             return [CrashEvent(
                 crash_type=CrashType.PROCESS_DISAPPEARED,
                 severity=Severity.WARNING,
@@ -276,6 +281,8 @@ class ProcessDetector(BaseDetector):
                 ),
                 details={"stale_lock_file": str(lock_file)},
             )]
+        # Lock was cleaned up — allow re-reporting if it returns later.
+        self._stale_lock_reported = False
         return []
 
     @staticmethod
