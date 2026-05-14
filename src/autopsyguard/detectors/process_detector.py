@@ -227,11 +227,13 @@ class ProcessDetector(BaseDetector):
 
         events: list[CrashEvent] = []
         for child_pid in missing:
-            # Validate that the child was actually a child of our tracked process
-            # Handle OS PID recycling by checking parent-child relationship
-            is_valid_child = self._validate_child_relationship(child_pid, self._tracked_pid)
-            
-            if is_valid_child:
+            # Decide whether this missing PID should be treated as a real
+            # disappeared child event (vs still alive under current parent).
+            should_report_missing_child = self._should_report_missing_child(
+                child_pid, self._tracked_pid
+            )
+
+            if should_report_missing_child:
                 events.append(CrashEvent(
                     crash_type=CrashType.SOLR_CRASH,
                     severity=Severity.WARNING,
@@ -246,8 +248,11 @@ class ProcessDetector(BaseDetector):
                     },
                 ))
             else:
-                logger.debug("Ignoring disappeared PID %d - was not a valid child of %d", 
-                            child_pid, self._tracked_pid)
+                logger.debug(
+                    "Skipping missing child PID %d - still appears attached to parent %d",
+                    child_pid,
+                    self._tracked_pid,
+                )
 
         # Update snapshot so we don't re-report
         new_tracked = current_children - self._tracked_children
@@ -289,33 +294,35 @@ class ProcessDetector(BaseDetector):
         except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
             return None
 
-    def _validate_child_relationship(self, child_pid: int, parent_pid: int) -> bool:
-        """Validate that a PID was actually a child of the parent process.
-        
-        This handles OS PID recycling where a PID might be reused for a different process.
+    def _should_report_missing_child(self, child_pid: int, parent_pid: int) -> bool:
+        """Return True when a missing PID should be reported as disappeared.
+
+        Semantics:
+        - True  -> child looks genuinely missing/recycled/inaccessible, report it.
+        - False -> child still appears attached to the tracked parent, suppress.
         """
-        # For testability and simplicity, assume a missing or inaccessible PID
-        # represents a disappeared child. This keeps detection conservative
-        # (we report possible Solr crashes) rather than risk silent misses.
+        # Conservative by design: if process inspection fails, prefer reporting
+        # potential Solr child crashes rather than silently missing them.
+        if not psutil.pid_exists(child_pid):
+            return True
+
+        # If parent still lists this PID as a child, suppress this "missing"
+        # event (it is likely a transient snapshot mismatch).
         try:
-            if not psutil.pid_exists(child_pid):
-                return True
+            parent_proc = psutil.Process(parent_pid)
+            parent_children = {c.pid for c in parent_proc.children(recursive=True)}
+            if child_pid in parent_children:
+                return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Fall through to child-side parent check below.
+            pass
 
-            # First check the parent's child list — many tests mock
-            # `psutil.Process(parent).children()` so this is a reliable
-            # way to see if the PID was actually a child.
-            try:
-                parent_proc = psutil.Process(parent_pid)
-                parent_children = {c.pid for c in parent_proc.children(recursive=True)}
-                if child_pid not in parent_children:
-                    return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                # If we can't inspect the parent, fall back to inspecting the child
-                pass
-
-            # If the parent appears to still list the child, verify via ppid()
+        # Parent does not list this PID anymore, or parent inspection failed.
+        # Check child->parent relation when possible to avoid PID reuse false
+        # positives.
+        try:
             child_proc = psutil.Process(child_pid)
             actual_parent_pid = child_proc.ppid()
-            return actual_parent_pid == parent_pid
+            return actual_parent_pid != parent_pid
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return True

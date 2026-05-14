@@ -139,6 +139,46 @@ class TestSolrSubprocessCrash:
         assert "2000" in solr_events[0].message
 
 
+class TestChildRelationshipValidation:
+    """Behavior of missing-child validation helper."""
+
+    def test_should_report_missing_child_when_pid_no_longer_exists(
+        self, config: MonitorConfig
+    ) -> None:
+        detector = ProcessDetector(config)
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            mock_psutil.pid_exists.return_value = False
+            assert detector._should_report_missing_child(2000, 1000) is True
+
+    def test_should_not_report_when_child_still_attached_to_parent(
+        self, config: MonitorConfig
+    ) -> None:
+        detector = ProcessDetector(config)
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            mock_psutil.pid_exists.return_value = True
+            parent_proc = MagicMock()
+            listed_child = MagicMock()
+            listed_child.pid = 2000
+            parent_proc.children.return_value = [listed_child]
+            mock_psutil.Process.return_value = parent_proc
+
+            assert detector._should_report_missing_child(2000, 1000) is False
+
+    def test_should_report_when_pid_reused_under_different_parent(
+        self, config: MonitorConfig
+    ) -> None:
+        detector = ProcessDetector(config)
+        with patch("autopsyguard.detectors.process_detector.psutil") as mock_psutil:
+            mock_psutil.pid_exists.return_value = True
+            parent_proc = MagicMock()
+            parent_proc.children.return_value = []
+            reused_proc = MagicMock()
+            reused_proc.ppid.return_value = 9999
+            mock_psutil.Process.side_effect = [parent_proc, reused_proc]
+
+            assert detector._should_report_missing_child(2000, 1000) is True
+
+
 class TestAbnormalExit:
     """Crash type 7: process exits with non-zero code."""
 
