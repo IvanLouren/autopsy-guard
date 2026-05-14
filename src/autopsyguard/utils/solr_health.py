@@ -24,12 +24,19 @@ class SolrStatus:
 
 
 class SolrHealthCache:
+    _DOWN_CIRCUIT_THRESHOLD = 6
+    _DOWN_CIRCUIT_PROBE_INTERVAL_MULTIPLIER = 5.0
+    _DOWN_CIRCUIT_MIN_INTERVAL_SECONDS = 30.0
+
     def __init__(self, config: MonitorConfig) -> None:
         self._config = config
         self._status: Optional[SolrStatus] = None
         # Track recent reports emitted by detectors to enable cooperation
         # between Solr-related detectors (avoid duplicate alerts).
         self._last_reported: dict[str, float] = {}
+        # Circuit breaker: track consecutive down checks and when to resume probing
+        self._consecutive_down_checks = 0
+        self._circuit_open_until_monotonic = 0.0
 
     def mark_report(self, kind: str) -> None:
         """Record that a detector has reported a given condition (e.g. 'hang'|'down')."""
@@ -103,8 +110,36 @@ class SolrHealthCache:
             return SolrStatus(is_up=False, response_time=None, checked_at=time.time(), error=str(e))
 
     def get_status(self) -> SolrStatus:
-        now = time.time()
-        if self._status and (now - self._status.checked_at) < (self._config.poll_interval * 0.8):
+        now_time = time.time()
+        now_monotonic = time.monotonic()
+
+        # Check if circuit breaker is open: skip HTTP probes and return cached DOWN status
+        if self._circuit_open_until_monotonic > now_monotonic and self._status and not self._status.is_up:
             return self._status
+
+        # Circuit breaker has expired; close it (only if it was actually open)
+        if self._circuit_open_until_monotonic > 0.0 and self._circuit_open_until_monotonic <= now_monotonic:
+            self._consecutive_down_checks = 0
+            self._circuit_open_until_monotonic = 0.0
+
+        if self._status and (now_time - self._status.checked_at) < (self._config.poll_interval * 0.8):
+            return self._status
+
         self._status = self._probe()
+
+        # Update circuit breaker state after probe
+        if not self._status.is_up:
+            self._consecutive_down_checks += 1
+            # If threshold reached, open circuit
+            if self._consecutive_down_checks >= self._DOWN_CIRCUIT_THRESHOLD:
+                circuit_duration = max(
+                    self._DOWN_CIRCUIT_MIN_INTERVAL_SECONDS,
+                    self._config.poll_interval * self._DOWN_CIRCUIT_PROBE_INTERVAL_MULTIPLIER
+                )
+                self._circuit_open_until_monotonic = now_monotonic + circuit_duration
+        else:
+            # Solr recovered; close circuit and reset counter
+            self._consecutive_down_checks = 0
+            self._circuit_open_until_monotonic = 0.0
+
         return self._status
