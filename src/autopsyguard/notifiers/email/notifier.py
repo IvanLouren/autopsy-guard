@@ -11,7 +11,6 @@ import logging
 import smtplib
 import threading
 import time
-from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -32,14 +31,6 @@ from autopsyguard.notifiers.email.templates import (
     get_system_metrics,
 )
 from autopsyguard.notifiers.email.report_builder import build_report_email
-from autopsyguard.notifiers.email.oauth import (
-    SMTPOAuthError,
-    load_token_file,
-    refresh_access_token,
-    save_token_file,
-    token_is_fresh,
-    xoauth2_initial_response,
-)
 from autopsyguard.utils.process_utils import find_autopsy_pid as _get_autopsy_pid
 
 logger = logging.getLogger(__name__)
@@ -77,7 +68,7 @@ class EmailNotifier(BaseNotifier):
         critical_count = sum(1 for e in events if e.severity == Severity.CRITICAL)
         warning_count = sum(1 for e in events if e.severity == Severity.WARNING)
 
-        subject = (
+        subject = self._subject_with_case(
             f"🚨 [AutopsyGuard] CRÍTICO: {critical_count} problema(s) detetado(s)"
             if critical_count > 0
             else f"⚠️ [AutopsyGuard] Aviso: {warning_count} anomalia(s) detetada(s)"
@@ -199,7 +190,7 @@ class EmailNotifier(BaseNotifier):
         minutes, seconds = divmod(rem, 60)
         duration_str = f"{hours}h {minutes}m {seconds}s"
 
-        subject = "🏁 [AutopsyGuard] Ingestão Concluída"
+        subject = self._subject_with_case("🏁 [AutopsyGuard] Ingestão Concluída")
         body_content = f"""
         <div style="margin-bottom:24px; text-align:center;">
             <div style="font-size:48px; margin-bottom:16px;">🏁</div>
@@ -233,7 +224,7 @@ class EmailNotifier(BaseNotifier):
         if not self._enabled:
             return False
 
-        subject = "✅ [AutopsyGuard] Monitorização Iniciada"
+        subject = self._subject_with_case("✅ [AutopsyGuard] Monitorização Iniciada")
         case_label = get_case_label(self.config)
         body_content = f"""
         <div style="margin-bottom:24px; text-align:center;">
@@ -264,6 +255,10 @@ class EmailNotifier(BaseNotifier):
             self._event_history.append((datetime.now(), event))
             if len(self._event_history) > self._max_history:
                 self._event_history = self._event_history[-self._max_history:]
+
+    def _subject_with_case(self, subject: str) -> str:
+        case_label = get_case_label(self.config)
+        return f"{subject} - {case_label}"
 
     def _get_recent_events(self, hours: float = 1.0) -> list[tuple[datetime, CrashEvent]]:
         cutoff = datetime.now() - timedelta(hours=hours)
@@ -372,10 +367,7 @@ class EmailNotifier(BaseNotifier):
                                 server.ehlo()
                         except Exception:
                             logger.debug("SMTP server did not respond to EHLO/STARTTLS probe; continuing")
-                        auth_mode = (getattr(self.config, "smtp_auth_mode", "password") or "password").strip().lower()
-                        if auth_mode == "oauth":
-                            self._smtp_auth_oauth(server)
-                        elif self.config.smtp_password:
+                        if self.config.smtp_password:
                             server.login(self.config.smtp_user, self.config.smtp_password)
                         server.send_message(msg)
                     logger.info("📧 Email enviado: %s", subject[:60])
@@ -407,74 +399,3 @@ class EmailNotifier(BaseNotifier):
             return True
 
         return _send_sync()
-
-    def _smtp_auth_oauth(self, server: smtplib.SMTP) -> None:
-        """Authenticate against SMTP using OAuth2 (XOAUTH2)."""
-        user = (self.config.smtp_user or "").strip()
-        if not user:
-            raise SMTPOAuthError("smtp_user is required for OAuth SMTP authentication")
-
-        access_token = self._get_oauth_access_token()
-        xoauth2 = xoauth2_initial_response(user, access_token)
-        code, response = server.docmd("AUTH", "XOAUTH2 " + xoauth2)
-        if code != 235:
-            raise smtplib.SMTPAuthenticationError(code, response)
-
-    def _get_oauth_access_token(self) -> str:
-        token_path = self._resolve_oauth_token_path()
-        token_data = load_token_file(token_path)
-
-        provider = (
-            (self.config.smtp_oauth_provider or "").strip().lower()
-            or str(token_data.get("provider", "")).strip().lower()
-        )
-        client_id = (self.config.smtp_oauth_client_id or "").strip() or str(token_data.get("client_id", "")).strip()
-        client_secret = (self.config.smtp_oauth_client_secret or "").strip() or str(
-            token_data.get("client_secret", "")
-        ).strip()
-        tenant = (self.config.smtp_oauth_tenant or "").strip() or str(token_data.get("tenant", "common")).strip()
-        refresh_token = str(token_data.get("refresh_token", "")).strip()
-
-        if not provider:
-            raise SMTPOAuthError("Missing OAuth provider (smtp_oauth_provider)")
-        if not client_id:
-            raise SMTPOAuthError("Missing OAuth client id (smtp_oauth_client_id)")
-        if not refresh_token:
-            raise SMTPOAuthError("OAuth token file does not contain refresh_token")
-
-        if token_is_fresh(token_data):
-            access_token = str(token_data.get("access_token", "")).strip()
-            if access_token:
-                return access_token
-
-        refreshed = refresh_access_token(
-            provider=provider,
-            refresh_token=refresh_token,
-            client_id=client_id,
-            client_secret=client_secret,
-            tenant=tenant,
-            timeout=30.0,
-        )
-        now = time.time()
-        expires_in = int(refreshed.get("expires_in", 3600))
-        token_data.update(
-            {
-                "provider": provider,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "tenant": tenant,
-                "access_token": refreshed["access_token"],
-                "refresh_token": refreshed.get("refresh_token", refresh_token),
-                "token_type": refreshed.get("token_type", "Bearer"),
-                "scope": refreshed.get("scope", token_data.get("scope", "")),
-                "expires_at": now + max(expires_in, 60),
-                "updated_at": now,
-            }
-        )
-        save_token_file(token_path, token_data)
-        return str(token_data["access_token"])
-
-    def _resolve_oauth_token_path(self) -> Path:
-        if self.config.smtp_oauth_token_file is None:
-            raise SMTPOAuthError("smtp_oauth_token_file is required for smtp_auth_mode=oauth")
-        return Path(self.config.smtp_oauth_token_file)

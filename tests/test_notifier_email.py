@@ -9,6 +9,7 @@ import pytest
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.notifiers.email import EmailNotifier
+from autopsyguard.notifiers.email.report_builder import build_report_email
 
 
 def make_config(tmp_path) -> MonitorConfig:
@@ -90,40 +91,58 @@ def test_dispatch_email_retries_and_succeeds(tmp_path):
     assert calls['count'] == 3
 
 
-def test_dispatch_email_uses_oauth_xoauth2(tmp_path):
+
+def test_send_report_includes_case_label_in_subject(tmp_path):
     cfg = make_config(tmp_path)
-    cfg.smtp_auth_mode = "oauth"
-    cfg.smtp_password = ""
+    cfg.email_case_label = "Caso Alfa"
     notifier = EmailNotifier(cfg)
 
-    calls = {"auth": 0, "send": 0}
+    captured = {}
 
-    class DummySMTP:
-        def __init__(self, *a, **k):
-            pass
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc, tb):
-            return False
-        def ehlo(self):
-            return None
-        def has_extn(self, name):
-            return False
-        def starttls(self):
-            return None
-        def docmd(self, cmd, arg):
-            if cmd == "AUTH" and arg.startswith("XOAUTH2 "):
-                calls["auth"] += 1
-                return 235, b"2.7.0 Authentication successful"
-            return 500, b"bad"
-        def send_message(self, msg):
-            calls["send"] += 1
-            return None
+    def fake_dispatch(subject, html_body, *_, **kwargs):
+        captured["subject"] = subject
+        captured["html"] = html_body
+        captured["plain"] = kwargs.get("plain_text")
+        return True
 
-    with patch("autopsyguard.notifiers.email.notifier.smtplib.SMTP", DummySMTP):
-        with patch.object(EmailNotifier, "_get_oauth_access_token", return_value="token-abc"):
-            ok = notifier._dispatch_email("subj", "<b>hi</b>", plain_text="hi")
+    with patch.object(EmailNotifier, "_dispatch_email", side_effect=fake_dispatch):
+        ok = notifier.send_report(
+            "O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+            events_last_period=0,
+            metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        )
 
     assert ok is True
-    assert calls["auth"] == 1
-    assert calls["send"] == 1
+    assert "Caso Alfa" in captured["subject"]
+
+
+def test_report_builder_includes_case_artifacts(tmp_path):
+    case_dir = tmp_path / "Caso"
+    case_dir.mkdir()
+    (case_dir / "Caso.aut").write_text("<autopsy/>", encoding="utf-8")
+    (case_dir / "autopsy.db").write_bytes(b"123456")
+    log_dir = case_dir / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text("line 1\nline 2\n", encoding="utf-8")
+    module_dir = case_dir / "PhotoRec Carver"
+    module_dir.mkdir()
+    (module_dir / "artifact.txt").write_text("payload", encoding="utf-8")
+
+    cfg = MonitorConfig(case_dir=case_dir)
+    cfg.email_case_label = "Caso Alfa"
+
+    subject, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+    )
+
+    assert "Caso Alfa" in subject
+    assert "autopsy.db" in html_body
+    assert "autopsy.log.0" in html_body
+    assert "PhotoRec Carver" in html_body
+    assert "Pastas de módulos" in plain_text

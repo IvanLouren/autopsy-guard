@@ -174,24 +174,3 @@ def test_from_sources_loads_telegram_settings(tmp_path: Path) -> None:
     assert config.telegram_user == "@myusername"
 
 
-def test_oauth_email_requires_token_file(tmp_path: Path) -> None:
-    (tmp_path / "CaseA").mkdir()
-
-    cfg = tmp_path / "config.yml"
-    cfg.write_text(
-        "\n".join(
-            [
-                "case_dir: ./CaseA",
-                "smtp_host: smtp.gmail.com",
-                "email_recipient: team@example.com",
-                "smtp_user: user@example.com",
-                "smtp_auth_mode: oauth",
-                "smtp_oauth_provider: google",
-                "smtp_oauth_client_id: client-id-123",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="smtp_oauth_token_file"):
-        MonitorConfig.from_sources(yaml_path=cfg)

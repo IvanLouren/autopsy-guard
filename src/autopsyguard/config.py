@@ -70,16 +70,6 @@ class MonitorConfig:
     smtp_async: bool = False
     smtp_user: str = ""
     smtp_password: str = ""
-    # Auth mode: "password" (traditional SMTP auth) or "oauth" (OAuth2/XOAUTH2).
-    smtp_auth_mode: str = "password"
-    # OAuth provider when smtp_auth_mode == "oauth": "google".
-    smtp_oauth_provider: str = ""
-    # OAuth client credentials (client_secret is optional for public clients).
-    smtp_oauth_client_id: str = ""
-    smtp_oauth_client_secret: str = ""
-
-    # Path to local OAuth token JSON (contains refresh token).
-    smtp_oauth_token_file: Path | None = None
     email_sender: str = "autopsyguard@example.com"
     email_recipient: str = ""
     # Optional human-readable label to show in emails instead of the case directory name
@@ -240,12 +230,6 @@ _SUPPORTED_CONFIG_KEYS = {
     "smtp_async",
     "smtp_user",
     "smtp_password",
-    "smtp_auth_mode",
-    "smtp_oauth_provider",
-    "smtp_oauth_client_id",
-    "smtp_oauth_client_secret",
-    "smtp_oauth_tenant",
-    "smtp_oauth_token_file",
     "email_sender",
     "email_recipient",
     "email_case_label",
@@ -257,7 +241,7 @@ _SUPPORTED_CONFIG_KEYS = {
     "telegram_user",
 }
 
-_PATH_KEYS = {"case_dir", "autopsy_install_dir", "smtp_oauth_token_file"}
+_PATH_KEYS = {"case_dir", "autopsy_install_dir"}
 
 
 def _load_yaml_config(path: Path) -> dict[str, Any]:
@@ -298,12 +282,6 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
 _ENV_OVERRIDES = {
     "smtp_password": "AUTOPSYGUARD_SMTP_PASSWORD",
     "smtp_user": "AUTOPSYGUARD_SMTP_USER",
-    "smtp_auth_mode": "AUTOPSYGUARD_SMTP_AUTH_MODE",
-    "smtp_oauth_provider": "AUTOPSYGUARD_SMTP_OAUTH_PROVIDER",
-    "smtp_oauth_client_id": "AUTOPSYGUARD_SMTP_OAUTH_CLIENT_ID",
-    "smtp_oauth_client_secret": "AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET",
-    "smtp_oauth_tenant": "AUTOPSYGUARD_SMTP_OAUTH_TENANT",
-    "smtp_oauth_token_file": "AUTOPSYGUARD_SMTP_OAUTH_TOKEN_FILE",
     "whatsapp_apikey": "AUTOPSYGUARD_WHATSAPP_APIKEY",
 }
 
@@ -383,19 +361,6 @@ def _validate_config_types(config: MonitorConfig) -> None:
             raise ValueError("smtp_host is required when email_recipient is configured")
         if not (1 <= config.smtp_port <= 65535):
             raise ValueError(f"Invalid smtp_port: {config.smtp_port} (must be 1-65535)")
-        auth_mode = (config.smtp_auth_mode or "password").strip().lower()
-        if auth_mode not in {"password", "oauth"}:
-            raise ValueError("smtp_auth_mode must be either 'password' or 'oauth'")
-        if auth_mode == "oauth":
-            provider = (config.smtp_oauth_provider or "").strip().lower()
-            if provider != "google":
-                raise ValueError("smtp_oauth_provider must be 'google' when smtp_auth_mode=oauth")
-            if not config.smtp_user:
-                raise ValueError("smtp_user is required when smtp_auth_mode=oauth")
-            if not config.smtp_oauth_client_id:
-                raise ValueError("smtp_oauth_client_id is required when smtp_auth_mode=oauth")
-            if config.smtp_oauth_token_file is None:
-                raise ValueError("smtp_oauth_token_file is required when smtp_auth_mode=oauth")
 
     # Validate report interval
     if config.report_interval_hours <= 0:
