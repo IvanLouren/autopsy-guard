@@ -28,6 +28,25 @@ _MODULE_KEYWORDS = (
 )
 
 
+def _annotate_lines_with_timestamps(lines: list[str]) -> list[tuple[str, str | None]]:
+    """Attach best-effort timestamp to each log line.
+
+    Autopsy logs often emit a timestamped Java logger line followed by one or
+    more non-timestamp continuation lines (e.g., INFO/WARNING text or stack
+    trace frames). This propagates the most recent timestamp forward so module
+    activity entries can keep temporal context.
+    """
+    annotated: list[tuple[str, str | None]] = []
+    current_ts: str | None = None
+    for raw in lines:
+        line = raw.rstrip("\n")
+        ts = _extract_line_timestamp(line)
+        if ts:
+            current_ts = ts
+        annotated.append((line, ts or current_ts))
+    return annotated
+
+
 def _extract_line_timestamp(line: str) -> str | None:
     patterns = (
         r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})",
@@ -38,6 +57,49 @@ def _extract_line_timestamp(line: str) -> str | None:
         if m:
             return m.group(1)
     return None
+
+
+def _module_name_from_line(line: str) -> str | None:
+    low = line.lower()
+
+    if "found ingest module factory" in low:
+        return None
+
+    if "recent activity analysis" in low or ".recentactivity." in low:
+        return "Recent Activity"
+    if "keywordsearch" in low or "keyword search" in low or "kwsdataartifactingestmodule" in low:
+        return "Keyword Search"
+    if "solr" in low:
+        return "Solr"
+    if "photorec" in low:
+        return "PhotoRec Carver"
+    if "embedded file extractor" in low or "embeddedfileextractor" in low:
+        return "Embedded File Extractor"
+    if "email parser" in low or "emailparser" in low:
+        return "Email Parser"
+    if "interesting files" in low:
+        return "Interesting Files Identifier"
+    if "hash lookup" in low:
+        return "Hash Lookup"
+    if "extension mismatch" in low:
+        return "Extension Mismatch Detector"
+
+    m = re.search(r"(?:module|módulo)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})", line, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _state_from_line(low: str) -> str:
+    if any(token in low for token in (" severe:", " error", "exception", "failed", "unable to")):
+        return "error"
+    if "warning" in low or "re-trying" in low:
+        return "warning"
+    if "start" in low or "starting" in low:
+        return "start"
+    if "finish" in low or "completed" in low:
+        return "finish"
+    return "active"
 
 
 def _fmt_ts(ts: float | None) -> str | None:
@@ -97,10 +159,10 @@ def _tail_lines(path: Path, max_lines: int = 2000) -> list[str]:
 def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
     activities: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for raw in reversed(lines):
+    for raw, ts_ctx in reversed(_annotate_lines_with_timestamps(lines)):
         line = raw.strip()
         low = line.lower()
-        ts = _extract_line_timestamp(line)
+        ts = _extract_line_timestamp(line) or ts_ctx
 
         if "starting ingest job" in low:
             key = ("ingest", "start")
@@ -115,11 +177,18 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
                 activities.append({"module": "Ingest", "state": "finish", "line": line[:220], "timestamp": ts})
             continue
 
+        module_name = _module_name_from_line(line)
+        if module_name:
+            state = _state_from_line(low)
+            key = (module_name.lower(), state)
+            if key not in seen:
+                seen.add(key)
+                activities.append({"module": module_name, "state": state, "line": line[:220], "timestamp": ts})
+            continue
+
         for kw in _MODULE_KEYWORDS:
             if kw in low:
-                state = "active"
-                if "error" in low or "exception" in low or "failed" in low:
-                    state = "error"
+                state = _state_from_line(low)
                 key = (kw, state)
                 if key in seen:
                     continue
@@ -127,14 +196,6 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
                 mod_name = kw.title() if kw != "keywordsearch" else "Keyword Search"
                 activities.append({"module": mod_name, "state": state, "line": line[:220], "timestamp": ts})
                 break
-
-        m = re.search(r"(?:module|módulo)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})", line, flags=re.IGNORECASE)
-        if m:
-            mod = m.group(1).strip()
-            key = (mod.lower(), "seen")
-            if key not in seen:
-                seen.add(key)
-                activities.append({"module": mod, "state": "seen", "line": line[:220], "timestamp": ts})
     return activities[:20]
 
 

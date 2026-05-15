@@ -63,3 +63,38 @@ def test_collect_case_telemetry_without_local_db(tmp_path: Path) -> None:
     )
     assert telemetry["autopsy_db"]["exists"] is False
     assert "centralized" in telemetry["autopsy_db"]["note"].lower()
+
+
+def test_collect_case_telemetry_extracts_recent_activity_and_timestamp_context(tmp_path: Path) -> None:
+    case = tmp_path / "CaseB"
+    case.mkdir()
+    (case / "CaseB.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-15 18:25:31.044 org.sleuthkit.autopsy.ingest.IngestManager startIngestJob",
+                "INFO: Starting ingest job 0 at 1778865931044",
+                "2026-05-15 18:25:34.066 org.sleuthkit.autopsy.ingest.DataSourceIngestPipeline$DataSourcePipelineModule process",
+                "INFO: Recent Activity analysis of Laptop1Final.E01 starting",
+                "2026-05-15 18:36:30.104 org.sleuthkit.autopsy.keywordsearch.Server$Collection sendBufferedDocs",
+                "WARNING: Unable to send document batch to Solr. Re-trying...",
+                "org.sleuthkit.autopsy.keywordsearch.KeywordSearchIngestModule.process(KeywordSearchIngestModule.java:456)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = MonitorConfig(case_dir=case, language="en")
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    modules = [a["module"] for a in telemetry["module_activity"]]
+    assert "Recent Activity" in modules
+    assert "Keyword Search" in modules
+    kw_items = [a for a in telemetry["module_activity"] if a["module"] == "Keyword Search"]
+    assert kw_items and kw_items[0].get("timestamp") == "2026-05-15 18:36:30"

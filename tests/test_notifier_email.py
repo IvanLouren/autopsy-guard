@@ -239,3 +239,79 @@ def test_report_builder_includes_solr_and_recent_module_summary(tmp_path):
     assert "last error=" in html_body
     assert "Possible transient/local access contention." in html_body
     assert "autopsy.db: missing" in plain_text
+
+
+def test_report_builder_solr_up_http400_uses_warning_context_and_timestamp_fallback(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+
+    cfg = MonitorConfig(case_dir=case_dir, language="en")
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-15 18:31:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [{"name": "PhotoRec Carver", "size_bytes": 100, "updated_at": "2026-05-15 11:22:00"}],
+        "module_activity": [
+            {"module": "Ingest", "state": "start", "line": "Starting ingest job", "timestamp": None},
+            {"module": "Solr", "state": "active", "line": "Solr ping ok", "timestamp": None},
+        ],
+        "solr": {
+            "state": "up",
+            "response_time_seconds": 0.0027,
+            "checked_at": "2026-05-15 18:31:42",
+            "error": "HTTP 400",
+            "heap_usage_percent": 29.5,
+            "cpu_percent": 0.11,
+        },
+        "autopsy_cpu_timeline": {"current": 0.0, "minus_5m": 0.0, "minus_15m": None},
+    }
+
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+
+    assert "Current/Recent Module" in html_body
+    assert "Solr | active | 2026-05-15 18:31:42" in html_body
+    assert "Keyword/SOLR Activity" in html_body
+    assert "Solr | active | 2026-05-15 18:31:42" in html_body
+    assert "last warning=HTTP 400" in html_body
+    assert "Solr is up; warning appears non-fatal/historical." in html_body
+
+
+def test_report_builder_prefers_active_module_over_ingest_start(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir, language="en")
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-15 18:31:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity": [
+            {"module": "Ingest", "state": "start", "line": "Starting ingest job", "timestamp": "2026-05-15 18:31:40"},
+            {"module": "Keyword Search", "state": "active", "line": "KeywordSearchIngestModule.process", "timestamp": "2026-05-15 18:31:42"},
+        ],
+        "solr": {"state": "up", "response_time_seconds": 0.002, "checked_at": "2026-05-15 18:31:42", "error": None},
+        "autopsy_cpu_timeline": {"current": 0.0, "minus_5m": 0.0, "minus_15m": None},
+    }
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "Current/Recent Module" in html_body
+    assert "Keyword Search | active | 2026-05-15 18:31:42" in html_body

@@ -269,11 +269,19 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
     modules = telemetry.get("module_folders", []) or []
     mod_activity = telemetry.get("module_activity", []) or []
-    latest_activity = mod_activity[0] if mod_activity else {}
+    latest_activity = _pick_recent_activity(mod_activity)
+    log_updated_at = log.get("updated_at") or tr(config, "none")
+
+    def _activity_ts(item: dict[str, Any]) -> str:
+        ts = item.get("timestamp")
+        if ts:
+            return str(ts)
+        return str(log_updated_at)
+
     latest_module_line = (
         f"{latest_activity.get('module', tr(config, 'none'))} | "
         f"{latest_activity.get('state', tr(config, 'none'))} | "
-        f"{latest_activity.get('timestamp') or tr(config, 'none')}"
+        f"{_activity_ts(latest_activity)}"
     )
 
     db_line = (
@@ -298,16 +306,20 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     solr_error = solr.get("error") or tr(config, "none")
     solr_checked_at = solr.get("checked_at") or tr(config, "none")
     context = ""
+    error_label = tr(config, "last_error")
     if solr_raw_state == "down":
         err_low = str(solr.get("error") or "").lower()
         if any(token in err_low for token in ("connection", "refused", "forcibly", "reset", "timed out", "timeout")):
             context = tr(config, "solr_context_transient")
         else:
             context = tr(config, "solr_context_outage")
+    elif solr_raw_state == "up" and solr.get("error"):
+        context = tr(config, "solr_context_up_warning")
+        error_label = tr(config, "last_warning")
     solr_line = (
         f"{solr_state} | rt={solr.get('response_time_seconds') or 'N/A'}s | "
         f"heap={solr.get('heap_usage_percent') or 'N/A'}% | cpu={solr.get('cpu_percent') or 'N/A'}% | "
-        f"{tr(config, 'checked_at')}={solr_checked_at} | {tr(config, 'last_error')}={solr_error}"
+        f"{tr(config, 'checked_at')}={solr_checked_at} | {error_label}={solr_error}"
     )
     if context:
         solr_line += f" | {context}"
@@ -346,7 +358,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         keyword_solr_line = (
             f"{item.get('module', tr(config, 'none'))} | "
             f"{item.get('state', tr(config, 'none'))} | "
-            f"{item.get('timestamp') or tr(config, 'none')}"
+            f"{_activity_ts(item)}"
         )
 
     top = (
@@ -384,6 +396,28 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         </table>
     </div>
     """
+
+
+def _pick_recent_activity(mod_activity: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the best summary candidate for the Current/Recent Module row."""
+    if not mod_activity:
+        return {}
+    priority: dict[str, int] = {
+        "error": 0,
+        "warning": 1,
+        "active": 2,
+        "seen": 3,
+        "start": 4,
+        "finish": 5,
+    }
+
+    def _score(item: dict[str, Any]) -> tuple[int, int]:
+        state = str(item.get("state", "")).lower()
+        module = str(item.get("module", "")).strip().lower()
+        ingest_penalty = 1 if module == "ingest" and state in {"start", "finish"} else 0
+        return (ingest_penalty, priority.get(state, 9))
+
+    return min(mod_activity, key=_score)
 
 
 def _build_attachments(metrics_samples: list[dict[str, Any]] | None) -> list[tuple[str, bytes, str]]:
