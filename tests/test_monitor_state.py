@@ -29,6 +29,21 @@ def test_waiting_to_active(tmp_path: Path) -> None:
         assert monitor._state == MonitorState.ACTIVE
 
 
+def test_startup_notification_sent_on_autopsy_detect(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    called = {"email": 0, "wa": 0, "tg": 0}
+    monitor.notifier.send_startup_message = lambda: called.__setitem__("email", called["email"] + 1) or True
+    monitor.whatsapp.send_startup_message = lambda: called.__setitem__("wa", called["wa"] + 1) or True
+    monitor.telegram.send_startup_message = lambda: called.__setitem__("tg", called["tg"] + 1) or True
+
+    with patch("autopsyguard.monitor.find_autopsy_pid", return_value=123):
+        monitor._state = MonitorState.WAITING
+        monitor._handle_waiting()
+        assert monitor._state == MonitorState.ACTIVE
+    assert called == {"email": 1, "wa": 1, "tg": 1}
+
+
 def test_active_to_finished_on_shutdown(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     monitor = Monitor(cfg)

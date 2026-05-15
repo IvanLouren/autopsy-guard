@@ -34,6 +34,7 @@ class TestMetricsStoreIO:
         cols = store._get_table_columns("metrics")
         assert "autopsy_read_bytes" in cols
         assert "autopsy_write_bytes" in cols
+        assert "autopsy_cpu_percent" in cols
         store.close()
 
     def test_record_sample_captures_autopsy_io(self, tmp_path: Path) -> None:
@@ -53,6 +54,7 @@ class TestMetricsStoreIO:
 
         mock_proc = MagicMock()
         mock_proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+        mock_proc.cpu_percent.return_value = 0.0
         mock_proc.io_counters.return_value = IoCounters(
             read_count=100, write_count=50,
             read_bytes=500_000_000,  # 500 MB read
@@ -80,6 +82,7 @@ class TestMetricsStoreIO:
         sample = samples[0]
         assert sample["autopsy_read_bytes"] == 500_000_000
         assert sample["autopsy_write_bytes"] == 200_000_000
+        assert sample["autopsy_cpu_percent"] == 0.0
         store.close()
 
     def test_record_sample_no_autopsy_process(self, tmp_path: Path) -> None:
@@ -110,6 +113,33 @@ class TestMetricsStoreIO:
         assert len(samples) == 1
         assert samples[0]["autopsy_read_bytes"] == 0
         assert samples[0]["autopsy_write_bytes"] == 0
+        store.close()
+
+    def test_nearest_autopsy_cpu_samples(self, tmp_path: Path) -> None:
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        db_path = tmp_path / "test.db"
+        store = MetricsStore(case_dir=case_dir, db_path=db_path)
+
+        now = 10_000.0
+        store._conn.execute(
+            "INSERT INTO metrics (ts,cpu_percent,memory_percent,memory_used_bytes,memory_total_bytes,disk_free_bytes,disk_total_bytes,autopsy_pid,autopsy_rss_bytes,autopsy_cpu_percent) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (now - 910, 1, 1, 1, 1, 1, 1, 1, 1, 10.0),
+        )
+        store._conn.execute(
+            "INSERT INTO metrics (ts,cpu_percent,memory_percent,memory_used_bytes,memory_total_bytes,disk_free_bytes,disk_total_bytes,autopsy_pid,autopsy_rss_bytes,autopsy_cpu_percent) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (now - 305, 1, 1, 1, 1, 1, 1, 1, 1, 20.0),
+        )
+        store._conn.execute(
+            "INSERT INTO metrics (ts,cpu_percent,memory_percent,memory_used_bytes,memory_total_bytes,disk_free_bytes,disk_total_bytes,autopsy_pid,autopsy_rss_bytes,autopsy_cpu_percent) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (now - 2, 1, 1, 1, 1, 1, 1, 1, 1, 30.0),
+        )
+        store._conn.commit()
+
+        got = store.nearest_autopsy_cpu_samples(now_ts=now, offsets_seconds=[0.0, 300.0, 900.0], max_gap_seconds=20.0)
+        assert got[0.0] == 30.0
+        assert got[300.0] == 20.0
+        assert got[900.0] == 10.0
         store.close()
 
 
