@@ -174,3 +174,27 @@ def test_from_sources_loads_telegram_settings(tmp_path: Path) -> None:
     assert config.telegram_user == "@myusername"
 
 
+def test_from_sources_ignores_legacy_oauth_keys_with_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "smtp_host: smtp.gmail.com",
+                "smtp_auth_mode: oauth",
+                "smtp_oauth_provider: google",
+                "smtp_oauth_client_id: abc",
+                "smtp_oauth_client_secret: def",
+                "smtp_oauth_token_file: token.json",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING"):
+        config = MonitorConfig.from_sources(yaml_path=cfg)
+
+    assert config.smtp_host == "smtp.gmail.com"
+    assert "Deprecated config key(s) ignored" in caplog.text

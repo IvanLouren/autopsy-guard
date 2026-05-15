@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+import logging
 import os
 
 import yaml
@@ -14,6 +15,8 @@ from autopsyguard.platform_utils import (
     get_autopsy_log_dir,
     get_autopsy_user_dir,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -247,6 +250,14 @@ _SUPPORTED_CONFIG_KEYS = {
     "telegram_user",
 }
 
+_DEPRECATED_COMPAT_KEYS = {
+    "smtp_auth_mode",
+    "smtp_oauth_provider",
+    "smtp_oauth_client_id",
+    "smtp_oauth_client_secret",
+    "smtp_oauth_token_file",
+}
+
 _PATH_KEYS = {"case_dir", "autopsy_install_dir"}
 
 
@@ -264,13 +275,22 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Top-level YAML content must be a mapping: {path}")
 
-    unknown_keys = set(raw.keys()) - _SUPPORTED_CONFIG_KEYS
+    deprecated_keys = set(raw.keys()) & _DEPRECATED_COMPAT_KEYS
+    unknown_keys = set(raw.keys()) - _SUPPORTED_CONFIG_KEYS - _DEPRECATED_COMPAT_KEYS
     if unknown_keys:
         key_list = ", ".join(sorted(unknown_keys))
         raise ValueError(f"Unknown config key(s): {key_list}")
+    if deprecated_keys:
+        key_list = ", ".join(sorted(deprecated_keys))
+        logger.warning(
+            "Deprecated config key(s) ignored: %s. Remove them from YAML (OAuth setup keys are no longer used).",
+            key_list,
+        )
 
     values: dict[str, Any] = {}
     for key, value in raw.items():
+        if key in _DEPRECATED_COMPAT_KEYS:
+            continue
         if key in _PATH_KEYS and value is not None:
             if isinstance(value, str) and value.strip() == "":
                 values[key] = None

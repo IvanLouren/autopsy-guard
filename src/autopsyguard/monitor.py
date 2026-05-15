@@ -394,13 +394,16 @@ class Monitor:
 
     def _collect_alert_notifications(self, alert_events: list[CrashEvent], now: float) -> list[CrashEvent]:
         """Collect and flush correlated alert notifications for this cycle."""
+        pending_before = len(self._pending_alert_events)
         self._buffer_alert_events(alert_events, now)
         has_priority = any((e.crash_type in self._priority_alert_types) for e in alert_events)
         has_critical = any(e.severity == Severity.CRITICAL for e in alert_events)
-        # Flush immediately for priority alerts only when this is a standalone
-        # incident; when multiple signals are already buffered, keep the
-        # correlation window to emit a single grouped incident.
-        if has_priority and not has_critical and len(self._pending_alert_events) <= len(alert_events):
+        # Flush immediately when a critical/priority signal arrives and no
+        # prior buffered incident exists. If there are already pending signals,
+        # flush now to emit one grouped correlated incident.
+        if (has_priority or has_critical) and (
+            pending_before == 0 or len(self._pending_alert_events) > len(alert_events)
+        ):
             return self._flush_pending_alerts(now, force=True)
         return self._flush_pending_alerts(now, force=False)
 

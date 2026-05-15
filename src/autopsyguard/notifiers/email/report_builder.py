@@ -23,6 +23,7 @@ from autopsyguard.notifiers.email.templates import (
     get_system_metrics,
 )
 from autopsyguard.utils.i18n import resolve_language, tr
+from autopsyguard.utils.case_telemetry import collect_case_telemetry
 from autopsyguard.utils.metrics_chart import render_system_chart_png
 
 
@@ -36,9 +37,14 @@ def build_report_email(
     autopsy_pid: int | None,
     telemetry: dict[str, Any] | None = None,
 ) -> tuple[str, str, str, list[tuple[str, bytes, str]], list[tuple[str, bytes, str]]]:
-    lang = resolve_language(config)
     subject = f"📊 [AutopsyGuard] {tr(config, 'report_subject')} - {get_case_label(config)}"
     metrics = get_system_metrics(config.case_dir)
+    telemetry_data = telemetry or collect_case_telemetry(
+        config=config,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
 
     if events_last_period == 0:
         status_icon, status_text = "✅", tr(config, "all_ok")
@@ -60,7 +66,7 @@ def build_report_email(
     chart_html, inline_images = _build_chart(config, metrics_samples, recent_events)
     recent_events_html = _build_recent_events_table(config, recent_events)
     details_table = _build_details_table(config, system_status, events_last_period, uptime, autopsy_pid)
-    telemetry_html = _build_telemetry_sections(config, telemetry or {})
+    telemetry_html = _build_telemetry_sections(config, telemetry_data)
 
     body_content = (
         status_card
@@ -102,7 +108,7 @@ def build_report_email(
         autopsy_pid,
         metrics_samples,
         recent_events,
-        telemetry or {},
+        telemetry_data,
     )
 
     return subject, html_body, plain_text, inline_images, attachments
@@ -248,15 +254,7 @@ def _build_details_table(
             <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
                 <strong style="color:#374151; font-size:14px;">📋 {tr(config, "monitor_details")}</strong>
             </td></tr>
-            <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{module_rows}</table></td></tr>
-        </table>
-    </div>
-    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-            <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
-                <strong style="color:#374151; font-size:14px;">🧭 {tr(config, "module_activity_title")}</strong>
-            </td></tr>
-            <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{activity_rows}</table></td></tr>
+            <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows}</table></td></tr>
         </table>
     </div>
     """
@@ -399,6 +397,14 @@ def _build_plain_text(
         log = telemetry.get("autopsy_log", {})
         lines.append(f"autopsy.db: {'present' if db.get('exists') else 'missing'}")
         lines.append(f"autopsy.log.0 lines: {log.get('line_count', 'N/A')}")
+        modules = telemetry.get("module_folders") or []
+        if modules:
+            lines.append(f"{tr(config, 'modules_title')}:")
+            for item in modules[:10]:
+                lines.append(
+                    f"- {item.get('name', 'N/A')}: "
+                    f"{_bytes_to_human(item.get('size_bytes'))}, {item.get('updated_at') or 'N/A'}"
+                )
     if metrics_samples:
         lines.append("Includes attachments: metrics.csv, metrics.json")
     lines.append("")

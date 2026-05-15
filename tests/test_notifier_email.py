@@ -130,6 +130,7 @@ def test_report_builder_includes_case_artifacts(tmp_path):
 
     cfg = MonitorConfig(case_dir=case_dir)
     cfg.email_case_label = "Caso Alfa"
+    cfg.language = "pt"
 
     subject, html_body, plain_text, _, _ = build_report_email(
         config=cfg,

@@ -136,7 +136,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "db_missing": "Não disponível (provável configuração de BD centralizada).",
         "log_title": "Log Atual do Autopsy (autopsy.log.0)",
         "case_usage_title": "Espaço Ocupado pelo Caso",
-        "modules_title": "Pastas de Módulos",
+        "modules_title": "Pastas de módulos",
         "module_activity_title": "Atividade de Módulos Detetada",
         "wa_report_title": "Relatório AutopsyGuard",
         "wa_details_email": "Detalhes completos enviados por email.",
