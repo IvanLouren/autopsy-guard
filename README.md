@@ -54,16 +54,6 @@ uv run autopsyguard --config config.local.yml
 > [!TIP]
 > **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, edit it by hand, and run with `uv run autopsyguard --config config.local.yml`.
 
-### 3. Optional: OAuth Setup for Gmail SMTP
-
-If you set `smtp_auth_mode: oauth`, run one interactive web login to create a local refresh-token file:
-
-```bash
-uv run autopsyguard-oauth --provider google --email you@example.com --client-id YOUR_CLIENT_ID --token-file .autopsyguard/oauth/google_you_at_example.com.json
-```
-
-Your OAuth app registration must include the redirect URI `http://127.0.0.1:8765/callback` (or the port you pass via `--port`).
-
 ## CLI reference
 
 ```text
@@ -122,12 +112,6 @@ Set these in your `.env` file (auto-loaded) or in the real environment:
 
 - `AUTOPSYGUARD_SMTP_USER` -> `smtp_user`
 - `AUTOPSYGUARD_SMTP_PASSWORD` -> `smtp_password`
-- `AUTOPSYGUARD_SMTP_AUTH_MODE` -> `smtp_auth_mode`
-- `AUTOPSYGUARD_SMTP_OAUTH_PROVIDER` -> `smtp_oauth_provider`
-- `AUTOPSYGUARD_SMTP_OAUTH_CLIENT_ID` -> `smtp_oauth_client_id`
-- `AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET` -> `smtp_oauth_client_secret`
-- `AUTOPSYGUARD_SMTP_OAUTH_TENANT` -> `smtp_oauth_tenant`
-- `AUTOPSYGUARD_SMTP_OAUTH_TOKEN_FILE` -> `smtp_oauth_token_file`
 - `AUTOPSYGUARD_WHATSAPP_APIKEY` -> `whatsapp_apikey`
 
 Real environment variables always take priority over `.env` values, so you can always override from the shell.

@@ -248,9 +248,15 @@ def _build_details_table(
             <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
                 <strong style="color:#374151; font-size:14px;">📋 {tr(config, "monitor_details")}</strong>
             </td></tr>
-            <tr><td style="padding:16px;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows}</table>
+            <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{module_rows}</table></td></tr>
+        </table>
+    </div>
+    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+            <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
+                <strong style="color:#374151; font-size:14px;">🧭 {tr(config, "module_activity_title")}</strong>
             </td></tr>
+            <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{activity_rows}</table></td></tr>
         </table>
     </div>
     """
