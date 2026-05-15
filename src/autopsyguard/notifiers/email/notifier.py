@@ -41,6 +41,7 @@ from autopsyguard.notifiers.email.oauth import (
     xoauth2_initial_response,
 )
 from autopsyguard.utils.process_utils import find_autopsy_pid as _get_autopsy_pid
+from autopsyguard.utils.i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,11 @@ class EmailNotifier(BaseNotifier):
         critical_count = sum(1 for e in events if e.severity == Severity.CRITICAL)
         warning_count = sum(1 for e in events if e.severity == Severity.WARNING)
 
+        case_label = get_case_label(self.config)
         subject = (
-            f"🚨 [AutopsyGuard] CRÍTICO: {critical_count} problema(s) detetado(s)"
+            f"🚨 [AutopsyGuard] {tr(self.config, 'alert_critical_subject', count=critical_count)} - {case_label}"
             if critical_count > 0
-            else f"⚠️ [AutopsyGuard] Aviso: {warning_count} anomalia(s) detetada(s)"
+            else f"⚠️ [AutopsyGuard] {tr(self.config, 'alert_warning_subject', count=warning_count)} - {case_label}"
         )
 
         event_rows = "".join(
@@ -98,20 +100,18 @@ class EmailNotifier(BaseNotifier):
 
         metrics = get_system_metrics(self.config.case_dir)
         autopsy_pid = _get_autopsy_pid()
-        case_label = get_case_label(self.config)
-
         metrics_html = self._build_alert_metrics_bar(metrics, autopsy_pid)
 
         summary = f"""
         <div style="margin-bottom:24px;">
             <p style="color:#4b5563; font-size:15px; line-height:1.6; margin:0 0 16px 0;">
-                O sistema de monitorização detetou <strong>{len(events)} evento(s)</strong> que requerem a sua atenção.
+                {tr(self.config, 'alert_summary', count=len(events))}
             </p>
             <table role="presentation" cellspacing="0" cellpadding="0" style="margin-bottom:8px;">
                 <tr>
-                    <td style="background-color:#dc2626; color:white; padding:4px 12px; border-radius:4px; font-size:13px; font-weight:600;">{critical_count} Crítico(s)</td>
+                    <td style="background-color:#dc2626; color:white; padding:4px 12px; border-radius:4px; font-size:13px; font-weight:600;">{tr(self.config, 'critical_count', count=critical_count)}</td>
                     <td width="8"></td>
-                    <td style="background-color:#d97706; color:white; padding:4px 12px; border-radius:4px; font-size:13px; font-weight:600;">{warning_count} Aviso(s)</td>
+                    <td style="background-color:#d97706; color:white; padding:4px 12px; border-radius:4px; font-size:13px; font-weight:600;">{tr(self.config, 'warning_count', count=warning_count)}</td>
                 </tr>
             </table>
         </div>
@@ -121,7 +121,7 @@ class EmailNotifier(BaseNotifier):
         <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                 <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
-                    <strong style="color:#374151; font-size:14px;">📋 Eventos Detetados</strong>
+                    <strong style="color:#374151; font-size:14px;">📋 {tr(self.config, 'detected_events')}</strong>
                 </td></tr>
                 {event_rows}
             </table>
@@ -129,13 +129,13 @@ class EmailNotifier(BaseNotifier):
 
         <div style="margin-top:24px; padding:16px; background-color:#fef3c7; border-radius:8px; border-left:4px solid #d97706;">
             <p style="color:#92400e; font-size:13px; margin:0;">
-                <strong>💡 Recomendação:</strong> Verifique o estado do Autopsy e os logs do sistema para mais detalhes sobre estes eventos.
+                <strong>💡 {tr(self.config, 'recommendation')}:</strong> {tr(self.config, 'recommendation_text')}
             </p>
         </div>
 
         <div style="margin-top:12px; padding:12px 16px; background-color:#f3f4f6; border-radius:8px;">
             <p style="color:#6b7280; font-size:12px; margin:0;">
-                📁 <strong>Logs:</strong> {case_label}
+                📁 <strong>{tr(self.config, 'logs')}:</strong> {case_label}
             </p>
         </div>
         """
@@ -144,17 +144,19 @@ class EmailNotifier(BaseNotifier):
             header_color_start="#dc2626" if critical_count > 0 else "#d97706",
             header_color_end="#991b1b" if critical_count > 0 else "#b45309",
             header_icon="🚨" if critical_count > 0 else "⚠️",
-            header_title="Alerta de Sistema",
-            header_subtitle="Foram detetadas anomalias que requerem atenção",
-            timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+            header_title=tr(self.config, "alert_header_title"),
+            header_subtitle=tr(self.config, "alert_header_subtitle"),
+            timestamp=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             case_name=f"📁 {case_label}",
             body_content=body_content,
+            footer_system=tr(self.config, "footer_system"),
+            auto_email_note=tr(self.config, "auto_email"),
         )
 
         plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {self.get_uptime()}", ""]
         for ev in events[:10]:
             plain_lines.append(f"[{short_event_id(ev)}] {ev.severity.name}: {ev.message}")
-            plain_lines.append(f"    Sugestão: {suggestion_for_event(ev)}")
+            plain_lines.append(f"    Hint: {suggestion_for_event(ev, self.config)}")
         plain_lines += ["", "Nota: 'Process %' pode exceder 100% — conta núcleos usados."]
         plain_text = "\n".join(plain_lines)
 
@@ -165,6 +167,7 @@ class EmailNotifier(BaseNotifier):
         system_status: str,
         events_last_period: int,
         metrics_samples: list[dict[str, Any]] | None = None,
+        telemetry: dict[str, Any] | None = None,
     ) -> bool:
         """Send a periodic heartbeat report."""
         if not self._enabled:
@@ -181,6 +184,7 @@ class EmailNotifier(BaseNotifier):
             recent_events=recent_events,
             metrics_samples=metrics_samples,
             autopsy_pid=autopsy_pid,
+            telemetry=telemetry,
         )
 
         return self._dispatch_email(
@@ -199,16 +203,16 @@ class EmailNotifier(BaseNotifier):
         minutes, seconds = divmod(rem, 60)
         duration_str = f"{hours}h {minutes}m {seconds}s"
 
-        subject = "🏁 [AutopsyGuard] Ingestão Concluída"
+        subject = f"🏁 [AutopsyGuard] {tr(self.config, 'ingest_done_subject')} - {get_case_label(self.config)}"
         body_content = f"""
         <div style="margin-bottom:24px; text-align:center;">
             <div style="font-size:48px; margin-bottom:16px;">🏁</div>
-            <h2 style="color:#111827; margin:0 0 8px 0;">Ingestão Concluída</h2>
-            <p style="color:#4b5563; font-size:16px; margin:0;">O processo de ingestão no Autopsy terminou com sucesso.</p>
+            <h2 style="color:#111827; margin:0 0 8px 0;">{tr(self.config, 'ingest_done_title')}</h2>
+            <p style="color:#4b5563; font-size:16px; margin:0;">{tr(self.config, 'ingest_done_text')}</p>
         </div>
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
             <tr><td style="background-color:#f8f9fa; border-radius:8px; padding:20px;">
-                <div style="font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">⏱️ Tempo de Processamento</div>
+                <div style="font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">⏱️ {tr(self.config, 'processing_time')}</div>
                 <div style="font-size:28px; font-weight:bold; color:#2563eb;">{duration_str}</div>
             </td></tr>
         </table>
@@ -219,13 +223,15 @@ class EmailNotifier(BaseNotifier):
             header_color_start="#2563eb",
             header_color_end="#1d4ed8",
             header_icon="✅",
-            header_title="Ingestão Terminada",
-            header_subtitle="Resumo do processamento",
-            timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+            header_title=tr(self.config, "ingest_done_header_title"),
+            header_subtitle=tr(self.config, "ingest_done_header_subtitle"),
+            timestamp=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             case_name=f"📁 {case_label}",
             body_content=body_content,
+            footer_system=tr(self.config, "footer_system"),
+            auto_email_note=tr(self.config, "auto_email"),
         )
-        plain_text = f"Ingestão Concluída.\nTempo total de processamento: {duration_str}"
+        plain_text = f"{tr(self.config, 'ingest_done_title')}.\n{tr(self.config, 'processing_time')}: {duration_str}"
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
     def send_startup_message(self) -> bool:
@@ -233,26 +239,28 @@ class EmailNotifier(BaseNotifier):
         if not self._enabled:
             return False
 
-        subject = "✅ [AutopsyGuard] Monitorização Iniciada"
         case_label = get_case_label(self.config)
+        subject = f"✅ [AutopsyGuard] {tr(self.config, 'startup_subject')} - {case_label}"
         body_content = f"""
         <div style="margin-bottom:24px; text-align:center;">
             <div style="font-size:48px; margin-bottom:16px;">🚀</div>
-            <h2 style="color:#111827; margin:0 0 8px 0;">Monitorização Ativa</h2>
-            <p style="color:#4b5563; font-size:16px; margin:0;">O sistema foi ligado com sucesso e está a monitorizar o Autopsy.</p>
+            <h2 style="color:#111827; margin:0 0 8px 0;">{tr(self.config, 'startup_title')}</h2>
+            <p style="color:#4b5563; font-size:16px; margin:0;">{tr(self.config, 'startup_text')}</p>
         </div>
         """
         html_body = BASE_TEMPLATE.format(
             header_color_start="#10b981",
             header_color_end="#059669",
             header_icon="✅",
-            header_title="Sistema Iniciado",
-            header_subtitle="O AutopsyGuard está online",
-            timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+            header_title=tr(self.config, "startup_header_title"),
+            header_subtitle=tr(self.config, "startup_header_subtitle"),
+            timestamp=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             case_name=f"📁 {case_label}",
             body_content=body_content,
+            footer_system=tr(self.config, "footer_system"),
+            auto_email_note=tr(self.config, "auto_email"),
         )
-        plain_text = "✅ AutopsyGuard Iniciado\nO sistema foi ligado com sucesso e está a monitorizar o Autopsy."
+        plain_text = f"✅ {tr(self.config, 'startup_subject')}\n{tr(self.config, 'startup_text')}"
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
     # ------------------------------------------------------------------
@@ -296,11 +304,11 @@ class EmailNotifier(BaseNotifier):
             cpu_display = f"{cpu_pct:.1f}%"
         return f"""
         <div style="margin-bottom:20px; padding:16px; background-color:#f8f9fa; border-radius:8px;">
-            <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">📊 Estado do Sistema no Momento do Alerta</div>
+            <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">📊 {tr(self.config, 'system_status')}</div>
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr>
-                {METRIC_BOX.format(icon="💻", value=cpu_display, label="CPU", color=cpu_color)}
-                {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label="Memória", color=mem_color)}
-                {METRIC_BOX.format(icon="💾", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label="Disco Livre", color=disk_color)}
+                {METRIC_BOX.format(icon="🖥️", value=cpu_display, label=tr(self.config, 'cpu'), color=cpu_color)}
+                {METRIC_BOX.format(icon="📈", value=f"{metrics.get('memory_percent', 0):.1f}%", label=tr(self.config, 'memory'), color=mem_color)}
+                {METRIC_BOX.format(icon="🗄️", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label=tr(self.config, 'disk_free'), color=disk_color)}
                 {METRIC_BOX.format(icon="🔍", value=str(autopsy_pid or 'N/A'), label="Autopsy PID", color="#3b82f6")}
             </tr></table>
             <div style="font-size:11px; color:#6b7280; margin-top:8px;">Nota: 'Process %' pode exceder 100% — conta núcleos usados.</div>
@@ -324,7 +332,14 @@ class EmailNotifier(BaseNotifier):
         from email.message import EmailMessage
 
         msg = EmailMessage()
-        msg.set_content(plain_text or "O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno.")
+        msg.set_content(
+            plain_text
+            or (
+                "Your email client does not support HTML. Please use a modern client."
+                if tr(self.config, "report_subject") == "Status Report"
+                else "O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno."
+            )
+        )
         msg.add_alternative(html_body, subtype="html")
 
         if inline_images:

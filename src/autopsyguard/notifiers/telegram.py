@@ -21,6 +21,7 @@ from typing import Any
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifiers.base import BaseNotifier
+from autopsyguard.utils.i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +72,17 @@ class TelegramNotifier(BaseNotifier):
         system_status: str,
         events_last_period: int,
         metrics_samples: list[dict[str, Any]] | None = None,
+        telemetry: dict[str, Any] | None = None,
     ) -> bool:
         """Send a periodic Telegram status summary."""
         if not self._enabled:
             return False
 
         status_icon = "✅" if events_last_period == 0 else "⚠️"
-        status_text = "Tudo OK" if events_last_period == 0 else f"{events_last_period} evento(s)"
+        status_text = tr(self.config, "all_ok") if events_last_period == 0 else tr(self.config, "events_count", count=events_last_period)
 
         lines = [
-            "📊 *AutopsyGuard Relatório*",
+            f"📊 *{tr(self.config, 'wa_report_title')}*",
             f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
             "",
             f"{status_icon} Estado: {status_text}",
@@ -97,7 +99,16 @@ class TelegramNotifier(BaseNotifier):
             if mem is not None:
                 lines.append(f"🧠 RAM: {mem:.1f}%")
 
-        lines += ["", "Detalhes completos enviados por email."]
+        if telemetry:
+            solr = telemetry.get("solr", {})
+            cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
+            state = tr(self.config, "solr_up") if solr.get("state") == "up" else tr(self.config, "solr_down")
+            lines.append(f"🔬 Solr: {state}")
+            curr = cpu_tl.get("current")
+            if curr is not None:
+                lines.append(f"🖥️ Autopsy CPU: {curr:.1f}%")
+
+        lines += ["", tr(self.config, "wa_details_email")]
         return self._send_message("\n".join(lines))
 
     def send_ingest_report(self, duration_seconds: float) -> bool:
@@ -110,10 +121,10 @@ class TelegramNotifier(BaseNotifier):
         duration_str = f"{hours}h {minutes}m {seconds}s"
 
         lines = [
-            "🏁 *AutopsyGuard - Ingestão Concluída*",
-            "O processo de ingestão no Autopsy terminou com sucesso.",
+            f"🏁 *AutopsyGuard - {tr(self.config, 'ingest_done_title')}*",
+            tr(self.config, "ingest_done_text"),
             "",
-            f"⏱️ *Tempo Total:* {duration_str}",
+            f"⏱️ *{tr(self.config, 'processing_time')}:* {duration_str}",
         ]
         return self._send_message("\n".join(lines))
 
@@ -121,7 +132,7 @@ class TelegramNotifier(BaseNotifier):
         """Send a brief notification that the monitor has started."""
         if not self._enabled:
             return False
-        return self._send_message("✅ *AutopsyGuard Iniciado*\nO sistema foi ligado com sucesso e está a monitorizar o Autopsy.")
+        return self._send_message(f"✅ *AutopsyGuard {tr(self.config, 'startup_subject')}*\n{tr(self.config, 'startup_text')}")
 
     # ------------------------------------------------------------------
     # Internal: HTTP dispatch (runs in background thread)
