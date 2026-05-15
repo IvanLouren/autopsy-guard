@@ -54,7 +54,7 @@ def test_collect_case_telemetry_without_local_db(tmp_path: Path) -> None:
     log_dir = case / "Log"
     log_dir.mkdir()
     (log_dir / "autopsy.log.0").write_text("line\n", encoding="utf-8")
-    cfg = MonitorConfig(case_dir=case, language="en")
+    cfg = MonitorConfig(case_dir=case)
     telemetry = collect_case_telemetry(
         config=cfg,
         solr_status=None,
@@ -86,7 +86,7 @@ def test_collect_case_telemetry_extracts_recent_activity_and_timestamp_context(t
         + "\n",
         encoding="utf-8",
     )
-    cfg = MonitorConfig(case_dir=case, language="en")
+    cfg = MonitorConfig(case_dir=case)
     telemetry = collect_case_telemetry(
         config=cfg,
         solr_status=None,
@@ -120,7 +120,7 @@ def test_collect_case_telemetry_ignores_factory_lines_and_yara_message_noise(tmp
         + "\n",
         encoding="utf-8",
     )
-    cfg = MonitorConfig(case_dir=case, language="en")
+    cfg = MonitorConfig(case_dir=case)
     telemetry = collect_case_telemetry(
         config=cfg,
         solr_status=None,
@@ -133,3 +133,4 @@ def test_collect_case_telemetry_ignores_factory_lines_and_yara_message_noise(tmp
     assert "YARA Analyzer" in modules
     assert "No rule set was selected for this ingest job" not in modules
     assert "PhotoRec Carver" not in modules
+

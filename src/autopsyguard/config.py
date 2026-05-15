@@ -74,8 +74,6 @@ class MonitorConfig:
     email_recipient: str = ""
     # Optional human-readable label to show in emails instead of the case directory name
     email_case_label: str = ""
-    # Notification/report language: auto | pt | en
-    language: str = "auto"
     # Case label policy when email_case_label is empty: real | hash
     case_name_source: str = "real"
 
@@ -237,7 +235,6 @@ _SUPPORTED_CONFIG_KEYS = {
     "email_sender",
     "email_recipient",
     "email_case_label",
-    "language",
     "case_name_source",
     "report_interval_hours",
     "whatsapp_enabled",
@@ -377,10 +374,6 @@ def _validate_config_types(config: MonitorConfig) -> None:
     # Validate report interval
     if config.report_interval_hours <= 0:
         raise ValueError(f"Invalid report_interval_hours: {config.report_interval_hours} (must be > 0)")
-
-    language = (config.language or "auto").strip().lower()
-    if language not in {"auto", "pt", "en"}:
-        raise ValueError("language must be one of: auto, pt, en")
 
     case_name_source = (config.case_name_source or "real").strip().lower()
     if case_name_source not in {"real", "hash"}:

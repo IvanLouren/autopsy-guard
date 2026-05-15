@@ -72,13 +72,6 @@ uv run autopsyguard --config config.local.yml --verbose
 
 Open Autopsy and the target case. Confirm startup notification reaches your channel.
 
-### 4) Full Wizard Reference
-
-See [Setup Wizard Guide](docs/setup-wizard-guide.md) for every prompt, security notes, and migration guidance.
-
-> [!TIP]
-> Manual setup is possible with `config.production.example.yml` / `config.development.example.yml`, but wizard path is the safest default for first-time operators.
-
 ## CLI reference
 
 ```text
@@ -127,7 +120,7 @@ Validation expects:
 
 - `autopsy_install_dir` (optional): improves JVM crash file search coverage
 - `report_interval_hours`: periodic heartbeat interval
-- `language`: `auto` (OS locale), `pt`, or `en` for all notifications/reports
+- Notifications/reports are English-only
 - `case_name_source`: `real` or `hash` when `email_case_label` is empty
 - notification settings (`smtp_*`, `email_*`, `whatsapp_*`, `telegram_*`)
 
@@ -313,3 +306,5 @@ Activation requires:
 ## License
 
 No `LICENSE` file is currently included in this repository.
+
+

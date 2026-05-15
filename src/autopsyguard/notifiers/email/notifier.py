@@ -32,7 +32,7 @@ from autopsyguard.notifiers.email.templates import (
 )
 from autopsyguard.notifiers.email.report_builder import build_report_email
 from autopsyguard.utils.process_utils import find_autopsy_pid as _get_autopsy_pid
-from autopsyguard.utils.i18n import tr, resolve_language
+from autopsyguard.utils.messages import tr
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +301,7 @@ class EmailNotifier(BaseNotifier):
         cpu_count = metrics.get("cpu_count")
         if cpu_count:
             cores_used = metrics.get("cpu_cores_used", 0.0)
-            cpu_display = f"{cpu_pct:.1f}% • {cores_used:.1f}/{cpu_count} núcleos"
+            cpu_display = f"{cpu_pct:.1f}% • {cores_used:.1f}/{cpu_count} cores"
         else:
             cpu_display = f"{cpu_pct:.1f}%"
         return f"""
@@ -334,7 +334,6 @@ class EmailNotifier(BaseNotifier):
         from email.message import EmailMessage
 
         msg = EmailMessage()
-        _ = resolve_language(self.config)  # force resolver side-effects / consistency for tests
         msg.set_content(plain_text or tr(self.config, "html_fallback"))
         msg.add_alternative(html_body, subtype="html")
 
@@ -390,10 +389,10 @@ class EmailNotifier(BaseNotifier):
                     return True
                 except (smtplib.SMTPException, OSError, TimeoutError) as e:
                     last_exc = e
-                    logger.warning("Falha ao enviar email (attempt %d/%d): %s", attempt, max_attempts, e)
+                    logger.warning("Failed to send email (attempt %d/%d): %s", attempt, max_attempts, e)
                     if attempt < max_attempts:
                         time.sleep(base_backoff * (2 ** (attempt - 1)))
-            logger.error("❌ Falha ao enviar email após %d tentativas: %s", max_attempts, last_exc)
+            logger.error("❌ Failed to send email after %d attempts: %s", max_attempts, last_exc)
             return False
 
         if self._async_send:
@@ -415,3 +414,5 @@ class EmailNotifier(BaseNotifier):
             return True
 
         return _send_sync()
+
+

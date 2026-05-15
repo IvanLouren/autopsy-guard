@@ -108,22 +108,3 @@ Wizard prints:
 | TLS errors | 587/STARTTLS or 465/SSL pairing |
 | Case validation fails | `case_dir` points to real case, contains `*.aut` |
 | Channel silent (WA/TG) | required channel keys/users configured |
-
-## 6. Migration Notes (Older Wizard Outputs)
-
-If your old setup has legacy email-auth keys:
-
-- Remove legacy SMTP auth keys from YAML.
-- Use Gmail App Password only.
-
-If your old config misses newer fields:
-
-- Add:
-  - `language: auto`
-  - `case_name_source: real`
-- Keep existing SMTP/channel keys unchanged unless rotating secrets.
-
-## 7. Non-Interactive Mode (Future)
-
-Non-interactive setup is planned but not implemented in this version.  
-Current recommendation: run wizard once, then manage `config.local.yml` + `.env` via your own automation.

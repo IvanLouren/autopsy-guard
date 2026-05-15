@@ -25,7 +25,7 @@ from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.utils.solr_health import SolrHealthCache
 from autopsyguard.utils.case_telemetry import collect_case_telemetry
-from autopsyguard.utils.i18n import tr
+from autopsyguard.utils.messages import tr
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.notifiers import EmailNotifier, WhatsAppNotifier, TelegramNotifier
 from autopsyguard.platform_utils import (
@@ -367,7 +367,7 @@ class Monitor:
         return CrashEvent(
             crash_type=CrashType.CORRELATED_INCIDENT,
             severity=severity,
-            message=f"Incidente correlacionado detectado: {summary}",
+            message=f"Correlated incident detected: {summary}",
             details={
                 "event_count": len(events),
                 "critical_count": critical_count,
@@ -472,3 +472,4 @@ class Monitor:
         if mode == "ACTIVE_NON_INGEST":
             return tr(self.config, "status_active_non_ingest")
         return tr(self.config, "status_idle")
+

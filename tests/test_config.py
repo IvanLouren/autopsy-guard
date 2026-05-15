@@ -197,6 +197,24 @@ def test_from_sources_rejects_legacy_oauth_keys(tmp_path: Path) -> None:
         MonitorConfig.from_sources(yaml_path=cfg)
 
 
+def test_from_sources_rejects_legacy_language_key(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "language: auto",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown config key"):
+        MonitorConfig.from_sources(yaml_path=cfg)
+
+
 def test_from_sources_rejects_non_gmail_smtp_when_email_enabled(tmp_path: Path) -> None:
     (tmp_path / "CaseA").mkdir()
 

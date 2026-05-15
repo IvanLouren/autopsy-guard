@@ -372,7 +372,6 @@ $configLines += "hang_timeout: $hangTimeout"
 $configLines += "report_interval_hours: $reportInterval"
 $configLines += ""
 $configLines += "# Localization and labels"
-$configLines += "language: 'auto'"
 $configLines += "case_name_source: 'real'"
 $configLines += ""
 $configLines += "# Email (enabled when smtp_host + email_recipient are set)"
@@ -456,3 +455,4 @@ Write-Host "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."
 if ($RunAfterSetup) {
     uv run autopsyguard --config ".\$ConfigPath"
 }
+

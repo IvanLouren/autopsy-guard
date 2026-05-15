@@ -22,7 +22,7 @@ from autopsyguard.notifiers.email.templates import (
     suggestion_for_event,
     get_system_metrics,
 )
-from autopsyguard.utils.i18n import resolve_language, tr
+from autopsyguard.utils.messages import tr
 from autopsyguard.utils.case_telemetry import collect_case_telemetry
 from autopsyguard.utils.metrics_chart import render_system_chart_png
 
@@ -167,7 +167,6 @@ def _build_chart(
     chart_png = render_system_chart_png(
         metrics_samples,
         alert_windows=alert_windows,
-        language=resolve_language(config),
     )
     if not chart_png:
         return "", inline_images
@@ -490,3 +489,5 @@ def _build_plain_text(
             lines.append(f"[{eid}] {ts.strftime('%Y-%m-%d %H:%M:%S')} {ev.severity.name}: {ev.message}")
             lines.append(f"    {tr(config, 'plain_hint')}: {hint}")
     return "\n".join(lines)
+
+

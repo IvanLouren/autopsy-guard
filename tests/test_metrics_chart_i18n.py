@@ -13,11 +13,9 @@ def _samples() -> list[dict[str, float]]:
     ]
 
 
-def test_chart_renders_in_pt_and_en_with_alert_window() -> None:
-    for lang in ("pt", "en"):
-        png = render_system_chart_png(
-            _samples(),
-            alert_windows=[(1_000_000.0, 1_000_030.0)],
-            language=lang,
-        )
-        assert png[:4] == b"\x89PNG"
+def test_chart_renders_in_english_with_alert_window() -> None:
+    png = render_system_chart_png(
+        _samples(),
+        alert_windows=[(1_000_000.0, 1_000_030.0)],
+    )
+    assert png[:4] == b"\x89PNG"

@@ -15,7 +15,6 @@ def tg_config(tmp_case_dir: Path) -> MonitorConfig:
         case_dir=tmp_case_dir,
         telegram_enabled=True,
         telegram_user="@tester",
-        language="en",
     )
 
 
@@ -35,8 +34,8 @@ def test_telegram_alert_message_localized_en(tg_config: MonitorConfig) -> None:
     assert "Check email for full details." in captured["text"]
 
 
-def test_telegram_report_message_localized_pt(tmp_case_dir: Path) -> None:
-    cfg = MonitorConfig(case_dir=tmp_case_dir, telegram_enabled=True, telegram_user="@tester", language="pt")
+def test_telegram_report_message_is_english_only(tmp_case_dir: Path) -> None:
+    cfg = MonitorConfig(case_dir=tmp_case_dir, telegram_enabled=True, telegram_user="@tester")
     notifier = TelegramNotifier(cfg)
     notifier.set_start_time()
 
@@ -48,5 +47,6 @@ def test_telegram_report_message_localized_pt(tmp_case_dir: Path) -> None:
 
     notifier._send_message = spy
     assert notifier.send_report("OK", events_last_period=1, metrics_samples=[{"cpu_percent": 12.0, "memory_percent": 34.0}]) is True
-    assert "Estado" in captured["text"]
-    assert "Detalhes completos enviados por email." in captured["text"]
+    assert "Status" in captured["text"]
+    assert "Full details sent by email." in captured["text"]
+

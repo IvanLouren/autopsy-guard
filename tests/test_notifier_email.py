@@ -47,7 +47,7 @@ def test_send_alert_builds_html_and_calls_dispatch(tmp_path):
         ok = notifier.send_alert([ev])
     assert ok is True
     assert "Solr slow response" in captured['html']
-    assert "Aviso" in captured['subject'] or "CRÍTICO" not in captured['subject']
+    assert "Warning" in captured['subject'] or "CRITICAL" not in captured['subject']
 
 
 def test_dispatch_email_retries_and_succeeds(tmp_path):
@@ -175,7 +175,6 @@ def test_report_builder_includes_case_artifacts(tmp_path):
 
     cfg = MonitorConfig(case_dir=case_dir)
     cfg.email_case_label = "Caso Alfa"
-    cfg.language = "pt"
 
     subject, html_body, plain_text, _, _ = build_report_email(
         config=cfg,
@@ -191,7 +190,7 @@ def test_report_builder_includes_case_artifacts(tmp_path):
     assert "autopsy.db" in html_body
     assert "autopsy.log.0" in html_body
     assert "PhotoRec Carver" in html_body
-    assert "Pastas de módulos" in plain_text
+    assert "Module Folders" in plain_text
 
 
 def test_report_builder_includes_solr_and_recent_module_summary(tmp_path):
@@ -199,7 +198,7 @@ def test_report_builder_includes_solr_and_recent_module_summary(tmp_path):
     case_dir.mkdir()
     (case_dir / "Caso.aut").write_text("<autopsy/>", encoding="utf-8")
 
-    cfg = MonitorConfig(case_dir=case_dir, language="en")
+    cfg = MonitorConfig(case_dir=case_dir)
     cfg.email_case_label = "Case Alpha"
 
     telemetry = {
@@ -246,7 +245,7 @@ def test_report_builder_solr_up_http400_uses_warning_context_and_timestamp_fallb
     case_dir.mkdir()
     (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
 
-    cfg = MonitorConfig(case_dir=case_dir, language="en")
+    cfg = MonitorConfig(case_dir=case_dir)
     telemetry = {
         "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
         "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-15 18:31:42", "line_count": 20},
@@ -290,7 +289,7 @@ def test_report_builder_prefers_active_module_over_ingest_start(tmp_path):
     case_dir = tmp_path / "Case"
     case_dir.mkdir()
     (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
-    cfg = MonitorConfig(case_dir=case_dir, language="en")
+    cfg = MonitorConfig(case_dir=case_dir)
     telemetry = {
         "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
         "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-15 18:31:42", "line_count": 20},
@@ -315,3 +314,4 @@ def test_report_builder_prefers_active_module_over_ingest_start(tmp_path):
     )
     assert "Current/Recent Module" in html_body
     assert "Keyword Search | active | 2026-05-15 18:31:42" in html_body
+

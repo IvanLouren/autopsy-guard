@@ -18,7 +18,7 @@ def test_setup_wizards_do_not_emit_oauth_config_keys() -> None:
         assert "Custom SMTP" not in text
         assert "local dev server" not in text
         assert "Email mode is fixed to Gmail App Password." in text
-        assert "language: 'auto'" in text
+        assert "language: 'auto'" not in text
         assert "case_name_source: 'real'" in text
 
 

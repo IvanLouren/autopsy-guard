@@ -21,7 +21,7 @@ from typing import Any
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
 from autopsyguard.notifiers.base import BaseNotifier
-from autopsyguard.utils.i18n import tr
+from autopsyguard.utils.messages import tr
 
 logger = logging.getLogger(__name__)
 
@@ -173,3 +173,4 @@ class TelegramNotifier(BaseNotifier):
 
         threading.Thread(target=_do_send, daemon=True).start()
         return True
+

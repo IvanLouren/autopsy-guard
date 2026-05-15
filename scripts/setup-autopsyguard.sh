@@ -331,7 +331,6 @@ mkdir -p "$(dirname "$ENV_FILE_PATH")"
   echo "report_interval_hours: $report_interval"
   echo
   echo "# Localization and labels"
-  echo "language: 'auto'"
   echo "case_name_source: 'real'"
   echo
   echo "# Email (enabled when smtp_host + email_recipient are set)"
@@ -406,3 +405,4 @@ echo "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."
 if [[ "$RUN_AFTER_SETUP" == "true" ]]; then
   uv run autopsyguard --config "./$CONFIG_PATH"
 fi
+

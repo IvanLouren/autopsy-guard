@@ -11,7 +11,7 @@ from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.platform_utils import get_case_log_file
-from autopsyguard.utils.i18n import tr
+from autopsyguard.utils.messages import tr
 
 
 _MODULE_KEYWORDS = (
@@ -331,3 +331,4 @@ def collect_case_telemetry(
             "captured_at": _fmt_ts(time.time()),
         },
     }
+

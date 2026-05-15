@@ -14,7 +14,7 @@ import psutil
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
-from autopsyguard.utils.i18n import resolve_language
+
 
 
 # ---------------------------------------------------------------------------
@@ -233,21 +233,21 @@ def format_details(details: dict[str, Any] | None) -> str:
     ]
     labels = {
         "log_line": "📋 Log",
-        "log_file": "📁 Ficheiro",
+        "log_file": "📁 File",
         "pid": "🔢 PID",
         "exit_code": "⚠️ Exit Code",
-        "error": "❌ Erro",
+        "error": "❌ Error",
         "cpu_percent": "💻 CPU",
-        "cores_used": "⚙️ Núcleos usados",
-        "cpu_per_core_percent": "📊 % por núcleo",
-        "cpu_count": "🔢 Núcleos (totais)",
-        "memory_percent": "🧠 Memória",
-        "duration": "⏱️ Duração",
-        "duration_seconds": "⏱️ Duração",
-        "crash_summary": "💥 Resumo",
+        "cores_used": "⚙️ Cores Used",
+        "cpu_per_core_percent": "📊 Per-Core %",
+        "cpu_count": "🔢 Cores (Total)",
+        "memory_percent": "🧠 Memory",
+        "duration": "⏱️ Duration",
+        "duration_seconds": "⏱️ Duration",
+        "crash_summary": "💥 Summary",
         "core_name": "📦 Core",
         "timeout_seconds": "⏰ Timeout",
-        "elapsed": "⏱️ Tempo",
+        "elapsed": "⏱️ Elapsed",
     }
 
     def _fmt(k: str, v: Any) -> str:
@@ -299,33 +299,17 @@ def short_event_id(event: CrashEvent) -> str:
 def suggestion_for_event(event: CrashEvent, config: MonitorConfig | None = None) -> str:
     """Return a brief remediation hint for common event types."""
     name = event.crash_type.name
-    lang = "en"
-    if config is not None:
-        lang = resolve_language(config)
-    if lang == "pt":
-        hints = {
-            "HANG": "Verifique CPU/RAM e logs; considere reiniciar o processo Autopsy se necessário.",
-            "JVM_CRASH": "Reveja hs_err_pid; reinicie o Autopsy e recolha heap/core.",
-            "OUT_OF_MEMORY": "Analise uso de memória; aumente heap do Solr/Java ou reduza carga.",
-            "PROCESS_DISAPPEARED": "Confirme término do processo; verifique logs e sistema operativo.",
-            "HIGH_RESOURCE_USAGE": "Identifique processos consumidores; considere limitar ou reiniciar.",
-            "SOLR_CRASH": "Verifique saúde do Solr, logs e configuração de heap.",
-            "LOG_ERROR": "Investigue mensagens de erro no ficheiro de log indicado.",
-            "CORRELATED_INCIDENT": "Trate como cadeia única e priorize a causa raiz mais precoce.",
-        }
-        default_hint = "Verifique logs e estado do sistema para mais detalhes."
-    else:
-        hints = {
-            "HANG": "Check CPU/RAM and logs; consider restarting Autopsy if needed.",
-            "JVM_CRASH": "Review hs_err_pid file; restart Autopsy and collect heap/core evidence.",
-            "OUT_OF_MEMORY": "Review memory usage; increase Solr/Java heap or reduce workload.",
-            "PROCESS_DISAPPEARED": "Confirm process termination; inspect system and logs.",
-            "HIGH_RESOURCE_USAGE": "Identify top consumers; consider throttling or restarting.",
-            "SOLR_CRASH": "Check Solr health, logs, and heap configuration.",
-            "LOG_ERROR": "Investigate the referenced log error message.",
-            "CORRELATED_INCIDENT": "Treat as a single incident chain and prioritize earliest root cause.",
-        }
-        default_hint = "Check logs and system status for further details."
+    hints = {
+        "HANG": "Check CPU/RAM and logs; consider restarting Autopsy if needed.",
+        "JVM_CRASH": "Review hs_err_pid file; restart Autopsy and collect heap/core evidence.",
+        "OUT_OF_MEMORY": "Review memory usage; increase Solr/Java heap or reduce workload.",
+        "PROCESS_DISAPPEARED": "Confirm process termination; inspect system and logs.",
+        "HIGH_RESOURCE_USAGE": "Identify top consumers; consider throttling or restarting.",
+        "SOLR_CRASH": "Check Solr health, logs, and heap configuration.",
+        "LOG_ERROR": "Investigate the referenced log error message.",
+        "CORRELATED_INCIDENT": "Treat as a single incident chain and prioritize earliest root cause.",
+    }
+    default_hint = "Check logs and system status for further details."
     return hints.get(name, default_hint)
 
 
@@ -357,3 +341,4 @@ def get_system_metrics(case_dir: Path | None = None) -> dict[str, Any]:
         }
     except Exception:
         return {}
+
