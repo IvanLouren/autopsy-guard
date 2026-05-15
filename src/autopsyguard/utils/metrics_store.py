@@ -22,7 +22,13 @@ class MetricsStore:
     def __init__(self, *, case_dir: Path, db_path: Path | None = None) -> None:
         self._case_dir = case_dir
         self._db_path = db_path or self.default_db_path(case_dir)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Restricted environments (tests/sandboxes) may deny writes to
+            # platform roaming dirs. Fall back to a local case-adjacent state dir.
+            self._db_path = case_dir / ".autopsyguard" / "metrics.db"
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Use a small timeout to wait for transient locks and enable WAL journaling
         # for better concurrency and durability on busy systems.
         self._conn = sqlite3.connect(self._db_path, timeout=5.0)
@@ -69,7 +75,8 @@ class MetricsStore:
                 disk_free_bytes INTEGER NOT NULL,
                 disk_total_bytes INTEGER NOT NULL,
                 autopsy_pid INTEGER,
-                autopsy_rss_bytes INTEGER
+                autopsy_rss_bytes INTEGER,
+                autopsy_cpu_percent REAL DEFAULT 0
             )
             """
         )
@@ -123,6 +130,7 @@ class MetricsStore:
         - version 1: initial schema (created above)
         - version 2: add disk_read_bytes, disk_write_bytes columns
         - version 3: add autopsy_read_bytes, autopsy_write_bytes columns
+        - version 4: add autopsy_cpu_percent column
         """
         cur_ver = self._current_schema_version()
 
@@ -172,6 +180,23 @@ class MetricsStore:
                 except sqlite3.Error:
                     pass
             self._set_schema_version(3)
+            cur_ver = 3
+
+        if cur_ver < 4:
+            cols = self._get_table_columns("metrics")
+            altered = False
+            if "autopsy_cpu_percent" not in cols:
+                try:
+                    self._conn.execute("ALTER TABLE metrics ADD COLUMN autopsy_cpu_percent REAL DEFAULT 0")
+                    altered = True
+                except sqlite3.OperationalError:
+                    logger.debug("autopsy_cpu_percent column add failed or already exists")
+            if altered:
+                try:
+                    self._conn.commit()
+                except sqlite3.Error:
+                    pass
+            self._set_schema_version(4)
 
     def record_sample(self) -> None:
         """Capture a metrics sample and persist it."""
@@ -186,10 +211,16 @@ class MetricsStore:
             autopsy_rss = None
             autopsy_read = 0
             autopsy_write = 0
+            autopsy_cpu = 0.0
             if autopsy_pid is not None:
                 try:
                     proc = psutil.Process(autopsy_pid)
                     autopsy_rss = proc.memory_info().rss
+                    # Non-blocking process CPU snapshot (can exceed 100 for multicore usage)
+                    try:
+                        autopsy_cpu = float(proc.cpu_percent(interval=None))
+                    except Exception:
+                        autopsy_cpu = 0.0
                     # Per-process I/O: cumulative read/write bytes for Autopsy
                     # On Linux this needs root or CAP_SYS_PTRACE for other users' processes
                     try:
@@ -204,6 +235,7 @@ class MetricsStore:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     autopsy_pid = None
                     autopsy_rss = None
+                    autopsy_cpu = 0.0
 
             # Desired mapping of column -> value (covers all schema versions)
             value_map = {
@@ -218,6 +250,7 @@ class MetricsStore:
                 "disk_write_bytes": int(disk_io.write_bytes) if disk_io is not None else 0,
                 "autopsy_pid": autopsy_pid,
                 "autopsy_rss_bytes": int(autopsy_rss) if autopsy_rss is not None else None,
+                "autopsy_cpu_percent": autopsy_cpu,
                 "autopsy_read_bytes": autopsy_read,
                 "autopsy_write_bytes": autopsy_write,
             }
@@ -238,6 +271,7 @@ class MetricsStore:
                     "disk_write_bytes",
                     "autopsy_pid",
                     "autopsy_rss_bytes",
+                    "autopsy_cpu_percent",
                     "autopsy_read_bytes",
                     "autopsy_write_bytes",
                 ]
@@ -282,6 +316,7 @@ class MetricsStore:
         optional_cols = [
             "disk_read_bytes", "disk_write_bytes",
             "autopsy_pid", "autopsy_rss_bytes",
+            "autopsy_cpu_percent",
             "autopsy_read_bytes", "autopsy_write_bytes",
         ]
         for c in optional_cols:
@@ -313,6 +348,7 @@ class MetricsStore:
                 "disk_write_bytes",
                 "autopsy_pid",
                 "autopsy_rss_bytes",
+                "autopsy_cpu_percent",
                 "autopsy_read_bytes",
                 "autopsy_write_bytes",
             ]:
@@ -322,6 +358,52 @@ class MetricsStore:
             results.append(entry)
 
         return results
+
+    def nearest_autopsy_cpu_samples(
+        self,
+        *,
+        now_ts: float,
+        offsets_seconds: list[float],
+        max_gap_seconds: float = 180.0,
+    ) -> dict[float, float | None]:
+        """Return nearest Autopsy CPU samples for target offsets from `now_ts`."""
+        if not offsets_seconds:
+            return {}
+        try:
+            oldest_target = now_ts - max(offsets_seconds) - max_gap_seconds
+            rows = self._conn.execute(
+                """
+                SELECT ts, autopsy_cpu_percent
+                FROM metrics
+                WHERE ts >= ?
+                ORDER BY ts ASC
+                """,
+                (oldest_target,),
+            ).fetchall()
+        except sqlite3.Error:
+            return {off: None for off in offsets_seconds}
+
+        if not rows:
+            return {off: None for off in offsets_seconds}
+
+        result: dict[float, float | None] = {}
+        for off in offsets_seconds:
+            target = now_ts - off
+            best_val: float | None = None
+            best_diff = float("inf")
+            for ts, cpu in rows:
+                try:
+                    diff = abs(float(ts) - target)
+                except Exception:
+                    continue
+                if diff < best_diff:
+                    best_diff = diff
+                    try:
+                        best_val = float(cpu) if cpu is not None else None
+                    except Exception:
+                        best_val = None
+            result[off] = best_val if best_diff <= max_gap_seconds else None
+        return result
 
     def close(self) -> None:
         """Close the database connection."""

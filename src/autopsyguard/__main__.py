@@ -19,6 +19,7 @@ from pathlib import Path
 from autopsyguard.config import MonitorConfig
 from autopsyguard.logger import setup_logging
 from autopsyguard.monitor import Monitor
+from autopsyguard.platform_utils import get_autopsyguard_state_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -134,6 +135,10 @@ def main() -> int:
         except ValueError as exc:
             logger.error(str(exc))
             return 1
+
+    # Reconfigure logging now that case_dir is known: mirror terminal output
+    # into a rotating file under AutopsyGuard state directory.
+    setup_logging(log_dir=get_autopsyguard_state_dir(config.case_dir), level=level)
     
     # Clean startup banner
     print("\n╔═══════════════════════════════════════════════════════════╗")

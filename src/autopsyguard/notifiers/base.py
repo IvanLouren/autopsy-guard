@@ -65,6 +65,7 @@ class BaseNotifier(abc.ABC):
         system_status: str,
         events_last_period: int,
         metrics_samples: list[dict[str, Any]] | None = None,
+        telemetry: dict[str, Any] | None = None,
     ) -> bool:
         """Send a periodic heartbeat / status report."""
 

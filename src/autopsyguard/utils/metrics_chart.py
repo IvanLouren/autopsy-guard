@@ -20,6 +20,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 def render_system_chart_png(
     samples: list[dict[str, Any]],
     alert_windows: list[tuple[float, float]] | None = None,
+    language: str = "en",
 ) -> bytes:
     """Render a system chart as PNG bytes.
 
@@ -128,8 +129,10 @@ def render_system_chart_png(
                 alert_drawn = True
 
     # Top: CPU% and Memory%
-    ax_top.plot(x_minutes, cpu_s, color="#e11d48", linewidth=1.6, label="CPU (%)")
-    ax_top.plot(x_minutes, mem_s, color="#2563eb", linewidth=1.6, label="Memory (%)")
+    mem_label = "Memória (%)" if language == "pt" else "Memory (%)"
+    cpu_label = "CPU (%)"
+    ax_top.plot(x_minutes, cpu_s, color="#e11d48", linewidth=1.6, label=cpu_label)
+    ax_top.plot(x_minutes, mem_s, color="#2563eb", linewidth=1.6, label=mem_label)
     ax_top.set_ylabel("Percent (%)")
     ax_top.set_ylim(0, 100)
     ax_top.grid(True, alpha=0.15)
@@ -138,7 +141,14 @@ def render_system_chart_png(
 
     if has_rss:
         ax_rss = ax_top.twinx()
-        ax_rss.plot(x_minutes, rss_gb, color="#d97706", linewidth=1.2, linestyle="--", label="Autopsy RSS (GB)")
+        ax_rss.plot(
+            x_minutes,
+            rss_gb,
+            color="#d97706",
+            linewidth=1.2,
+            linestyle="--",
+            label="Autopsy RSS (GB)",
+        )
         ax_rss.set_ylabel("RSS (GB)")
         lines += ax_rss.get_lines()
         labels += [l.get_label() for l in ax_rss.get_lines()]
@@ -147,20 +157,46 @@ def render_system_chart_png(
     if alert_drawn:
         from matplotlib.lines import Line2D
         alert_legend = Line2D([0], [0], color="#dc2626", linewidth=1.2,
-                              linestyle="--", alpha=0.5, label="Período de alerta")
+                              linestyle="--", alpha=0.5, label=("Janela de alerta" if language == "pt" else "Alert window"))
         lines.append(alert_legend)
         labels.append(alert_legend.get_label())
     ax_top.legend(lines, labels, loc="upper right", fontsize=8)
-    ax_top.set_xlabel("Minutes since last email")
+    ax_top.set_xlabel("Minutos desde o último email" if language == "pt" else "Minutes since last email")
 
     # Bottom: Disk I/O MB/s (system = solid, Autopsy = dashed)
-    ax_bot.plot(x_minutes, read_mbps, color="#10b981", linewidth=1.4, label="System Read (MB/s)")
-    ax_bot.plot(x_minutes, write_mbps, color="#6366f1", linewidth=1.4, label="System Write (MB/s)")
+    ax_bot.plot(
+        x_minutes,
+        read_mbps,
+        color="#10b981",
+        linewidth=1.4,
+        label=("Leitura Sistema (MB/s)" if language == "pt" else "System Read (MB/s)"),
+    )
+    ax_bot.plot(
+        x_minutes,
+        write_mbps,
+        color="#6366f1",
+        linewidth=1.4,
+        label=("Escrita Sistema (MB/s)" if language == "pt" else "System Write (MB/s)"),
+    )
     if has_autopsy_io:
-        ax_bot.plot(x_minutes, ap_read_mbps, color="#10b981", linewidth=1.2, linestyle="--", label="Autopsy Read (MB/s)")
-        ax_bot.plot(x_minutes, ap_write_mbps, color="#6366f1", linewidth=1.2, linestyle="--", label="Autopsy Write (MB/s)")
+        ax_bot.plot(
+            x_minutes,
+            ap_read_mbps,
+            color="#10b981",
+            linewidth=1.2,
+            linestyle="--",
+            label=("Leitura Autopsy (MB/s)" if language == "pt" else "Autopsy Read (MB/s)"),
+        )
+        ax_bot.plot(
+            x_minutes,
+            ap_write_mbps,
+            color="#6366f1",
+            linewidth=1.2,
+            linestyle="--",
+            label=("Escrita Autopsy (MB/s)" if language == "pt" else "Autopsy Write (MB/s)"),
+        )
     ax_bot.set_ylabel("MB/s")
-    ax_bot.set_xlabel("Minutes since last email")
+    ax_bot.set_xlabel("Minutos desde o último email" if language == "pt" else "Minutes since last email")
     ax_bot.grid(True, alpha=0.15)
     ax_bot.legend(loc="upper right", fontsize=7)
 

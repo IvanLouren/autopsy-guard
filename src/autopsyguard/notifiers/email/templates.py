@@ -14,7 +14,7 @@ import psutil
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
-from autopsyguard.utils.i18n import resolve_language, tr
+from autopsyguard.utils.i18n import resolve_language
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,8 @@ from autopsyguard.detectors.process_detector import ProcessDetector
 from autopsyguard.detectors.resource_detector import ResourceDetector
 from autopsyguard.detectors.solr_detector import SolrDetector
 from autopsyguard.utils.solr_health import SolrHealthCache
+from autopsyguard.utils.case_telemetry import collect_case_telemetry
+from autopsyguard.utils.i18n import tr
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.notifiers import EmailNotifier, WhatsAppNotifier, TelegramNotifier
 from autopsyguard.platform_utils import (
@@ -56,17 +58,19 @@ class Monitor:
 
         # Shared Solr health cache to avoid duplicate probes per cycle
         solr_cache = SolrHealthCache(config)
+        self._solr_cache = solr_cache
 
         # Create LogDetector first so HangDetector can query ingest state
         self._log_detector = LogDetector(config, monitor_start=monitor_start)
 
+        self._solr_detector = SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start)
         self.detectors: list[BaseDetector] = [
             ProcessDetector(config),
             JvmCrashDetector(config),
             self._log_detector,
             HangDetector(config, solr_cache=solr_cache, log_detector=self._log_detector),
             ResourceDetector(config),
-            SolrDetector(config, solr_cache=solr_cache, monitor_start=monitor_start),
+            self._solr_detector,
         ]
         self.notifier = EmailNotifier(config)
         self.whatsapp = WhatsAppNotifier(config)
@@ -98,7 +102,6 @@ class Monitor:
             CrashType.ABNORMAL_EXIT,
             CrashType.JVM_CRASH,
             CrashType.SOLR_CRASH,
-            CrashType.OUT_OF_MEMORY,
             CrashType.ZOMBIE,
         }
 
@@ -248,21 +251,47 @@ class Monitor:
                 buffer_seconds = max(60, int(self.config.poll_interval * 3))
                 since_ts = max(0.0, self._last_report_time - buffer_seconds)
                 metrics_samples = self._metrics_store.fetch_samples(since_ts=since_ts)
+                now_ts = time.time()
+                cpu_timeline = self._metrics_store.nearest_autopsy_cpu_samples(
+                    now_ts=now_ts,
+                    offsets_seconds=[0.0, 300.0, 900.0],
+                )
+                solr_status = None
+                try:
+                    solr_status = self._solr_cache.get_status()
+                except Exception:
+                    solr_status = None
+                solr_metrics = None
+                try:
+                    solr_metrics = self._solr_detector.get_current_metrics()
+                except Exception:
+                    solr_metrics = None
+                telemetry = collect_case_telemetry(
+                    config=self.config,
+                    solr_status=solr_status,
+                    solr_metrics=solr_metrics,
+                    cpu_snapshots=cpu_timeline,
+                )
+                status_mode = self._classify_runtime_status(telemetry=telemetry)
+                status_text = self._status_text_for_mode(status_mode)
                 
                 self.notifier.send_report(
-                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    system_status=status_text,
                     events_last_period=self._events_since_last_report,
                     metrics_samples=metrics_samples,
+                    telemetry=telemetry,
                 )
                 self.whatsapp.send_report(
-                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    system_status=status_text,
                     events_last_period=self._events_since_last_report,
                     metrics_samples=metrics_samples,
+                    telemetry=telemetry,
                 )
                 self.telegram.send_report(
-                    system_status="O sistema AutopsyGuard está ATIVO e a processar dados normalmente.",
+                    system_status=status_text,
                     events_last_period=self._events_since_last_report,
                     metrics_samples=metrics_samples,
+                    telemetry=telemetry,
                 )
                 
                 self._last_report_time = now
@@ -366,10 +395,12 @@ class Monitor:
     def _collect_alert_notifications(self, alert_events: list[CrashEvent], now: float) -> list[CrashEvent]:
         """Collect and flush correlated alert notifications for this cycle."""
         self._buffer_alert_events(alert_events, now)
-        if any(
-            (e.severity == Severity.CRITICAL) or (e.crash_type in self._priority_alert_types)
-            for e in alert_events
-        ):
+        has_priority = any((e.crash_type in self._priority_alert_types) for e in alert_events)
+        has_critical = any(e.severity == Severity.CRITICAL for e in alert_events)
+        # Flush immediately for priority alerts only when this is a standalone
+        # incident; when multiple signals are already buffered, keep the
+        # correlation window to emit a single grouped incident.
+        if has_priority and not has_critical and len(self._pending_alert_events) <= len(alert_events):
             return self._flush_pending_alerts(now, force=True)
         return self._flush_pending_alerts(now, force=False)
 
@@ -383,3 +414,41 @@ class Monitor:
             event.crash_type.name, 
             event.message
         )
+
+    def _classify_runtime_status(self, telemetry: dict[str, object]) -> str:
+        """Classify runtime state for periodic human-facing reports."""
+        if self._log_detector.ingest_running:
+            return "PROCESSING"
+
+        cpu_now = None
+        try:
+            cpu_now = (telemetry.get("autopsy_cpu_timeline") or {}).get("current")
+        except Exception:
+            cpu_now = None
+        module_activity = telemetry.get("module_activity") or []
+        solr = telemetry.get("solr") or {}
+        solr_up = str(solr.get("state", "")).lower() == "up"
+        solr_rt = solr.get("response_time_seconds")
+
+        if module_activity:
+            return "ACTIVE_NON_INGEST"
+        if cpu_now is not None:
+            try:
+                if float(cpu_now) >= max(5.0, self.config.hang_cpu_threshold):
+                    return "ACTIVE_NON_INGEST"
+            except Exception:
+                pass
+        if solr_up and solr_rt is not None:
+            try:
+                if float(solr_rt) > 0.0:
+                    return "ACTIVE_NON_INGEST"
+            except Exception:
+                pass
+        return "IDLE"
+
+    def _status_text_for_mode(self, mode: str) -> str:
+        if mode == "PROCESSING":
+            return tr(self.config, "status_processing")
+        if mode == "ACTIVE_NON_INGEST":
+            return tr(self.config, "status_active_non_ingest")
+        return tr(self.config, "status_idle")
