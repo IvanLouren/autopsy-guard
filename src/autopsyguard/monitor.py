@@ -199,6 +199,25 @@ class Monitor:
         events = self.run_once()
         now = time.time()
 
+        # During launcher/case-open warmup (before first ingest start), Autopsy
+        # can transiently churn Solr child JVMs and replay Solr log warnings.
+        # Suppress these warning-only signals to avoid misleading noise.
+        if not self._has_ingest_started_ever and events:
+            warmup_filtered: list[CrashEvent] = []
+            for event in events:
+                if (
+                    event.severity == Severity.WARNING
+                    and event.crash_type in {CrashType.SOLR_CRASH, CrashType.LOG_ERROR}
+                ):
+                    logger.debug(
+                        "Suppressing pre-ingest warmup event: %s - %s",
+                        event.crash_type.name,
+                        event.message,
+                    )
+                    continue
+                warmup_filtered.append(event)
+            events = warmup_filtered
+
         # Send immediate alerts for critical/warning events, but correlate
         # multi-detector bursts into one incident before dispatching.
         alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
@@ -225,6 +244,7 @@ class Monitor:
             if not self._has_ingest_started_ever:
                 # Align the report timer exactly to the start of the ingest
                 self._last_report_time = time.time()
+                self._events_since_last_report = 0
                 self._has_ingest_started_ever = True
             
         elif not is_ingest_running and self._was_ingest_running:
