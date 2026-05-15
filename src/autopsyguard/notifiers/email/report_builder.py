@@ -11,11 +11,13 @@ import csv
 import io
 import json
 import logging
+from pathlib import Path
 from datetime import datetime
 from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent
+from autopsyguard.platform_utils import get_case_log_file
 from autopsyguard.utils.metrics_chart import render_system_chart_png
 from autopsyguard.notifiers.email.templates import (
     BASE_TEMPLATE,
@@ -46,7 +48,8 @@ def build_report_email(
 
     Returns ``(subject, html_body, inline_images, attachments)``.
     """
-    subject = "📊 [AutopsyGuard] Relatório de Status"
+    case_label = get_case_label(config)
+    subject = f"📊 [AutopsyGuard] Relatório de Status - {case_label}"
     metrics = get_system_metrics(config.case_dir)
 
     # --- Status card ---
@@ -78,12 +81,16 @@ def build_report_email(
     # --- Monitoring details table ---
     details_table = _build_details_table(config, system_status, events_last_period, uptime, autopsy_pid)
 
+    # --- Case artifacts section ---
+    case_artifacts_html, case_artifacts_plain = _build_case_artifacts_section(config)
+
     body_content = (
         status_card
         + metrics_html
         + chart_html
         + recent_events_html
         + details_table
+        + case_artifacts_html
         + """
         <div style="padding:16px; background-color:#eff6ff; border-radius:8px; border-left:4px solid #3b82f6;">
             <p style="color:#1e40af; font-size:13px; margin:0;">
@@ -112,6 +119,7 @@ def build_report_email(
     plain_text = _build_plain_text(
         subject, status_text, events_last_period, uptime,
         autopsy_pid, metrics_samples, recent_events,
+        case_artifacts_plain,
     )
 
     return subject, html_body, plain_text, inline_images, attachments
@@ -253,6 +261,137 @@ def _build_details_table(
     """
 
 
+def _build_case_artifacts_section(config: MonitorConfig) -> tuple[str, list[str]]:
+    case_dir = config.case_dir
+    db_path = case_dir / "autopsy.db"
+    log_path = get_case_log_file(case_dir)
+
+    rows: list[str] = []
+    plain_lines: list[str] = []
+
+    def _row(label: str, value: str) -> str:
+        return f"""
+        <tr>
+            <td style="padding:8px 0; border-bottom:1px solid #f3f4f6;"><span style="color:#6b7280; font-size:13px;">{label}</span></td>
+            <td align="right" style="padding:8px 0; border-bottom:1px solid #f3f4f6;"><span style="color:#111827; font-size:13px; font-weight:500;">{value}</span></td>
+        </tr>
+        """
+
+    def _fmt_size(size_bytes: int | None) -> str:
+        if size_bytes is None:
+            return "N/A"
+        size = float(size_bytes)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size < 1024.0 or unit == "TB":
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} TB"
+
+    def _fmt_time(path: Path) -> str:
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%d/%m/%Y %H:%M:%S")
+        except OSError:
+            return "N/A"
+
+    def _count_lines(path: Path) -> int | None:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                return sum(1 for _ in handle)
+        except OSError:
+            return None
+
+    def _path_summary(path: Path, *, include_lines: bool = False) -> tuple[str, str]:
+        if not path.exists():
+            return "Não encontrado", "Não encontrado"
+        try:
+            stat = path.stat()
+        except OSError:
+            return "Indisponível", "Indisponível"
+        value = f"{_fmt_size(stat.st_size)} | Atualizado: {_fmt_time(path)}"
+        if include_lines:
+            line_count = _count_lines(path)
+            value += f" | Linhas: {line_count if line_count is not None else 'N/A'}"
+        return value, value
+
+    db_value_html, db_value_plain = _path_summary(db_path)
+    log_value_html, log_value_plain = _path_summary(log_path, include_lines=True)
+
+    rows.append(_row("🗄️ Base de dados do caso (autopsy.db)", db_value_html))
+    rows.append(_row("📝 Log corrente do Autopsy (autopsy.log.0)", log_value_html))
+    plain_lines.append(f"autopsy.db: {db_value_plain}")
+    plain_lines.append(f"autopsy.log.0: {log_value_plain}")
+
+    module_dirs = _discover_module_directories(case_dir)
+    if module_dirs:
+        rows.append(
+            _row(
+                f"📁 Pastas de módulos ({len(module_dirs)})",
+                "Ver secção abaixo",
+            )
+        )
+        module_rows = "".join(
+            _row(
+                entry[0],
+                f"{_fmt_size(entry[1])} | Atualizado: {entry[2]}",
+            )
+            for entry in module_dirs
+        )
+        rows_html = module_rows
+    else:
+        rows_html = ""
+
+    section = f"""
+    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+            <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
+                <strong style="color:#374151; font-size:14px;">📂 Estado do Caso e Artefactos</strong>
+            </td></tr>
+            <tr><td style="padding:16px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">{''.join(rows)}</table>
+                {f'<div style="margin-top:14px; font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:1px;">📁 Pastas de módulos</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:8px;">{rows_html}</table>' if rows_html else ''}
+            </td></tr>
+        </table>
+    </div>
+    """
+    if module_dirs:
+        plain_lines.append("Pastas de módulos:")
+        for name, size_bytes, updated in module_dirs:
+            plain_lines.append(f"  - {name}: {_fmt_size(size_bytes)} | Atualizado: {updated}")
+
+    return section, plain_lines
+
+
+def _discover_module_directories(case_dir: Path) -> list[tuple[str, int, str]]:
+    entries: list[tuple[str, int, str]] = []
+    ignored = {"Log", ".autopsyguard", "__pycache__"}
+    try:
+        for child in case_dir.iterdir():
+            if not child.is_dir() or child.name in ignored or child.name.startswith("."):
+                continue
+            size_bytes = 0
+            latest_mtime: float | None = None
+            try:
+                for file_path in child.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    try:
+                        stat = file_path.stat()
+                    except OSError:
+                        continue
+                    size_bytes += int(stat.st_size)
+                    if latest_mtime is None or stat.st_mtime > latest_mtime:
+                        latest_mtime = stat.st_mtime
+            except OSError:
+                continue
+            if latest_mtime is None:
+                continue
+            entries.append((child.name, size_bytes, datetime.fromtimestamp(latest_mtime).strftime("%d/%m/%Y %H:%M:%S")))
+    except OSError:
+        return []
+    entries.sort(key=lambda item: item[2], reverse=True)
+    return entries[:10]
+
+
 def _build_attachments(
     metrics_samples: list[dict[str, Any]] | None,
 ) -> list[tuple[str, bytes, str]]:
@@ -290,6 +429,7 @@ def _build_plain_text(
     autopsy_pid: int | None,
     metrics_samples: list[dict[str, Any]] | None,
     recent_events: list[tuple[datetime, CrashEvent]],
+    case_artifacts_lines: list[str] | None,
 ) -> str:
     lines = [
         subject, "",
@@ -300,6 +440,10 @@ def _build_plain_text(
     ]
     if metrics_samples:
         lines.append("Inclui anexos: metrics.csv, metrics.json")
+    if case_artifacts_lines:
+        lines.append("")
+        lines.append("Estado do caso e artefactos:")
+        lines.extend(case_artifacts_lines)
     lines.append("")
     if recent_events:
         lines.append("Eventos recentes:")
