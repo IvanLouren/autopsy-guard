@@ -98,3 +98,38 @@ def test_collect_case_telemetry_extracts_recent_activity_and_timestamp_context(t
     assert "Keyword Search" in modules
     kw_items = [a for a in telemetry["module_activity"] if a["module"] == "Keyword Search"]
     assert kw_items and kw_items[0].get("timestamp") == "2026-05-15 18:36:30"
+
+
+def test_collect_case_telemetry_ignores_factory_lines_and_yara_message_noise(tmp_path: Path) -> None:
+    case = tmp_path / "CaseC"
+    case.mkdir()
+    (case / "CaseC.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-15 18:24:54.489 org.sleuthkit.autopsy.ingest.IngestModuleFactoryLoader addFactory",
+                "INFO: Found ingest module factory: name = PhotoRec Carver, version = 7.0",
+                "2026-05-15 18:25:33.480 org.sleuthkit.autopsy.modules.yara.YaraIngestModule startUp",
+                "INFO: YARA ingest module: No rule set was selected for this ingest job.",
+                "2026-05-15 18:25:34.066 org.sleuthkit.autopsy.ingest.DataSourceIngestPipeline$DataSourcePipelineModule process",
+                "INFO: Recent Activity analysis of Laptop1Final.E01 starting",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = MonitorConfig(case_dir=case, language="en")
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+
+    modules = [a["module"] for a in telemetry["module_activity"]]
+    assert "Recent Activity" in modules
+    assert "YARA Analyzer" in modules
+    assert "No rule set was selected for this ingest job" not in modules
+    assert "PhotoRec Carver" not in modules

@@ -205,10 +205,7 @@ class Monitor:
         if not self._has_ingest_started_ever and events:
             warmup_filtered: list[CrashEvent] = []
             for event in events:
-                if (
-                    event.severity == Severity.WARNING
-                    and event.crash_type in {CrashType.SOLR_CRASH, CrashType.LOG_ERROR}
-                ):
+                if event.crash_type in {CrashType.SOLR_CRASH, CrashType.LOG_ERROR}:
                     logger.debug(
                         "Suppressing pre-ingest warmup event: %s - %s",
                         event.crash_type.name,

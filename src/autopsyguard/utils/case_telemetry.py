@@ -27,6 +27,19 @@ _MODULE_KEYWORDS = (
     "extension mismatch",
 )
 
+_KEYWORD_MODULE_NAME: dict[str, str] = {
+    "photorec": "PhotoRec Carver",
+    "carver": "PhotoRec Carver",
+    "keyword search": "Keyword Search",
+    "keywordsearch": "Keyword Search",
+    "solr": "Solr",
+    "email parser": "Email Parser",
+    "interesting files": "Interesting Files Identifier",
+    "exif": "EXIF Parser",
+    "hash lookup": "Hash Lookup",
+    "extension mismatch": "Extension Mismatch Detector",
+}
+
 
 def _annotate_lines_with_timestamps(lines: list[str]) -> list[tuple[str, str | None]]:
     """Attach best-effort timestamp to each log line.
@@ -77,6 +90,8 @@ def _module_name_from_line(line: str) -> str | None:
         return "Embedded File Extractor"
     if "email parser" in low or "emailparser" in low:
         return "Email Parser"
+    if "yara ingest module" in low:
+        return "YARA Analyzer"
     if "interesting files" in low:
         return "Interesting Files Identifier"
     if "hash lookup" in low:
@@ -84,7 +99,11 @@ def _module_name_from_line(line: str) -> str | None:
     if "extension mismatch" in low:
         return "Extension Mismatch Detector"
 
-    m = re.search(r"(?:module|módulo)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})", line, flags=re.IGNORECASE)
+    m = re.search(
+        r"(?<!ingest\s)(?:\bmodule\b|\bmódulo\b)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})",
+        line,
+        flags=re.IGNORECASE,
+    )
     if m:
         return m.group(1).strip()
     return None
@@ -162,6 +181,8 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
     for raw, ts_ctx in reversed(_annotate_lines_with_timestamps(lines)):
         line = raw.strip()
         low = line.lower()
+        if "found ingest module factory" in low:
+            continue
         ts = _extract_line_timestamp(line) or ts_ctx
 
         if "starting ingest job" in low:
@@ -193,7 +214,7 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
                 if key in seen:
                     continue
                 seen.add(key)
-                mod_name = kw.title() if kw != "keywordsearch" else "Keyword Search"
+                mod_name = _KEYWORD_MODULE_NAME.get(kw, kw.title())
                 activities.append({"module": mod_name, "state": state, "line": line[:220], "timestamp": ts})
                 break
     return activities[:20]

@@ -157,3 +157,32 @@ def test_pre_ingest_warmup_filters_solr_and_log_warnings(tmp_path: Path) -> None
         monitor._handle_active()
 
     assert handled == []
+
+
+def test_pre_ingest_warmup_filters_critical_solr_log_noise(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._state = MonitorState.ACTIVE
+    monitor._metrics_store.record_sample = lambda: None
+    monitor._log_detector._ingest_running = False
+    monitor._has_ingest_started_ever = False
+
+    warmup_events = [
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.CRITICAL,
+            message="Solr log error in solr.log.7",
+        ),
+    ]
+    monitor.run_once = lambda: warmup_events
+
+    handled: list[CrashEvent] = []
+    monitor._handle_event = lambda ev: handled.append(ev)
+    monitor.notifier.send_alert = lambda *_args, **_kwargs: True
+    monitor.whatsapp.send_alert = lambda *_args, **_kwargs: True
+    monitor.telegram.send_alert = lambda *_args, **_kwargs: True
+
+    with patch("autopsyguard.monitor.find_autopsy_pid", return_value=123):
+        monitor._handle_active()
+
+    assert handled == []
