@@ -14,6 +14,7 @@ import psutil
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, Severity
+from autopsyguard.utils.i18n import resolve_language, tr
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +81,8 @@ BASE_TEMPLATE = """
                         <td style="background-color:#f8f9fa; padding:20px 40px; border-top:1px solid #e9ecef;">
                             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                                 <tr>
-                                    <td style="font-size:12px; color:#868e96;">
-                                        <strong>AutopsyGuard</strong> — Sistema de Monitorização Forense
+                    <td style="font-size:12px; color:#868e96;">
+                                        <strong>AutopsyGuard</strong> — {footer_system}
                                     </td>
                                     <td align="right" style="font-size:12px; color:#868e96;">
                                         v1.0.0
@@ -94,7 +95,7 @@ BASE_TEMPLATE = """
 
                 <!-- Footer note -->
                 <p style="color:#868e96; font-size:11px; margin-top:20px; text-align:center;">
-                    Este é um email automático. Não responda a esta mensagem.
+                    {auto_email_note}
                 </p>
             </td>
         </tr>
@@ -174,12 +175,17 @@ STATUS_CARD = """
 def get_case_label(config: MonitorConfig) -> str:
     """Return an anonymised, human-friendly case label for emails.
 
-    Uses ``config.email_case_label`` when set; otherwise returns a short
-    hashed identifier to avoid exposing filesystem paths or identifiable
-    case names in email subjects/bodies.
+    Uses ``config.email_case_label`` when set; otherwise defaults to the
+    actual case directory name.
     """
     if getattr(config, "email_case_label", None):
         return config.email_case_label
+    source = (getattr(config, "case_name_source", "real") or "real").strip().lower()
+    if source == "real":
+        try:
+            return config.case_dir.name
+        except Exception:
+            return "Case"
     try:
         path = config.case_dir.resolve().as_posix() if config.case_dir else ""
     except Exception:
@@ -290,20 +296,37 @@ def short_event_id(event: CrashEvent) -> str:
     return h.hexdigest()[:8]
 
 
-def suggestion_for_event(event: CrashEvent) -> str:
-    """Return a brief Portuguese remediation hint for common event types."""
+def suggestion_for_event(event: CrashEvent, config: MonitorConfig | None = None) -> str:
+    """Return a brief remediation hint for common event types."""
     name = event.crash_type.name
-    hints = {
-        "HANG": "Verifique CPU/RAM e logs; considere reiniciar o processo Autopsy se necessário.",
-        "JVM_CRASH": "Rever o ficheiro hs_err_pid; reiniciar Autopsy e recolher heap/core.",
-        "OUT_OF_MEMORY": "Analisar uso de memória; aumentar heap do Solr/Java ou reduzir carga.",
-        "PROCESS_DISAPPEARED": "Confirmar se o processo foi terminado; verificar logs e sistema de operacional.",
-        "HIGH_RESOURCE_USAGE": "Identificar processos consumidores; considerar limitar ou reiniciar.",
-        "SOLR_CRASH": "Verificar saúde do Solr, arquivos de log e configuração de heap.",
-        "LOG_ERROR": "Investigar mensagens de erro no ficheiro de logs indicado.",
-        "CORRELATED_INCIDENT": "Tratar o incidente como cadeia única e priorizar a causa raiz mais precoce.",
-    }
-    return hints.get(name, "Verificar logs e estado do sistema para mais detalhes.")
+    lang = "en"
+    if config is not None:
+        lang = resolve_language(config)
+    if lang == "pt":
+        hints = {
+            "HANG": "Verifique CPU/RAM e logs; considere reiniciar o processo Autopsy se necessário.",
+            "JVM_CRASH": "Reveja hs_err_pid; reinicie o Autopsy e recolha heap/core.",
+            "OUT_OF_MEMORY": "Analise uso de memória; aumente heap do Solr/Java ou reduza carga.",
+            "PROCESS_DISAPPEARED": "Confirme término do processo; verifique logs e sistema operativo.",
+            "HIGH_RESOURCE_USAGE": "Identifique processos consumidores; considere limitar ou reiniciar.",
+            "SOLR_CRASH": "Verifique saúde do Solr, logs e configuração de heap.",
+            "LOG_ERROR": "Investigue mensagens de erro no ficheiro de log indicado.",
+            "CORRELATED_INCIDENT": "Trate como cadeia única e priorize a causa raiz mais precoce.",
+        }
+        default_hint = "Verifique logs e estado do sistema para mais detalhes."
+    else:
+        hints = {
+            "HANG": "Check CPU/RAM and logs; consider restarting Autopsy if needed.",
+            "JVM_CRASH": "Review hs_err_pid file; restart Autopsy and collect heap/core evidence.",
+            "OUT_OF_MEMORY": "Review memory usage; increase Solr/Java heap or reduce workload.",
+            "PROCESS_DISAPPEARED": "Confirm process termination; inspect system and logs.",
+            "HIGH_RESOURCE_USAGE": "Identify top consumers; consider throttling or restarting.",
+            "SOLR_CRASH": "Check Solr health, logs, and heap configuration.",
+            "LOG_ERROR": "Investigate the referenced log error message.",
+            "CORRELATED_INCIDENT": "Treat as a single incident chain and prioritize earliest root cause.",
+        }
+        default_hint = "Check logs and system status for further details."
+    return hints.get(name, default_hint)
 
 
 def get_system_metrics(case_dir: Path | None = None) -> dict[str, Any]:
