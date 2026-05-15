@@ -13,6 +13,7 @@ This repository is a final-year software engineering project focused on operatio
 - Email, WhatsApp, and Telegram notifications
 - Correlated incident alerts that group multi-detector cascades into one report
 - Heartbeat reporting with metrics attachments and chart
+- Heartbeat telemetry for `autopsy.db`, `autopsy.log.0`, case size, module folders, Solr status, and Autopsy CPU timeline
 - Metrics persistence in SQLite outside the case directory
 
 ## Requirements
@@ -111,6 +112,8 @@ Validation expects:
 
 - `autopsy_install_dir` (optional): improves JVM crash file search coverage
 - `report_interval_hours`: periodic heartbeat interval
+- `language`: `auto` (OS locale), `pt`, or `en` for all notifications/reports
+- `case_name_source`: `real` or `hash` when `email_case_label` is empty
 - notification settings (`smtp_*`, `email_*`, `whatsapp_*`, `telegram_*`)
 
 ### Environment variables (supported overrides)
@@ -174,6 +177,7 @@ Files written there:
 - `metrics.db` (SQLite metrics store)
 - `log_positions.json` (Autopsy log offsets)
 - `solr_log_positions.json` (Solr log offsets)
+- `autopsyguard.log` (rotating file mirror of terminal output)
 
 ### Report attachments
 

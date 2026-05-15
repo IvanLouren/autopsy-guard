@@ -90,6 +90,8 @@ smtp_oauth_token_file: ""
 email_sender: "autopsyguard-dev@local"
 email_recipient: "dev@local"
 email_case_label: "Dev Test Case"
+language: "auto"        # auto | pt | en
+case_name_source: "real" # real | hash (used when email_case_label is empty)
 
 # WhatsApp Notifications (via CallMeBot)
 whatsapp_enabled: false
