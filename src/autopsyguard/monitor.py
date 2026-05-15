@@ -182,6 +182,11 @@ class Monitor:
         if self._is_autopsy_running():
             self._state = MonitorState.ACTIVE
             logger.info("✅ Autopsy detected — monitoring active")
+            
+            # Send an immediate startup confirmation to the user
+            self.notifier.send_startup_message()
+            self.whatsapp.send_startup_message()
+            self.telegram.send_startup_message()
         else:
             logger.debug("Waiting for Autopsy process...")
 

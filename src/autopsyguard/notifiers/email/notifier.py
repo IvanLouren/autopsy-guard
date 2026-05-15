@@ -228,6 +228,33 @@ class EmailNotifier(BaseNotifier):
         plain_text = f"Ingestão Concluída.\nTempo total de processamento: {duration_str}"
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
+    def send_startup_message(self) -> bool:
+        """Send a brief notification that the monitor has started."""
+        if not self._enabled:
+            return False
+
+        subject = "✅ [AutopsyGuard] Monitorização Iniciada"
+        case_label = get_case_label(self.config)
+        body_content = f"""
+        <div style="margin-bottom:24px; text-align:center;">
+            <div style="font-size:48px; margin-bottom:16px;">🚀</div>
+            <h2 style="color:#111827; margin:0 0 8px 0;">Monitorização Ativa</h2>
+            <p style="color:#4b5563; font-size:16px; margin:0;">O sistema foi ligado com sucesso e está a monitorizar o Autopsy.</p>
+        </div>
+        """
+        html_body = BASE_TEMPLATE.format(
+            header_color_start="#10b981",
+            header_color_end="#059669",
+            header_icon="✅",
+            header_title="Sistema Iniciado",
+            header_subtitle="O AutopsyGuard está online",
+            timestamp=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+            case_name=f"📁 {case_label}",
+            body_content=body_content,
+        )
+        plain_text = "✅ AutopsyGuard Iniciado\nO sistema foi ligado com sucesso e está a monitorizar o Autopsy."
+        return self._dispatch_email(subject, html_body, plain_text=plain_text)
+
     # ------------------------------------------------------------------
     # Event history (used by report builder for recent-events section)
     # ------------------------------------------------------------------

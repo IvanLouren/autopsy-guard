@@ -71,3 +71,7 @@ class BaseNotifier(abc.ABC):
     @abc.abstractmethod
     def send_ingest_report(self, duration_seconds: float) -> bool:
         """Send a notification that an Autopsy ingest job has completed."""
+
+    @abc.abstractmethod
+    def send_startup_message(self) -> bool:
+        """Send a brief notification that the monitor has started."""

@@ -122,6 +122,12 @@ class WhatsAppNotifier(BaseNotifier):
         ]
         return self._send_message("\n".join(lines))
 
+    def send_startup_message(self) -> bool:
+        """Send a brief notification that the monitor has started."""
+        if not self._enabled:
+            return False
+        return self._send_message("✅ *AutopsyGuard Iniciado*\nO sistema foi ligado com sucesso e está a monitorizar o Autopsy.")
+
     # ------------------------------------------------------------------
     # Internal: HTTP dispatch (runs in background thread)
     # ------------------------------------------------------------------
