@@ -53,18 +53,12 @@ uv run autopsyguard --config config.local.yml
 > [!TIP]
 > **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, edit it by hand, and run with `uv run autopsyguard --config config.local.yml`.
 
-### 3. Optional: OAuth Setup for Gmail/Microsoft SMTP
+### 3. Optional: OAuth Setup for Gmail SMTP
 
 If you set `smtp_auth_mode: oauth`, run one interactive web login to create a local refresh-token file:
 
 ```bash
 uv run autopsyguard-oauth --provider google --email you@example.com --client-id YOUR_CLIENT_ID --token-file .autopsyguard/oauth/google_you_at_example.com.json
-```
-
-Or for Microsoft 365:
-
-```bash
-uv run autopsyguard-oauth --provider microsoft --email you@outlook.com --client-id YOUR_CLIENT_ID --tenant common --token-file .autopsyguard/oauth/microsoft_you_at_outlook.com.json
 ```
 
 Your OAuth app registration must include the redirect URI `http://127.0.0.1:8765/callback` (or the port you pass via `--port`).

@@ -72,13 +72,12 @@ class MonitorConfig:
     smtp_password: str = ""
     # Auth mode: "password" (traditional SMTP auth) or "oauth" (OAuth2/XOAUTH2).
     smtp_auth_mode: str = "password"
-    # OAuth provider when smtp_auth_mode == "oauth": "google" or "microsoft".
+    # OAuth provider when smtp_auth_mode == "oauth": "google".
     smtp_oauth_provider: str = ""
     # OAuth client credentials (client_secret is optional for public clients).
     smtp_oauth_client_id: str = ""
     smtp_oauth_client_secret: str = ""
-    # Microsoft tenant/issuer: "common", tenant id, or org id.
-    smtp_oauth_tenant: str = "common"
+
     # Path to local OAuth token JSON (contains refresh token).
     smtp_oauth_token_file: Path | None = None
     email_sender: str = "autopsyguard@example.com"
@@ -389,8 +388,8 @@ def _validate_config_types(config: MonitorConfig) -> None:
             raise ValueError("smtp_auth_mode must be either 'password' or 'oauth'")
         if auth_mode == "oauth":
             provider = (config.smtp_oauth_provider or "").strip().lower()
-            if provider not in {"google", "microsoft"}:
-                raise ValueError("smtp_oauth_provider must be 'google' or 'microsoft' when smtp_auth_mode=oauth")
+            if provider != "google":
+                raise ValueError("smtp_oauth_provider must be 'google' when smtp_auth_mode=oauth")
             if not config.smtp_user:
                 raise ValueError("smtp_user is required when smtp_auth_mode=oauth")
             if not config.smtp_oauth_client_id:

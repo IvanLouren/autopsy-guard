@@ -171,7 +171,7 @@ Write-Host ""
 Write-Host "AutopsyGuard Setup Wizard (Windows)" -ForegroundColor Cyan
 Write-Host "This will generate a config file and a .env file for secrets." -ForegroundColor Cyan
 Write-Host "Secrets in .env are loaded automatically by AutopsyGuard at startup." -ForegroundColor Cyan
-Write-Host "OAuth web login for Gmail/Microsoft is supported via autopsyguard-oauth." -ForegroundColor Cyan
+Write-Host "OAuth web login for Gmail is supported via autopsyguard-oauth." -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Quick guidance:" -ForegroundColor DarkCyan
 Write-Host "  - case_dir should contain *.aut and (Log\ or autopsy.db)"
@@ -290,13 +290,12 @@ $smtpOauthTokenFile = ""
 if ($emailEnabled) {
     Write-Host "Email provider presets:" -ForegroundColor Cyan
     Write-Host "  [1] Gmail (smtp.gmail.com:587 STARTTLS)"
-    Write-Host "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
-    Write-Host "  [3] Custom SMTP"
+    Write-Host "  [2] Custom SMTP"
     $providerConfigured = $false
     while ($true) {
-        $providerChoice = Read-Host "Provider [3]"
+        $providerChoice = Read-Host "Provider [2]"
         if ([string]::IsNullOrWhiteSpace($providerChoice)) {
-            $providerChoice = "3"
+            $providerChoice = "2"
         }
         switch ($providerChoice.Trim()) {
             "1" {
@@ -308,14 +307,6 @@ if ($emailEnabled) {
                 continue
             }
             "2" {
-                $smtpHost = "smtp.office365.com"
-                $smtpPort = "587"
-                $smtpUseSsl = $false
-                Write-Host "Preset selected: Office 365 (STARTTLS on port 587)." -ForegroundColor Green
-                $providerConfigured = $true
-                continue
-            }
-            "3" {
                 $smtpHost = Read-Required "SMTP host (smtp_host)"
                 $smtpPort = Read-Default "SMTP port (smtp_port)" "587"
                 $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" $false
@@ -323,7 +314,7 @@ if ($emailEnabled) {
                 continue
             }
             default {
-                Write-Host "Please choose 1, 2, or 3." -ForegroundColor Yellow
+                Write-Host "Please choose 1, or 2." -ForegroundColor Yellow
             }
         }
         if ($providerConfigured) {
@@ -341,7 +332,6 @@ if ($emailEnabled) {
         Write-Host ""
         Write-Host "OAuth setup needs an app registration first (Client ID)." -ForegroundColor Cyan
         Write-Host "  - Google: Google Cloud Console > APIs & Services > Credentials > OAuth client ID" -ForegroundColor Gray
-        Write-Host "  - Microsoft: Azure/Entra > App registrations > Application (client) ID" -ForegroundColor Gray
         if (-not (Read-YesNo "Do you already have an OAuth Client ID ready?" $true)) {
             Write-Host "Switching email auth mode to password for now. You can re-run setup later to enable OAuth." -ForegroundColor Yellow
             $smtpAuthMode = "password"
@@ -349,28 +339,11 @@ if ($emailEnabled) {
     }
 
     if ($smtpAuthMode -eq "oauth") {
-        if ($smtpHost -eq "smtp.gmail.com") {
-            $smtpOauthProvider = "google"
-        } elseif ($smtpHost -eq "smtp.office365.com") {
-            $smtpOauthProvider = "microsoft"
-        } else {
-            while ($true) {
-                $providerChoice = Read-Host "OAuth provider [1=Google, 2=Microsoft]"
-                switch ($providerChoice.Trim()) {
-                    "1" { $smtpOauthProvider = "google"; break }
-                    "2" { $smtpOauthProvider = "microsoft"; break }
-                    default { Write-Host "Please choose 1 or 2." -ForegroundColor Yellow }
-                }
-                if (-not [string]::IsNullOrWhiteSpace($smtpOauthProvider)) { break }
-            }
-        }
+        $smtpOauthProvider = "google"
 
         $smtpUser = Read-Required "SMTP user / account email (smtp_user)"
         $smtpOauthClientId = Read-Required "OAuth client id (smtp_oauth_client_id) [from your app registration]"
         $smtpOauthClientSecret = Read-Host "OAuth client secret (optional; store in env as AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET)"
-        if ($smtpOauthProvider -eq "microsoft") {
-            $smtpOauthTenant = Read-Default "Microsoft tenant (smtp_oauth_tenant)" "common"
-        }
         $safeUser = $smtpUser.ToLowerInvariant().Replace("@", "_at_")
         $defaultTokenFile = ".autopsyguard\oauth\$($smtpOauthProvider)_$safeUser.json"
         $smtpOauthTokenFile = Read-Default "OAuth token file path (smtp_oauth_token_file)" $defaultTokenFile
@@ -503,9 +476,7 @@ if ($emailEnabled -and $smtpAuthMode -eq "oauth") {
     if (-not [string]::IsNullOrWhiteSpace($smtpOauthClientSecret)) {
         $oauthCmd += " --client-secret `"$smtpOauthClientSecret`""
     }
-    if ($smtpOauthProvider -eq "microsoft" -and -not [string]::IsNullOrWhiteSpace($smtpOauthTenant)) {
-        $oauthCmd += " --tenant `"$smtpOauthTenant`""
-    }
+
     Write-Host "  1. Run OAuth login once to create local refresh token:"
     Write-Host "     $oauthCmd"
     Write-Host "  2. uv run autopsyguard --config .\$ConfigPath"

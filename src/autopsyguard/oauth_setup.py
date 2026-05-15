@@ -69,11 +69,10 @@ def parse_args() -> argparse.Namespace:
         prog="autopsyguard-oauth",
         description="Run browser-based OAuth login and save refresh token for SMTP.",
     )
-    parser.add_argument("--provider", required=True, choices=("google", "microsoft"))
+    parser.add_argument("--provider", required=True, choices=("google",))
     parser.add_argument("--email", required=True, help="Email/account used for SMTP auth")
     parser.add_argument("--client-id", required=True)
     parser.add_argument("--client-secret", default="")
-    parser.add_argument("--tenant", default="common", help="Microsoft tenant (default: common)")
     parser.add_argument("--port", type=int, default=8765, help="Local callback port (default: 8765)")
     parser.add_argument("--token-file", type=Path, default=None)
     parser.add_argument("--timeout", type=int, default=180, help="OAuth callback timeout in seconds")
@@ -101,7 +100,6 @@ def main() -> int:
         code_challenge=code_challenge,
         state=state,
         login_hint=args.email,
-        tenant=args.tenant,
     )
 
     server = HTTPServer(("127.0.0.1", args.port), _CallbackHandler)
@@ -147,7 +145,6 @@ def main() -> int:
             client_secret=args.client_secret,
             redirect_uri=redirect_uri,
             code_verifier=code_verifier,
-            tenant=args.tenant,
             timeout=30.0,
         )
     except SMTPOAuthError as exc:

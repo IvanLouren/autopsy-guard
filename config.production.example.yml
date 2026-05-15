@@ -95,15 +95,14 @@ report_interval_hours: 12.0
 # Email Settings
 smtp_host: "smtp.gmail.com"
 smtp_port: 587
-smtp_use_ssl: false  # false = STARTTLS (correct for Gmail/O365)
+smtp_use_ssl: false  # false = STARTTLS (correct for Gmail)
 smtp_async: true
 smtp_auth_mode: "password"   # "password" or "oauth"
 smtp_user: ""        # Provide via AUTOPSYGUARD_SMTP_USER
 smtp_password: ""    # Provide via AUTOPSYGUARD_SMTP_PASSWORD
-smtp_oauth_provider: ""      # "google" or "microsoft" when smtp_auth_mode="oauth"
+smtp_oauth_provider: ""      # "google" when smtp_auth_mode="oauth"
 smtp_oauth_client_id: ""     # OAuth app client id
 smtp_oauth_client_secret: "" # Prefer AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET in .env
-smtp_oauth_tenant: "common"  # Microsoft tenant ("common" for multi-tenant)
 smtp_oauth_token_file: ""    # Local JSON token file created by autopsyguard-oauth
 email_sender: "autopsyguard@forensics.yourdomain.com"
 email_recipient: "forensic-team@yourdomain.com"

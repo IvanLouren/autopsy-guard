@@ -152,7 +152,7 @@ echo
 echo "AutopsyGuard Setup Wizard (Linux/macOS)"
 echo "This will generate a config file and a .env file for secrets."
 echo "Secrets in .env are loaded automatically by AutopsyGuard at startup."
-echo "OAuth web login for Gmail/Microsoft is supported via autopsyguard-oauth."
+echo "OAuth web login for Gmail is supported via autopsyguard-oauth."
 echo
 echo "Quick guidance:"
 echo "  - case_dir should contain *.aut and (Log/ or autopsy.db)"

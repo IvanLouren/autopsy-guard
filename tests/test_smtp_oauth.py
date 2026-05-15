@@ -39,20 +39,3 @@ def test_build_authorization_url_google() -> None:
     assert q["code_challenge_method"] == ["S256"]
     assert q["access_type"] == ["offline"]
     assert q["scope"] == ["https://mail.google.com/"]
-
-
-def test_build_authorization_url_microsoft() -> None:
-    url = build_authorization_url(
-        provider="microsoft",
-        client_id="cid",
-        redirect_uri="http://127.0.0.1:8765/callback",
-        code_challenge="abc",
-        state="st",
-        login_hint="user@example.com",
-        tenant="common",
-    )
-    parsed = urllib.parse.urlparse(url)
-    q = urllib.parse.parse_qs(parsed.query)
-    assert "login.microsoftonline.com" in parsed.netloc
-    assert q["client_id"] == ["cid"]
-    assert q["scope"] == ["offline_access https://outlook.office.com/SMTP.Send"]

@@ -35,15 +35,6 @@ def get_provider_spec(provider: str, tenant: str = "common") -> OAuthProviderSpe
             token_url="https://oauth2.googleapis.com/token",
             scope="https://mail.google.com/",
         )
-    if p == "microsoft":
-        issuer = (tenant or "common").strip()
-        base = f"https://login.microsoftonline.com/{issuer}/oauth2/v2.0"
-        return OAuthProviderSpec(
-            provider="microsoft",
-            authorize_url=f"{base}/authorize",
-            token_url=f"{base}/token",
-            scope="offline_access https://outlook.office.com/SMTP.Send",
-        )
     raise SMTPOAuthError(f"Unsupported OAuth provider: {provider!r}")
 
 
