@@ -53,7 +53,7 @@ bash ./scripts/setup-autopsyguard.sh
 Wizard behavior:
 
 - validates prerequisites and case path hints
-- provides SMTP provider presets (Gmail/Office365/Custom/local)
+- configures Gmail App Password SMTP only
 - uses App Password-first guidance for Gmail
 - writes `config.local.yml` + `.env` with deterministic structure
 - prints an operational checklist and common-failure fixes
@@ -134,9 +134,9 @@ Validation expects:
 ### Email Security Policy (Recommended)
 
 - Gmail/Google Workspace: use App Password (with 2FA enabled).
+- SMTP provider is fixed to Gmail (`smtp.gmail.com:587`, STARTTLS).
 - Never store or paste your primary account password into runtime config.
 - Keep secrets in `.env` only; never commit `.env`.
-- OAuth is supported by runtime for advanced environments, but not part of wizard primary path.
 
 ### Environment variables (supported overrides)
 
@@ -240,7 +240,7 @@ The monitor will still work and still detects JVM crash files via fallback searc
 | Autopsy crashes on Windows 11 (`wmic`) | Missing optional Windows feature | Install **WMI Commandline Utility** in Windows Optional Features |
 | No email received | Wrong recipient/sender policy/spam filtering | Validate `smtp_host`, `email_recipient`, sender domain policy, spam/junk |
 | SMTP auth failed | Using account password instead of App Password | Regenerate Google App Password and update `.env` |
-| TLS/port mismatch | Wrong SMTP encryption pair | Use 587 + STARTTLS (`smtp_use_ssl=false`) or 465 + SSL (`smtp_use_ssl=true`) |
+| Gmail login blocked | 2-Step Verification not enabled | Enable 2-Step Verification, then generate a new App Password |
 | Case not detected / validation fails | Invalid `case_dir` | Ensure case folder contains `*.aut` and `Log/` or `autopsy.db` |
 | WhatsApp not sending | Missing API key or service availability | Set `AUTOPSYGUARD_WHATSAPP_APIKEY`; verify CallMeBot availability |
 | Telegram not sending | Missing/invalid user | Set `telegram_user` with correct `@username` |
@@ -255,11 +255,6 @@ uv run pytest
 ```
 
 Tests are under `tests/`.
-
-## Advanced Appendix: OAuth SMTP
-
-OAuth remains supported for advanced deployments and can be configured manually (outside wizard flow) with `smtp_auth_mode: oauth` and related OAuth keys.  
-Use this only when App Password is not allowed by your organization.
 
 ## Project structure (high level)
 

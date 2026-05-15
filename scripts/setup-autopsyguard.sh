@@ -162,24 +162,10 @@ is_google_app_password_like() {
   return 0
 }
 
-smtp_port_ssl_hint() {
-  local port="$1"
-  local use_ssl="$2"
-  if [[ "$port" == "587" && "$use_ssl" == "true" ]]; then
-    echo "Port 587 normally requires STARTTLS (smtp_use_ssl=false)."
-    return
-  fi
-  if [[ "$port" == "465" && "$use_ssl" == "false" ]]; then
-    echo "Port 465 normally requires implicit SSL (smtp_use_ssl=true)."
-    return
-  fi
-  echo ""
-}
-
 echo
 echo "AutopsyGuard Setup Wizard (Linux/macOS)"
 note "This wizard is security-first and optimized for production-safe defaults."
-note "Gmail path is App Password-first. OAuth is runtime-supported but not configured here."
+note "Gmail path is App Password-first."
 note "Detailed guide: docs/setup-wizard-guide.md"
 
 section "1) Prerequisites Check"
@@ -274,86 +260,13 @@ smtp_password=""
 email_sender="autopsyguard@example.com"
 email_recipient=""
 email_case_label=""
-smtp_auth_mode="password"
-smtp_oauth_provider=""
-smtp_oauth_client_id=""
-smtp_oauth_client_secret=""
-smtp_oauth_token_file=""
-provider_label=""
 
 if prompt_yes_no "Configure email notifications?" "y"; then
   email_enabled=true
-  echo "Email provider presets:"
-  echo "  [1] Gmail (App Password, smtp.gmail.com:587 STARTTLS) [Recommended]"
-  echo "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
-  echo "  [3] Custom SMTP"
-  echo "  [4] Local dev server (localhost:1025)"
-  while true; do
-    read -r -p "Provider [1]: " provider_choice
-    provider_choice="${provider_choice// }"
-    [[ -z "$provider_choice" ]] && provider_choice="1"
-    case "$provider_choice" in
-      1)
-        provider_label="gmail"
-        smtp_host="smtp.gmail.com"
-        smtp_port="587"
-        smtp_use_ssl=false
-        break
-        ;;
-      2)
-        provider_label="office365"
-        smtp_host="smtp.office365.com"
-        smtp_port="587"
-        smtp_use_ssl=false
-        break
-        ;;
-      3)
-        provider_label="custom"
-        smtp_host="$(prompt_required "SMTP host (smtp_host)")"
-        smtp_port="$(prompt_default "SMTP port (smtp_port)" "587")"
-        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)? true for 465, false for 587 STARTTLS" "n"; then
-          smtp_use_ssl=true
-        else
-          smtp_use_ssl=false
-        fi
-        break
-        ;;
-      4)
-        provider_label="local"
-        smtp_host="localhost"
-        smtp_port="1025"
-        smtp_use_ssl=false
-        break
-        ;;
-      *)
-        warn "Please choose 1, 2, 3, or 4."
-        ;;
-    esac
-  done
-
-  while true; do
-    mismatch_hint="$(smtp_port_ssl_hint "$smtp_port" "$smtp_use_ssl")"
-    [[ -z "${mismatch_hint// }" ]] && break
-    warn "$mismatch_hint"
-    if prompt_yes_no "Fix automatically to recommended pair?" "y"; then
-      if [[ "$smtp_port" == "587" ]]; then
-        smtp_use_ssl=false
-      elif [[ "$smtp_port" == "465" ]]; then
-        smtp_use_ssl=true
-      fi
-    else
-      if ! prompt_yes_no "Continue with current SMTP TLS/port mismatch?" "n"; then
-        smtp_port="$(prompt_default "SMTP port (smtp_port)" "$smtp_port")"
-        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)?" "n"; then
-          smtp_use_ssl=true
-        else
-          smtp_use_ssl=false
-        fi
-      else
-        break
-      fi
-    fi
-  done
+  note "Email mode is fixed to Gmail App Password."
+  smtp_host="smtp.gmail.com"
+  smtp_port="587"
+  smtp_use_ssl=false
 
   if prompt_yes_no "Send email asynchronously (smtp_async)?" "y"; then
     smtp_async=true
@@ -364,29 +277,20 @@ if prompt_yes_no "Configure email notifications?" "y"; then
   email_recipient="$(prompt_required "Email recipient (email_recipient)")"
   read -r -p "Email case label (optional): " email_case_label
 
-  if [[ "$provider_label" == "gmail" ]]; then
-    note "Gmail App Password checklist:"
-    note "  1) Enable 2-Step Verification."
-    note "  2) Generate App Password for Mail."
-    note "  3) Use app password below, never account password."
-    smtp_user="$(prompt_required "SMTP user (your Gmail address)")"
-    read -r -s -p "Google App Password: " smtp_password
-    smtp_password="${smtp_password// /}"
-    echo
-    if ! is_google_app_password_like "$smtp_password"; then
-      blocker "This does not look like a Google App Password (expected 16 letters)."
-      if ! prompt_yes_no "Continue anyway with potentially unsafe/invalid password?" "n"; then
-        blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
-        exit 1
-      fi
+  note "Gmail App Password checklist:"
+  note "  1) Enable 2-Step Verification."
+  note "  2) Generate App Password for Mail."
+  note "  3) Use app password below, never account password."
+  smtp_user="$(prompt_required "SMTP user (your Gmail address)")"
+  read -r -s -p "Google App Password: " smtp_password
+  smtp_password="${smtp_password// /}"
+  echo
+  if ! is_google_app_password_like "$smtp_password"; then
+    blocker "This does not look like a Google App Password (expected 16 letters)."
+    if ! prompt_yes_no "Continue anyway with potentially unsafe/invalid password?" "n"; then
+      blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
+      exit 1
     fi
-  elif [[ "$provider_label" == "local" ]]; then
-    smtp_user=""
-    smtp_password=""
-  else
-    read -r -p "SMTP user (optional; written to .env if provided): " smtp_user
-    read -r -s -p "SMTP password (optional; written to .env if provided): " smtp_password
-    echo
   fi
 fi
 
@@ -435,11 +339,6 @@ mkdir -p "$(dirname "$ENV_FILE_PATH")"
   echo "smtp_port: $smtp_port"
   echo "smtp_use_ssl: $smtp_use_ssl"
   echo "smtp_async: $smtp_async"
-  echo "smtp_auth_mode: 'password'"
-  echo "smtp_oauth_provider: ''"
-  echo "smtp_oauth_client_id: ''"
-  echo "smtp_oauth_client_secret: ''"
-  echo "smtp_oauth_token_file: ''"
   echo "email_sender: $(yaml_quote "$email_sender")"
   echo "email_recipient: $(yaml_quote "$email_recipient")"
   echo "email_case_label: $(yaml_quote "$email_case_label")"
@@ -499,7 +398,7 @@ echo "   docs/setup-wizard-guide.md"
 echo
 echo "Top 5 common failures and fixes:"
 echo "  - SMTP auth failed: verify App Password (not account password)."
-echo "  - TLS/port mismatch: use 587+STARTTLS or 465+SSL."
+echo "  - Gmail rejects login: verify 2-Step Verification is enabled."
 echo "  - No email received: validate recipient, sender policy, spam folder."
 echo "  - Case not detected: ensure case_dir points to real folder with .aut."
 echo "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."

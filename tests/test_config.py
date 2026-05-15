@@ -174,7 +174,7 @@ def test_from_sources_loads_telegram_settings(tmp_path: Path) -> None:
     assert config.telegram_user == "@myusername"
 
 
-def test_from_sources_ignores_legacy_oauth_keys_with_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_from_sources_rejects_legacy_oauth_keys(tmp_path: Path) -> None:
     (tmp_path / "CaseA").mkdir()
 
     cfg = tmp_path / "config.yml"
@@ -193,8 +193,47 @@ def test_from_sources_ignores_legacy_oauth_keys_with_warning(tmp_path: Path, cap
         encoding="utf-8",
     )
 
-    with caplog.at_level("WARNING"):
-        config = MonitorConfig.from_sources(yaml_path=cfg)
+    with pytest.raises(ValueError, match="Unknown config key"):
+        MonitorConfig.from_sources(yaml_path=cfg)
 
-    assert config.smtp_host == "smtp.gmail.com"
-    assert "Deprecated config key(s) ignored" in caplog.text
+
+def test_from_sources_rejects_non_gmail_smtp_when_email_enabled(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "smtp_host: smtp.office365.com",
+                "smtp_port: 587",
+                "smtp_use_ssl: false",
+                "email_recipient: user@example.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="smtp_host must be smtp.gmail.com"):
+        MonitorConfig.from_sources(yaml_path=cfg)
+
+
+def test_from_sources_requires_gmail_starttls_port_settings(tmp_path: Path) -> None:
+    (tmp_path / "CaseA").mkdir()
+
+    bad_port = tmp_path / "bad_port.yml"
+    bad_port.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "smtp_host: smtp.gmail.com",
+                "smtp_port: 465",
+                "smtp_use_ssl: true",
+                "email_recipient: user@example.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="smtp_port must be 587"):
+        MonitorConfig.from_sources(yaml_path=bad_port)

@@ -61,22 +61,18 @@ Rules:
 
 Provider presets:
 
-- Gmail (recommended)
-- Office 365 / Outlook
-- Custom SMTP
-- Local test SMTP
+- Gmail only (recommended and enforced)
 
 Gmail flow:
 
 - wizard assumes App Password path
 - if provided secret does not look like App Password shape (16 letters), wizard raises blocker warning and requires explicit override
 
-SMTP TLS/port guidance:
+SMTP mode is fixed to Gmail STARTTLS:
 
-- 587 -> STARTTLS (`smtp_use_ssl=false`)
-- 465 -> SSL (`smtp_use_ssl=true`)
-
-Wizard detects mismatch and offers correction.
+- `smtp_host: smtp.gmail.com`
+- `smtp_port: 587`
+- `smtp_use_ssl: false`
 
 ## 3.5 Optional Channels
 
@@ -115,11 +111,10 @@ Wizard prints:
 
 ## 6. Migration Notes (Older Wizard Outputs)
 
-If your old setup used OAuth wizard prompts:
+If your old setup has legacy email-auth keys:
 
-- New wizard does not configure OAuth interactively.
-- Existing OAuth runtime support remains available manually in YAML/env.
-- Recommended migration path is Gmail App Password unless organization policy forbids it.
+- Remove legacy SMTP auth keys from YAML.
+- Use Gmail App Password only.
 
 If your old config misses newer fields:
 

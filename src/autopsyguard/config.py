@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
-import logging
 import os
 
 import yaml
@@ -15,8 +14,6 @@ from autopsyguard.platform_utils import (
     get_autopsy_log_dir,
     get_autopsy_user_dir,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -250,14 +247,6 @@ _SUPPORTED_CONFIG_KEYS = {
     "telegram_user",
 }
 
-_DEPRECATED_COMPAT_KEYS = {
-    "smtp_auth_mode",
-    "smtp_oauth_provider",
-    "smtp_oauth_client_id",
-    "smtp_oauth_client_secret",
-    "smtp_oauth_token_file",
-}
-
 _PATH_KEYS = {"case_dir", "autopsy_install_dir"}
 
 
@@ -275,22 +264,13 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Top-level YAML content must be a mapping: {path}")
 
-    deprecated_keys = set(raw.keys()) & _DEPRECATED_COMPAT_KEYS
-    unknown_keys = set(raw.keys()) - _SUPPORTED_CONFIG_KEYS - _DEPRECATED_COMPAT_KEYS
+    unknown_keys = set(raw.keys()) - _SUPPORTED_CONFIG_KEYS
     if unknown_keys:
         key_list = ", ".join(sorted(unknown_keys))
         raise ValueError(f"Unknown config key(s): {key_list}")
-    if deprecated_keys:
-        key_list = ", ".join(sorted(deprecated_keys))
-        logger.warning(
-            "Deprecated config key(s) ignored: %s. Remove them from YAML (OAuth setup keys are no longer used).",
-            key_list,
-        )
 
     values: dict[str, Any] = {}
     for key, value in raw.items():
-        if key in _DEPRECATED_COMPAT_KEYS:
-            continue
         if key in _PATH_KEYS and value is not None:
             if isinstance(value, str) and value.strip() == "":
                 values[key] = None
@@ -385,8 +365,14 @@ def _validate_config_types(config: MonitorConfig) -> None:
     if config.email_recipient:
         if not config.smtp_host:
             raise ValueError("smtp_host is required when email_recipient is configured")
+        if config.smtp_host.strip().lower() != "smtp.gmail.com":
+            raise ValueError("smtp_host must be smtp.gmail.com (Google App Password mode only)")
         if not (1 <= config.smtp_port <= 65535):
             raise ValueError(f"Invalid smtp_port: {config.smtp_port} (must be 1-65535)")
+        if config.smtp_port != 587:
+            raise ValueError("smtp_port must be 587 for Gmail STARTTLS")
+        if config.smtp_use_ssl:
+            raise ValueError("smtp_use_ssl must be false for Gmail STARTTLS (port 587)")
 
     # Validate report interval
     if config.report_interval_hours <= 0:

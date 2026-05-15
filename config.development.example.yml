@@ -74,15 +74,15 @@ error_patterns:
 # Frequency of status heartbeat emails
 report_interval_hours: 0.5
 
-# Email Settings (Testing with local server like MailHog)
-smtp_host: "localhost"
-smtp_port: 1025
-smtp_use_ssl: false
+# Email Settings (Gmail App Password only)
+smtp_host: "smtp.gmail.com"
+smtp_port: 587
+smtp_use_ssl: false  # false = STARTTLS (required for Gmail)
 smtp_async: true
 smtp_user: ""
 smtp_password: ""
-email_sender: "autopsyguard-dev@local"
-email_recipient: "dev@local"
+email_sender: "autopsyguard@gmail.com"
+email_recipient: "your-team@example.com"
 email_case_label: "Dev Test Case"
 language: "auto"        # auto | pt | en
 case_name_source: "real" # real | hash (used when email_case_label is empty)

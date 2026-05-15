@@ -14,6 +14,10 @@ def test_setup_wizards_do_not_emit_oauth_config_keys() -> None:
     for text in (ps1, sh):
         assert "smtp_oauth_" not in text
         assert "smtp_auth_mode" not in text
+        assert "Office 365 / Outlook" not in text
+        assert "Custom SMTP" not in text
+        assert "local dev server" not in text
+        assert "Email mode is fixed to Gmail App Password." in text
         assert "language: 'auto'" in text
         assert "case_name_source: 'real'" in text
 
@@ -21,4 +25,3 @@ def test_setup_wizards_do_not_emit_oauth_config_keys() -> None:
 def test_readme_has_no_oauth_setup_appendix() -> None:
     readme = _read("README.md")
     assert "Advanced Appendix: OAuth SMTP" not in readme
-

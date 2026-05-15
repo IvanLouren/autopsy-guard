@@ -199,24 +199,10 @@ function Test-GoogleAppPasswordLike {
     return $normalized -match '^[A-Za-z]{16}$'
 }
 
-function Validate-SmtpPortSsl {
-    param(
-        [string]$Port,
-        [bool]$UseSsl
-    )
-    if ($Port -eq "587" -and $UseSsl) {
-        return "Port 587 normally requires STARTTLS (smtp_use_ssl=false)."
-    }
-    if ($Port -eq "465" -and -not $UseSsl) {
-        return "Port 465 normally requires implicit SSL (smtp_use_ssl=true)."
-    }
-    return ""
-}
-
 Write-Host ""
 Write-Host "AutopsyGuard Setup Wizard (Windows)" -ForegroundColor Cyan
 Write-Note "This wizard is security-first and optimized for production-safe defaults."
-Write-Note "Gmail path is App Password-first. OAuth is supported by runtime but not configured here."
+Write-Note "Gmail path is App Password-first."
 Write-Note "Detailed guide: docs/setup-wizard-guide.md"
 
 Write-Section "1) Prerequisites Check"
@@ -316,121 +302,38 @@ $smtpPassword = ""
 $emailSender = "autopsyguard@example.com"
 $emailRecipient = ""
 $emailCaseLabel = ""
-$smtpAuthMode = "password"
-$smtpOauthProvider = ""
-$smtpOauthClientId = ""
-$smtpOauthClientSecret = ""
-$smtpOauthTokenFile = ""
-$providerLabel = ""
 
 if ($emailEnabled) {
-    Write-Host "Email provider presets:" -ForegroundColor Cyan
-    Write-Host "  [1] Gmail (App Password, smtp.gmail.com:587 STARTTLS) [Recommended]"
-    Write-Host "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
-    Write-Host "  [3] Custom SMTP"
-    Write-Host "  [4] Local dev server (localhost:1025)"
-    while ($true) {
-        $providerChoice = Read-Host "Provider [1]"
-        if ([string]::IsNullOrWhiteSpace($providerChoice)) { $providerChoice = "1" }
-        switch ($providerChoice.Trim()) {
-            "1" {
-                $providerLabel = "gmail"
-                $smtpHost = "smtp.gmail.com"
-                $smtpPort = "587"
-                $smtpUseSsl = $false
-                break
-            }
-            "2" {
-                $providerLabel = "office365"
-                $smtpHost = "smtp.office365.com"
-                $smtpPort = "587"
-                $smtpUseSsl = $false
-                break
-            }
-            "3" {
-                $providerLabel = "custom"
-                $smtpHost = Read-Required "SMTP host (smtp_host)"
-                $smtpPort = Read-Default "SMTP port (smtp_port)" "587"
-                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? true for 465, false for 587 STARTTLS" $false
-                break
-            }
-            "4" {
-                $providerLabel = "local"
-                $smtpHost = "localhost"
-                $smtpPort = "1025"
-                $smtpUseSsl = $false
-                break
-            }
-            default {
-                Write-Warn "Please choose 1, 2, 3, or 4."
-            }
-        }
-        if (-not [string]::IsNullOrWhiteSpace($providerLabel)) { break }
-    }
-
-    while ($true) {
-        $hint = Validate-SmtpPortSsl -Port $smtpPort -UseSsl $smtpUseSsl
-        if ([string]::IsNullOrWhiteSpace($hint)) {
-            break
-        }
-        Write-Warn $hint
-        if (Read-YesNo "Fix automatically to recommended pair?" $true) {
-            if ($smtpPort -eq "587") {
-                $smtpUseSsl = $false
-            } elseif ($smtpPort -eq "465") {
-                $smtpUseSsl = $true
-            }
-        } else {
-            if (-not (Read-YesNo "Continue with current SMTP TLS/port mismatch?" $false)) {
-                $smtpPort = Read-Default "SMTP port (smtp_port)" $smtpPort
-                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)?" $smtpUseSsl
-            } else {
-                break
-            }
-        }
-    }
+    Write-Note "Email mode is fixed to Gmail App Password."
+    $smtpHost = "smtp.gmail.com"
+    $smtpPort = "587"
+    $smtpUseSsl = $false
 
     $smtpAsync = Read-YesNo "Send email asynchronously (smtp_async)?" $true
     $emailSender = Read-Default "Email sender (email_sender)" "autopsyguard@example.com"
     $emailRecipient = Read-Required "Email recipient (email_recipient)"
     $emailCaseLabel = Read-Host "Email case label (optional)"
 
-    if ($providerLabel -eq "gmail") {
-        Write-Note "Gmail App Password checklist:"
-        Write-Note "  1) Google account has 2-Step Verification enabled."
-        Write-Note "  2) Create App Password for 'Mail'."
-        Write-Note "  3) Use app password here, never your normal account password."
-        $smtpUser = Read-Required "SMTP user (your Gmail address)"
-        $secure = Read-Host "Google App Password" -AsSecureString
-        if ($secure.Length -gt 0) {
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-            try {
-                $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-                $smtpPassword = $smtpPassword -replace '\s', ''
-            } finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-            }
+    Write-Note "Gmail App Password checklist:"
+    Write-Note "  1) Google account has 2-Step Verification enabled."
+    Write-Note "  2) Create App Password for 'Mail'."
+    Write-Note "  3) Use app password here, never your normal account password."
+    $smtpUser = Read-Required "SMTP user (your Gmail address)"
+    $secure = Read-Host "Google App Password" -AsSecureString
+    if ($secure.Length -gt 0) {
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try {
+            $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            $smtpPassword = $smtpPassword -replace '\s', ''
+        } finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         }
-        if (-not (Test-GoogleAppPasswordLike $smtpPassword)) {
-            Write-Blocker "This does not look like a Google App Password (expected 16 letters)."
-            if (-not (Read-YesNo "Continue anyway with potentially unsafe/invalid password?" $false)) {
-                Write-Blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
-                exit 1
-            }
-        }
-    } elseif ($providerLabel -eq "local") {
-        $smtpUser = ""
-        $smtpPassword = ""
-    } else {
-        $smtpUser = Read-Host "SMTP user (optional; written to .env if provided)"
-        $secure = Read-Host "SMTP password (optional; written to .env if provided)" -AsSecureString
-        if ($secure.Length -gt 0) {
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-            try {
-                $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-            } finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-            }
+    }
+    if (-not (Test-GoogleAppPasswordLike $smtpPassword)) {
+        Write-Blocker "This does not look like a Google App Password (expected 16 letters)."
+        if (-not (Read-YesNo "Continue anyway with potentially unsafe/invalid password?" $false)) {
+            Write-Blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
+            exit 1
         }
     }
 }
@@ -477,11 +380,6 @@ $configLines += "smtp_host: $(Escape-YamlSingleQuoted $smtpHost)"
 $configLines += "smtp_port: $smtpPort"
 $configLines += "smtp_use_ssl: $($smtpUseSsl.ToString().ToLowerInvariant())"
 $configLines += "smtp_async: $($smtpAsync.ToString().ToLowerInvariant())"
-$configLines += "smtp_auth_mode: 'password'"
-$configLines += "smtp_oauth_provider: ''"
-$configLines += "smtp_oauth_client_id: ''"
-$configLines += "smtp_oauth_client_secret: ''"
-$configLines += "smtp_oauth_token_file: ''"
 $configLines += "email_sender: $(Escape-YamlSingleQuoted $emailSender)"
 $configLines += "email_recipient: $(Escape-YamlSingleQuoted $emailRecipient)"
 $configLines += "email_case_label: $(Escape-YamlSingleQuoted $emailCaseLabel)"
@@ -550,7 +448,7 @@ Write-Host "   docs/setup-wizard-guide.md"
 Write-Host ""
 Write-Host "Top 5 common failures and fixes:"
 Write-Host "  - SMTP auth failed: verify App Password (not account password)."
-Write-Host "  - TLS/port mismatch: use 587+STARTTLS or 465+SSL."
+Write-Host "  - Gmail rejects login: verify 2-Step Verification is enabled."
 Write-Host "  - No email received: validate recipient, sender policy, spam folder."
 Write-Host "  - Case not detected: ensure case_dir points to real folder with .aut."
 Write-Host "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."
