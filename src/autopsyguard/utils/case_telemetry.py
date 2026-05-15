@@ -28,6 +28,18 @@ _MODULE_KEYWORDS = (
 )
 
 
+def _extract_line_timestamp(line: str) -> str | None:
+    patterns = (
+        r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})",
+        r"(\d{2}/\d{2}/\d{4}[ T]\d{2}:\d{2}:\d{2})",
+    )
+    for pat in patterns:
+        m = re.search(pat, line)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _fmt_ts(ts: float | None) -> str | None:
     if ts is None:
         return None
@@ -85,21 +97,22 @@ def _tail_lines(path: Path, max_lines: int = 2000) -> list[str]:
 def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
     activities: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for raw in lines:
+    for raw in reversed(lines):
         line = raw.strip()
         low = line.lower()
+        ts = _extract_line_timestamp(line)
 
         if "starting ingest job" in low:
             key = ("ingest", "start")
             if key not in seen:
                 seen.add(key)
-                activities.append({"module": "Ingest", "state": "start", "line": line[:220]})
+                activities.append({"module": "Ingest", "state": "start", "line": line[:220], "timestamp": ts})
             continue
         if "finished all ingest tasks for ingest job" in low:
             key = ("ingest", "finish")
             if key not in seen:
                 seen.add(key)
-                activities.append({"module": "Ingest", "state": "finish", "line": line[:220]})
+                activities.append({"module": "Ingest", "state": "finish", "line": line[:220], "timestamp": ts})
             continue
 
         for kw in _MODULE_KEYWORDS:
@@ -111,7 +124,8 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
                 if key in seen:
                     continue
                 seen.add(key)
-                activities.append({"module": kw.title(), "state": state, "line": line[:220]})
+                mod_name = kw.title() if kw != "keywordsearch" else "Keyword Search"
+                activities.append({"module": mod_name, "state": state, "line": line[:220], "timestamp": ts})
                 break
 
         m = re.search(r"(?:module|módulo)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})", line, flags=re.IGNORECASE)
@@ -120,7 +134,7 @@ def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
             key = (mod.lower(), "seen")
             if key not in seen:
                 seen.add(key)
-                activities.append({"module": mod, "state": "seen", "line": line[:220]})
+                activities.append({"module": mod, "state": "seen", "line": line[:220], "timestamp": ts})
     return activities[:20]
 
 

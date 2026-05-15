@@ -86,6 +86,8 @@ def render_system_chart_png(
     fig = Figure(figsize=(6.2, 4.2), dpi=120)
     ax_top, ax_bot = fig.subplots(2, 1, gridspec_kw={"height_ratios": [2, 1]})
 
+    alert_tag = "ALERTA" if language == "pt" else "ALERT"
+
     # If alert windows were provided (list of (start_ts, end_ts) epoch seconds),
     # convert them to minutes relative to t0 and shade those regions on the CPU plot.
     alert_drawn = False
@@ -104,7 +106,7 @@ def render_system_chart_png(
                     ax_top.axvline(start_min, color=alert_line_color, alpha=0.5,
                                    linewidth=1.2, linestyle="--", zorder=0)
                     try:
-                        ax_top.text(start_min, 95, "ALERTA", color="#7f1d1d",
+                        ax_top.text(start_min, 95, alert_tag, color="#7f1d1d",
                                     fontsize=8, fontweight="600", ha="center",
                                     va="top", backgroundcolor=(1, 1, 1, 0.6))
                     except Exception:
@@ -122,7 +124,7 @@ def render_system_chart_png(
                 mid = max(start_min, x_minutes[0]) + (min(end_min, x_minutes[-1]) - max(start_min, x_minutes[0])) / 2
                 try:
                     y = 95
-                    ax_top.text(mid, y, "ALERTA", color="#7f1d1d", fontsize=8, fontweight="600",
+                    ax_top.text(mid, y, alert_tag, color="#7f1d1d", fontsize=8, fontweight="600",
                                 ha="center", va="top", backgroundcolor=(1, 1, 1, 0.6))
                 except Exception:
                     pass

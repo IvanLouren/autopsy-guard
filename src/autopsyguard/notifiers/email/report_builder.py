@@ -135,12 +135,12 @@ def _build_metrics_bar(config: MonitorConfig, metrics: dict[str, Any]) -> str:
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
             <tr>
                 {METRIC_BOX.format(icon="🖥️", value=cpu_display, label=tr(config, "cpu"), color=cpu_color)}
-                {METRIC_BOX.format(icon="📈", value=f"{metrics.get('memory_percent', 0):.1f}%", label=tr(config, "memory"), color=mem_color)}
+                {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label=tr(config, "memory"), color=mem_color)}
                 {METRIC_BOX.format(icon="🗄️", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label=tr(config, "disk_free"), color=disk_color)}
             </tr>
         </table>
         <div style="font-size:11px; color:#6b7280; margin-top:8px;">
-            Note: Process CPU may exceed 100% on multi-core systems.
+            {tr(config, "metric_note_multicore")}
         </div>
     </div>
     """
@@ -269,6 +269,12 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
     modules = telemetry.get("module_folders", []) or []
     mod_activity = telemetry.get("module_activity", []) or []
+    latest_activity = mod_activity[0] if mod_activity else {}
+    latest_module_line = (
+        f"{latest_activity.get('module', tr(config, 'none'))} | "
+        f"{latest_activity.get('state', tr(config, 'none'))} | "
+        f"{latest_activity.get('timestamp') or tr(config, 'none')}"
+    )
 
     db_line = (
         tr(config, "db_missing")
@@ -278,14 +284,33 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     log_line = (
         "N/A"
         if not log.get("exists")
-        else f"{_bytes_to_human(log.get('size_bytes'))} | {log.get('updated_at') or 'N/A'} | lines={log.get('line_count', 0)}"
+        else f"{_bytes_to_human(log.get('size_bytes'))} | {log.get('updated_at') or 'N/A'} | {tr(config, 'lines_label')}={log.get('line_count', 0)}"
     )
     case_size = _bytes_to_human(telemetry.get("case_size_bytes"))
-    solr_state = tr(config, "solr_up") if solr.get("state") == "up" else tr(config, "solr_down")
+    solr_raw_state = str(solr.get("state", "unknown")).lower()
+    if solr_raw_state == "up":
+        solr_state = tr(config, "solr_up")
+    elif solr_raw_state == "down":
+        solr_state = tr(config, "solr_down")
+    else:
+        solr_state = tr(config, "none")
+
+    solr_error = solr.get("error") or tr(config, "none")
+    solr_checked_at = solr.get("checked_at") or tr(config, "none")
+    context = ""
+    if solr_raw_state == "down":
+        err_low = str(solr.get("error") or "").lower()
+        if any(token in err_low for token in ("connection", "refused", "forcibly", "reset", "timed out", "timeout")):
+            context = tr(config, "solr_context_transient")
+        else:
+            context = tr(config, "solr_context_outage")
     solr_line = (
         f"{solr_state} | rt={solr.get('response_time_seconds') or 'N/A'}s | "
-        f"heap={solr.get('heap_usage_percent') or 'N/A'}% | cpu={solr.get('cpu_percent') or 'N/A'}%"
+        f"heap={solr.get('heap_usage_percent') or 'N/A'}% | cpu={solr.get('cpu_percent') or 'N/A'}% | "
+        f"{tr(config, 'checked_at')}={solr_checked_at} | {tr(config, 'last_error')}={solr_error}"
     )
+    if context:
+        solr_line += f" | {context}"
 
     cpu_now = cpu_tl.get("current")
     cpu_5m = cpu_tl.get("minus_5m")
@@ -311,10 +336,25 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     if not activity_rows:
         activity_rows = _row("🔎 N/A", "N/A")
 
+    keyword_solr_items = [
+        item for item in mod_activity
+        if "keyword" in str(item.get("module", "")).lower() or "solr" in str(item.get("module", "")).lower()
+    ]
+    keyword_solr_line = tr(config, "keyword_solr_none")
+    if keyword_solr_items:
+        item = keyword_solr_items[0]
+        keyword_solr_line = (
+            f"{item.get('module', tr(config, 'none'))} | "
+            f"{item.get('state', tr(config, 'none'))} | "
+            f"{item.get('timestamp') or tr(config, 'none')}"
+        )
+
     top = (
         _row("🗃️ " + tr(config, "db_title"), db_line)
         + _row("🧾 " + tr(config, "log_title"), log_line)
         + _row("🗄️ " + tr(config, "case_usage_title"), case_size)
+        + _row("🧭 " + tr(config, "module_recent_title"), latest_module_line)
+        + _row("🔎 " + tr(config, "keyword_solr_title"), keyword_solr_line)
         + _row("🔬 " + tr(config, "solr_title"), solr_line)
         + _row("🖥️ " + tr(config, "cpu_history_title"), cpu_line)
     )
@@ -322,7 +362,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
             <tr><td style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
-                <strong style="color:#374151; font-size:14px;">🧪 Telemetry</strong>
+                <strong style="color:#374151; font-size:14px;">🧪 {tr(config, 'telemetry_title')}</strong>
             </td></tr>
             <tr><td style="padding:16px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{top}</table></td></tr>
         </table>
@@ -395,8 +435,8 @@ def _build_plain_text(
     if telemetry:
         db = telemetry.get("autopsy_db", {})
         log = telemetry.get("autopsy_log", {})
-        lines.append(f"autopsy.db: {'present' if db.get('exists') else 'missing'}")
-        lines.append(f"autopsy.log.0 lines: {log.get('line_count', 'N/A')}")
+        lines.append(f"{tr(config, 'plain_db_line')}: {tr(config, 'plain_db_present') if db.get('exists') else tr(config, 'plain_db_missing')}")
+        lines.append(f"{tr(config, 'plain_log_lines')}: {log.get('line_count', 'N/A')}")
         modules = telemetry.get("module_folders") or []
         if modules:
             lines.append(f"{tr(config, 'modules_title')}:")
@@ -406,13 +446,13 @@ def _build_plain_text(
                     f"{_bytes_to_human(item.get('size_bytes'))}, {item.get('updated_at') or 'N/A'}"
                 )
     if metrics_samples:
-        lines.append("Includes attachments: metrics.csv, metrics.json")
+        lines.append(tr(config, "plain_includes_attachments"))
     lines.append("")
     if recent_events:
-        lines.append("Recent events:")
+        lines.append(tr(config, "plain_recent_events"))
         for ts, ev in recent_events[-10:]:
             eid = short_event_id(ev)
             hint = suggestion_for_event(ev, config)
             lines.append(f"[{eid}] {ts.strftime('%Y-%m-%d %H:%M:%S')} {ev.severity.name}: {ev.message}")
-            lines.append(f"    Hint: {hint}")
+            lines.append(f"    {tr(config, 'plain_hint')}: {hint}")
     return "\n".join(lines)

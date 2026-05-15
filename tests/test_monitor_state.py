@@ -97,3 +97,29 @@ def test_non_priority_alert_respects_correlation_window(tmp_path: Path) -> None:
     # After expiry, alert should flush.
     ready = monitor._collect_alert_notifications([], now + 61.0)
     assert len(ready) == 1
+
+
+def test_classify_runtime_status_active_non_ingest_for_keyword_activity(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+
+    telemetry = {
+        "autopsy_cpu_timeline": {"current": 2.0},
+        "module_activity": [{"module": "Keyword Search", "state": "active", "line": "..."},],
+        "solr": {"state": "up", "response_time_seconds": 0.2},
+    }
+    assert monitor._classify_runtime_status(telemetry) == "ACTIVE_NON_INGEST"
+
+
+def test_classify_runtime_status_idle_when_no_activity(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+
+    telemetry = {
+        "autopsy_cpu_timeline": {"current": 1.0},
+        "module_activity": [],
+        "solr": {"state": "unknown", "response_time_seconds": None},
+    }
+    assert monitor._classify_runtime_status(telemetry) == "IDLE"

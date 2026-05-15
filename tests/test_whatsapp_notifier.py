@@ -169,3 +169,26 @@ class TestWhatsAppEnabled:
 
         assert "CPU: 45.0%" in captured["text"]
         assert "RAM: 62.0%" in captured["text"]
+
+    def test_report_message_localization_pt(self, tmp_case_dir: Path) -> None:
+        cfg = MonitorConfig(
+            case_dir=tmp_case_dir,
+            whatsapp_enabled=True,
+            whatsapp_phone="+351912345678",
+            whatsapp_apikey="test-key-123",
+            language="pt",
+        )
+        notifier = WhatsAppNotifier(cfg)
+        notifier.set_start_time()
+
+        captured = {}
+
+        def spy(text: str) -> bool:
+            captured["text"] = text
+            return True
+
+        notifier._send_message = spy
+        notifier.send_report("OK", events_last_period=0)
+
+        assert "Estado" in captured["text"]
+        assert "Detalhes completos enviados por email." in captured["text"]

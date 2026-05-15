@@ -32,7 +32,7 @@ from autopsyguard.notifiers.email.templates import (
 )
 from autopsyguard.notifiers.email.report_builder import build_report_email
 from autopsyguard.utils.process_utils import find_autopsy_pid as _get_autopsy_pid
-from autopsyguard.utils.i18n import tr
+from autopsyguard.utils.i18n import tr, resolve_language
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +144,18 @@ class EmailNotifier(BaseNotifier):
             auto_email_note=tr(self.config, "auto_email"),
         )
 
-        plain_lines = [subject, "", f"Crítico(s): {critical_count}", f"Aviso(s): {warning_count}", f"Uptime: {self.get_uptime()}", ""]
+        plain_lines = [
+            subject,
+            "",
+            f"{tr(self.config, 'plain_critical_count')}: {critical_count}",
+            f"{tr(self.config, 'plain_warning_count')}: {warning_count}",
+            f"{tr(self.config, 'plain_uptime')}: {self.get_uptime()}",
+            "",
+        ]
         for ev in events[:10]:
             plain_lines.append(f"[{short_event_id(ev)}] {ev.severity.name}: {ev.message}")
-            plain_lines.append(f"    Hint: {suggestion_for_event(ev, self.config)}")
-        plain_lines += ["", "Nota: 'Process %' pode exceder 100% — conta núcleos usados."]
+            plain_lines.append(f"    {tr(self.config, 'plain_hint')}: {suggestion_for_event(ev, self.config)}")
+        plain_lines += ["", tr(self.config, "metric_note_multicore")]
         plain_text = "\n".join(plain_lines)
 
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
@@ -302,11 +309,11 @@ class EmailNotifier(BaseNotifier):
             <div style="font-size:12px; color:#6b7280; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px;">📊 {tr(self.config, 'system_status')}</div>
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr>
                 {METRIC_BOX.format(icon="🖥️", value=cpu_display, label=tr(self.config, 'cpu'), color=cpu_color)}
-                {METRIC_BOX.format(icon="📈", value=f"{metrics.get('memory_percent', 0):.1f}%", label=tr(self.config, 'memory'), color=mem_color)}
+                {METRIC_BOX.format(icon="🧠", value=f"{metrics.get('memory_percent', 0):.1f}%", label=tr(self.config, 'memory'), color=mem_color)}
                 {METRIC_BOX.format(icon="🗄️", value=f"{metrics.get('disk_free_gb', 0):.1f}GB", label=tr(self.config, 'disk_free'), color=disk_color)}
-                {METRIC_BOX.format(icon="🔍", value=str(autopsy_pid or 'N/A'), label="Autopsy PID", color="#3b82f6")}
+                {METRIC_BOX.format(icon="🔍", value=str(autopsy_pid or 'N/A'), label=tr(self.config, 'autopsy_pid_label'), color="#3b82f6")}
             </tr></table>
-            <div style="font-size:11px; color:#6b7280; margin-top:8px;">Nota: 'Process %' pode exceder 100% — conta núcleos usados.</div>
+            <div style="font-size:11px; color:#6b7280; margin-top:8px;">{tr(self.config, 'metric_note_multicore')}</div>
         </div>
         """
 
@@ -327,14 +334,8 @@ class EmailNotifier(BaseNotifier):
         from email.message import EmailMessage
 
         msg = EmailMessage()
-        msg.set_content(
-            plain_text
-            or (
-                "Your email client does not support HTML. Please use a modern client."
-                if tr(self.config, "report_subject") == "Status Report"
-                else "O seu cliente de e-mail não suporta HTML. Por favor use um cliente moderno."
-            )
-        )
+        _ = resolve_language(self.config)  # force resolver side-effects / consistency for tests
+        msg.set_content(plain_text or tr(self.config, "html_fallback"))
         msg.add_alternative(html_body, subtype="html")
 
         if inline_images:

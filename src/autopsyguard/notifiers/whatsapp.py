@@ -57,9 +57,15 @@ class WhatsAppNotifier(BaseNotifier):
         warnings = [e for e in events if e.severity == Severity.WARNING]
 
         lines: list[str] = []
-        lines.append("🚨 *AutopsyGuard ALERTA CRÍTICO*" if critical else "⚠️ *AutopsyGuard Aviso*")
-        lines.append(f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        lines.append(f"Crítico(s): {len(critical)} | Aviso(s): {len(warnings)}")
+        lines.append(
+            f"🚨 *{tr(self.config, 'wa_alert_critical_title')}*"
+            if critical else f"⚠️ *{tr(self.config, 'wa_alert_warning_title')}*"
+        )
+        lines.append(f"📅 {tr(self.config, 'wa_timestamp')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        lines.append(
+            f"{tr(self.config, 'wa_critical_count')}: {len(critical)} | "
+            f"{tr(self.config, 'wa_warning_count')}: {len(warnings)}"
+        )
         lines.append("")
 
         for event in events[:5]:
@@ -67,9 +73,9 @@ class WhatsAppNotifier(BaseNotifier):
             lines.append(f"{icon} {event.crash_type.name}: {event.message[:100]}")
 
         if len(events) > 5:
-            lines.append(f"... e mais {len(events) - 5} evento(s)")
+            lines.append(tr(self.config, "wa_more_events", count=len(events) - 5))
 
-        lines += ["", "Verifique o email para detalhes completos."]
+        lines += ["", tr(self.config, "wa_check_email")]
         return self._send_message("\n".join(lines))
 
     def send_report(
@@ -88,11 +94,11 @@ class WhatsAppNotifier(BaseNotifier):
 
         lines = [
             f"📊 *{tr(self.config, 'wa_report_title')}*",
-            f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+            f"📅 {tr(self.config, 'wa_timestamp')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
             "",
-            f"{status_icon} Estado: {status_text}",
-            f"⏱️ Uptime: {self.get_uptime()}",
-            f"📈 Eventos no período: {events_last_period}",
+            f"{status_icon} {tr(self.config, 'wa_status_label')}: {status_text}",
+            f"⏱️ {tr(self.config, 'wa_uptime_label')}: {self.get_uptime()}",
+            f"📈 {tr(self.config, 'wa_events_period_label')}: {events_last_period}",
         ]
 
         if metrics_samples:
@@ -100,18 +106,18 @@ class WhatsAppNotifier(BaseNotifier):
             cpu = latest.get("cpu_percent")
             mem = latest.get("memory_percent")
             if cpu is not None:
-                lines.append(f"💻 CPU: {cpu:.1f}%")
+                lines.append(f"💻 {tr(self.config, 'wa_cpu_label')}: {cpu:.1f}%")
             if mem is not None:
-                lines.append(f"🧠 RAM: {mem:.1f}%")
+                lines.append(f"🧠 {tr(self.config, 'wa_ram_label')}: {mem:.1f}%")
 
         if telemetry:
             solr = telemetry.get("solr", {})
             cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
             state = tr(self.config, "solr_up") if solr.get("state") == "up" else tr(self.config, "solr_down")
-            lines.append(f"🔬 Solr: {state}")
+            lines.append(f"🔬 {tr(self.config, 'wa_solr_label')}: {state}")
             curr = cpu_tl.get("current")
             if curr is not None:
-                lines.append(f"🖥️ Autopsy CPU: {curr:.1f}%")
+                lines.append(f"🖥️ {tr(self.config, 'wa_autopsy_cpu_label')}: {curr:.1f}%")
 
         lines += ["", tr(self.config, "wa_details_email")]
         return self._send_message("\n".join(lines))
