@@ -301,6 +301,7 @@ if prompt_yes_no "Configure email notifications?" "y"; then
   read -r -p "Email case label (email_case_label, optional): " email_case_label
   read -r -p "SMTP user (optional, stored in env script as AUTOPSYGUARD_SMTP_USER): " smtp_user
   read -r -s -p "SMTP password (optional, stored in env script as AUTOPSYGUARD_SMTP_PASSWORD): " smtp_password
+  smtp_password="${smtp_password// /}"
   echo
 
   if [[ "$smtp_use_ssl" == "true" && "$smtp_port" == "587" ]]; then

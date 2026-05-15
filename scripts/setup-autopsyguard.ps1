@@ -284,7 +284,6 @@ $smtpAuthMode = "password"
 $smtpOauthProvider = ""
 $smtpOauthClientId = ""
 $smtpOauthClientSecret = ""
-$smtpOauthTenant = "common"
 $smtpOauthTokenFile = ""
 
 if ($emailEnabled) {
@@ -355,6 +354,9 @@ if ($emailEnabled) {
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
             try {
                 $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                if (-not [string]::IsNullOrEmpty($smtpPassword)) {
+                    $smtpPassword = $smtpPassword.Replace(" ", "")
+                }
             } finally {
                 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
             }
@@ -411,7 +413,6 @@ $configLines += "smtp_auth_mode: $(Escape-YamlSingleQuoted $smtpAuthMode)"
 $configLines += "smtp_oauth_provider: $(Escape-YamlSingleQuoted $smtpOauthProvider)"
 $configLines += "smtp_oauth_client_id: $(Escape-YamlSingleQuoted $smtpOauthClientId)"
 $configLines += "smtp_oauth_client_secret: ''"
-$configLines += "smtp_oauth_tenant: $(Escape-YamlSingleQuoted $smtpOauthTenant)"
 $configLines += "smtp_oauth_token_file: $(Escape-YamlSingleQuoted $smtpOauthTokenFile)"
 $configLines += "email_sender: $(Escape-YamlSingleQuoted $emailSender)"
 $configLines += "email_recipient: $(Escape-YamlSingleQuoted $emailRecipient)"
