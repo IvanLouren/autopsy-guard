@@ -23,13 +23,22 @@ This repository is a final-year software engineering project focused on operatio
 - OS support: Windows and Linux
 - Package manager/runtime: `uv`
 
-## Quick Start (Guided Setup)
+## First 15 Minutes (Recommended Onboarding)
 
-The easiest and recommended way to configure and run AutopsyGuard is using the interactive setup script. This script will automatically validate your Autopsy case directory, configure your notification settings (Email, WhatsApp, Telegram), and safely store your API credentials in a `.env` file.
+This project is designed to be configured through the setup wizards first.
 
-### 1. Run the Setup Wizard
+### 0) Do This First: Gmail App Password
 
-From the repository root, run the setup script for your operating system:
+If you use Gmail/Google Workspace SMTP:
+
+1. Enable 2-Step Verification on the sending account.
+2. Generate a Google App Password for Mail.
+3. Use that App Password in the wizard.
+4. Do **not** use your normal account password.
+
+AutopsyGuard wizards strongly guide this path and warn before unsafe choices.
+
+### 1) Run the Setup Wizard
 
 **Windows (PowerShell):**
 ```powershell
@@ -41,18 +50,34 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-autopsyguard.ps1
 bash ./scripts/setup-autopsyguard.sh
 ```
 
-The wizard will ask you a few simple questions, automatically detect your Autopsy installation, and generate a `config.local.yml` file tailored to your needs.
+Wizard behavior:
 
-### 2. Start the Monitor
+- validates prerequisites and case path hints
+- provides SMTP provider presets (Gmail/Office365/Custom/local)
+- uses App Password-first guidance for Gmail
+- writes `config.local.yml` + `.env` with deterministic structure
+- prints an operational checklist and common-failure fixes
 
-Once the setup wizard completes, you can start AutopsyGuard using `uv`. The monitor will automatically detect your configuration and load the hidden `.env` file created by the wizard.
+### 2) Start Monitoring
 
 ```bash
 uv run autopsyguard --config config.local.yml
 ```
 
+### 3) Verify Alerts Quickly
+
+```bash
+uv run autopsyguard --config config.local.yml --verbose
+```
+
+Open Autopsy and the target case. Confirm startup notification reaches your channel.
+
+### 4) Full Wizard Reference
+
+See [Setup Wizard Guide](docs/setup-wizard-guide.md) for every prompt, security notes, and migration guidance.
+
 > [!TIP]
-> **Manual Configuration:** If you prefer to configure AutopsyGuard manually without the wizard, copy one of the provided templates (`config.production.example.yml` or `config.development.example.yml`) to a new `config.local.yml` file, edit it by hand, and run with `uv run autopsyguard --config config.local.yml`.
+> Manual setup is possible with `config.production.example.yml` / `config.development.example.yml`, but wizard path is the safest default for first-time operators.
 
 ## CLI reference
 
@@ -105,6 +130,13 @@ Validation expects:
 - `language`: `auto` (OS locale), `pt`, or `en` for all notifications/reports
 - `case_name_source`: `real` or `hash` when `email_case_label` is empty
 - notification settings (`smtp_*`, `email_*`, `whatsapp_*`, `telegram_*`)
+
+### Email Security Policy (Recommended)
+
+- Gmail/Google Workspace: use App Password (with 2FA enabled).
+- Never store or paste your primary account password into runtime config.
+- Keep secrets in `.env` only; never commit `.env`.
+- OAuth is supported by runtime for advanced environments, but not part of wizard primary path.
 
 ### Environment variables (supported overrides)
 
@@ -203,13 +235,16 @@ The monitor will still work and still detects JVM crash files via fallback searc
 
 ## Troubleshooting
 
-- **Autopsy crashes immediately on Windows 11 (`wmic` error)**: Autopsy 4.22.1 requires the `wmic` command to manage its embedded Solr service, which Microsoft removed in Windows 11 (24H2+). To fix this, go to **Windows Settings > System > Optional Features** and install **WMI Commandline Utility**.
-- **Missing `case_dir`**: provide it in YAML or as positional CLI argument
-- **Invalid case directory error**: ensure the directory has `*.aut` plus `autopsy.db` or `Log\`
-- **No email alerts**: confirm `smtp_host` + `email_recipient`; check SMTP auth settings; for Gmail/O365 prefer App Passwords
-- **No WhatsApp alerts**: confirm `whatsapp_enabled`, phone, API key, and that CallMeBot is available for your account/region
-- **No Telegram alerts**: confirm `telegram_enabled`, `telegram_user`
-- **Linux process I/O metrics missing**: per-process I/O counters can require elevated permissions
+| Symptom | Likely Cause | Fast Fix |
+|---|---|---|
+| Autopsy crashes on Windows 11 (`wmic`) | Missing optional Windows feature | Install **WMI Commandline Utility** in Windows Optional Features |
+| No email received | Wrong recipient/sender policy/spam filtering | Validate `smtp_host`, `email_recipient`, sender domain policy, spam/junk |
+| SMTP auth failed | Using account password instead of App Password | Regenerate Google App Password and update `.env` |
+| TLS/port mismatch | Wrong SMTP encryption pair | Use 587 + STARTTLS (`smtp_use_ssl=false`) or 465 + SSL (`smtp_use_ssl=true`) |
+| Case not detected / validation fails | Invalid `case_dir` | Ensure case folder contains `*.aut` and `Log/` or `autopsy.db` |
+| WhatsApp not sending | Missing API key or service availability | Set `AUTOPSYGUARD_WHATSAPP_APIKEY`; verify CallMeBot availability |
+| Telegram not sending | Missing/invalid user | Set `telegram_user` with correct `@username` |
+| Linux I/O metrics missing | Permission limits | Run with adequate permissions for process I/O counters |
 
 ## Development
 
@@ -220,6 +255,11 @@ uv run pytest
 ```
 
 Tests are under `tests/`.
+
+## Advanced Appendix: OAuth SMTP
+
+OAuth remains supported for advanced deployments and can be configured manually (outside wizard flow) with `smtp_auth_mode: oauth` and related OAuth keys.  
+Use this only when App Password is not allowed by your organization.
 
 ## Project structure (high level)
 

@@ -32,6 +32,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+section() { echo; echo "--- $1 ---"; }
+note() { echo "[NOTE] $1"; }
+warn() { echo "[WARN] $1"; }
+blocker() { echo "[BLOCK] $1"; }
+
 prompt_required() {
   local prompt="$1"
   local value=""
@@ -41,7 +46,7 @@ prompt_required() {
       printf "%s" "$value"
       return
     fi
-    echo "Value is required."
+    warn "Value is required."
   done
 }
 
@@ -75,7 +80,7 @@ prompt_yes_no() {
     if [[ "$value" == "n" || "$value" == "no" ]]; then
       return 1
     fi
-    echo "Please answer y or n."
+    warn "Please answer y or n."
   done
 }
 
@@ -83,13 +88,6 @@ yaml_quote() {
   local v="$1"
   local escaped
   escaped="$(printf "%s" "$v" | sed "s/'/''/g")"
-  printf "'%s'" "$escaped"
-}
-
-shell_quote() {
-  local v="$1"
-  local escaped
-  escaped="$(printf "%s" "$v" | sed "s/'/'\"'\"'/g")"
   printf "'%s'" "$escaped"
 }
 
@@ -127,170 +125,236 @@ detect_autopsy_install_candidates() {
 show_case_dir_hints() {
   local case_path="$1"
   if [[ ! -e "$case_path" ]]; then
-    echo "Hint: case_dir path does not exist yet. Validation may fail until the case is available."
+    warn "case_dir path does not exist yet. Validation may fail until case is available."
     return
   fi
 
   local has_aut=false
   local has_log=false
   local has_db=false
-  if compgen -G "$case_path/*.aut" > /dev/null; then
+  if compgen -G "$case_path/*.aut" >/dev/null; then
     has_aut=true
   fi
   [[ -d "$case_path/Log" ]] && has_log=true
   [[ -f "$case_path/autopsy.db" ]] && has_db=true
 
   if [[ "$has_aut" == "false" ]]; then
-    echo "Hint: no .aut file found in case_dir (Autopsy case descriptor)."
+    warn "No .aut file found in case_dir (Autopsy case descriptor)."
   fi
   if [[ "$has_log" == "false" && "$has_db" == "false" ]]; then
-    echo "Hint: expected either Log/ directory or autopsy.db in case_dir."
+    warn "Expected either Log/ directory or autopsy.db in case_dir."
   fi
+}
+
+is_placeholder_path() {
+  local v="${1,,}"
+  [[ "$v" == "c:\\path\\to\\your\\case" ]] && return 0
+  [[ "$v" == "/path/to/your/case" ]] && return 0
+  [[ "$v" == *"/path/"* ]] && return 0
+  [[ "$v" == *"\\path\\"* ]] && return 0
+  return 1
+}
+
+is_google_app_password_like() {
+  local p="${1//[[:space:]]/}"
+  [[ ${#p} -eq 16 ]] || return 1
+  [[ "$p" =~ ^[A-Za-z]{16}$ ]] || return 1
+  return 0
+}
+
+smtp_port_ssl_hint() {
+  local port="$1"
+  local use_ssl="$2"
+  if [[ "$port" == "587" && "$use_ssl" == "true" ]]; then
+    echo "Port 587 normally requires STARTTLS (smtp_use_ssl=false)."
+    return
+  fi
+  if [[ "$port" == "465" && "$use_ssl" == "false" ]]; then
+    echo "Port 465 normally requires implicit SSL (smtp_use_ssl=true)."
+    return
+  fi
+  echo ""
 }
 
 echo
 echo "AutopsyGuard Setup Wizard (Linux/macOS)"
-echo "This will generate a config file and a .env file for secrets."
-echo "Secrets in .env are loaded automatically by AutopsyGuard at startup."
-echo "OAuth web login for Gmail is supported via autopsyguard-oauth."
-echo
-echo "Quick guidance:"
-echo "  - case_dir should contain *.aut and (Log/ or autopsy.db)"
-echo "  - autopsy_install_dir is optional (mainly improves JVM crash file search)"
-echo "  - SMTP 587 -> smtp_use_ssl=false (STARTTLS), SMTP 465 -> smtp_use_ssl=true"
-echo "  - Install-dir lookup checks Linux defaults and Snap paths"
-echo
+note "This wizard is security-first and optimized for production-safe defaults."
+note "Gmail path is App Password-first. OAuth is runtime-supported but not configured here."
+note "Detailed guide: docs/setup-wizard-guide.md"
 
+section "1) Prerequisites Check"
+note "Why this matters: dependency/tooling gaps delay incident coverage."
 if [[ "$SKIP_SYNC" == "false" ]]; then
   if command -v uv >/dev/null 2>&1; then
     if prompt_yes_no "Run 'uv sync' now?" "y"; then
       uv sync
     fi
   else
-    echo "Warning: 'uv' command not found. Install uv first, then run this script again."
+    warn "'uv' command not found. Install uv first, then run this wizard again."
   fi
 fi
-echo
-echo "--- 1. Target Directories ---"
-echo "AutopsyGuard needs to know where your Autopsy case is located to monitor its logs and locks."
-echo "If you don't have one yet, just press Enter to set it up later."
-read -r -p "Autopsy case directory (case_dir, optional): " case_dir
+
+section "2) Case and Autopsy Paths"
+note "Why this matters: monitor needs real case/log paths for accurate detection."
+read -r -p "Autopsy case directory (case_dir): " case_dir
 if [[ -z "${case_dir// }" ]]; then
   case_dir="/path/to/your/case"
-  echo "Note: You must edit config.local.yml to set the actual case_dir before running AutopsyGuard."
-else
-  if [[ ! -e "$case_dir" ]]; then
-    echo "Warning: path does not currently exist: $case_dir"
-  fi
-  show_case_dir_hints "$case_dir"
 fi
+case_dir="${case_dir#"${case_dir%%[![:space:]]*}"}"
+case_dir="${case_dir%"${case_dir##*[![:space:]]}"}"
+if is_placeholder_path "$case_dir"; then
+  blocker "You entered a placeholder case_dir."
+  if ! prompt_yes_no "Proceed in DRAFT mode (must edit case_dir before run)?" "n"; then
+    case_dir="$(prompt_required "Enter a real case_dir path")"
+  fi
+fi
+if [[ ! -e "$case_dir" ]]; then
+  warn "Path does not currently exist: $case_dir"
+fi
+show_case_dir_hints "$case_dir"
 
 autopsy_install_dir=""
 install_candidates_raw="$(detect_autopsy_install_candidates || true)"
 if [[ -n "${install_candidates_raw// }" ]]; then
-  echo
-  echo "Detected Autopsy install-dir candidates:"
+  note "Detected Autopsy install-dir candidates:"
   c=0
   shown=10
-  first_candidate=""
   while IFS= read -r line; do
     [[ -z "${line// }" ]] && continue
     c=$((c + 1))
-    [[ $c -eq 1 ]] && first_candidate="$line"
     if [[ $c -le $shown ]]; then
       echo "  [$c] $line"
     fi
-  done <<< "$install_candidates_raw"
+  done <<<"$install_candidates_raw"
   if [[ $c -gt $shown ]]; then
     echo "  ... plus $((c - shown)) more"
   fi
 
   while true; do
-    read -r -p "Choose candidate number [1], M for manual path, or S to skip: " selected_candidate
+    read -r -p "Choose candidate number [1], M for manual, or S to skip: " selected_candidate
     selected_candidate="${selected_candidate// }"
-    if [[ -z "$selected_candidate" ]]; then
-      selected_candidate="1"
-    fi
-
+    [[ -z "$selected_candidate" ]] && selected_candidate="1"
     lower_choice="${selected_candidate,,}"
     if [[ "$lower_choice" == "m" ]]; then
-      read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
+      read -r -p "Autopsy install directory (optional): " autopsy_install_dir
       break
     fi
     if [[ "$lower_choice" == "s" ]]; then
       autopsy_install_dir=""
       break
     fi
-    if [[ "$selected_candidate" =~ ^[0-9]+$ ]] && (( selected_candidate >= 1 && selected_candidate <= c )); then
+    if [[ "$selected_candidate" =~ ^[0-9]+$ ]] && ((selected_candidate >= 1 && selected_candidate <= c)); then
       autopsy_install_dir="$(printf "%s\n" "$install_candidates_raw" | sed -n "${selected_candidate}p")"
       break
     fi
-    echo "Invalid selection. Please choose a valid number, M, or S."
+    warn "Invalid selection. Choose valid number, M, or S."
   done
 else
-  echo "No install dir auto-detected. You can leave it blank (optional)."
-  read -r -p "Autopsy install directory (optional, for hs_err_pid*.log search): " autopsy_install_dir
+  warn "No install dir auto-detected. You can skip (optional)."
+  read -r -p "Autopsy install directory (optional): " autopsy_install_dir
 fi
 
-echo
-echo "--- 2. Performance & Polling ---"
-echo "Configure how often AutopsyGuard checks the system and when to assume the process is hung."
+section "3) Monitoring Performance"
+note "Why this matters: affects detection latency and false-positive profile."
 poll_interval="$(prompt_default "poll_interval (seconds)" "30.0")"
 hang_timeout="$(prompt_default "hang_timeout (seconds)" "900.0")"
-report_interval="$(prompt_default "report_interval_hours (e.g., 12.0 for half-day, 0.5 for 30 min)" "12.0")"
+report_interval="$(prompt_default "report_interval_hours (example 12.0 or 0.5)" "12.0")"
+
+section "4) Notifications Setup"
+note "Why this matters: reliable alerting depends on secure/correct SMTP configuration."
+note "Recommended production path: Gmail + Google App Password."
 
 email_enabled=false
 smtp_host=""
 smtp_port="587"
 smtp_use_ssl=false
 smtp_async=true
+smtp_user=""
+smtp_password=""
 email_sender="autopsyguard@example.com"
 email_recipient=""
 email_case_label=""
-smtp_user=""
-smtp_password=""
-echo
-echo "--- 3. Notifications (Email) ---"
-echo "Configure email alerts for crashes, warnings, and periodic status reports."
-echo "Use App Passwords for Gmail/O365. Avoid sharing your main account password."
+smtp_auth_mode="password"
+smtp_oauth_provider=""
+smtp_oauth_client_id=""
+smtp_oauth_client_secret=""
+smtp_oauth_token_file=""
+provider_label=""
+
 if prompt_yes_no "Configure email notifications?" "y"; then
   email_enabled=true
   echo "Email provider presets:"
-  echo "  [1] Gmail (smtp.gmail.com:587 STARTTLS)"
+  echo "  [1] Gmail (App Password, smtp.gmail.com:587 STARTTLS) [Recommended]"
   echo "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
   echo "  [3] Custom SMTP"
+  echo "  [4] Local dev server (localhost:1025)"
   while true; do
-    read -r -p "Provider [3]: " provider_choice
+    read -r -p "Provider [1]: " provider_choice
     provider_choice="${provider_choice// }"
-    [[ -z "$provider_choice" ]] && provider_choice="3"
+    [[ -z "$provider_choice" ]] && provider_choice="1"
     case "$provider_choice" in
       1)
+        provider_label="gmail"
         smtp_host="smtp.gmail.com"
         smtp_port="587"
         smtp_use_ssl=false
-        echo "Preset selected: Gmail (STARTTLS on port 587)."
         break
         ;;
       2)
+        provider_label="office365"
         smtp_host="smtp.office365.com"
         smtp_port="587"
         smtp_use_ssl=false
-        echo "Preset selected: Office 365 (STARTTLS on port 587)."
         break
         ;;
       3)
+        provider_label="custom"
         smtp_host="$(prompt_required "SMTP host (smtp_host)")"
         smtp_port="$(prompt_default "SMTP port (smtp_port)" "587")"
-        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" "n"; then
+        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)? true for 465, false for 587 STARTTLS" "n"; then
           smtp_use_ssl=true
+        else
+          smtp_use_ssl=false
         fi
         break
         ;;
+      4)
+        provider_label="local"
+        smtp_host="localhost"
+        smtp_port="1025"
+        smtp_use_ssl=false
+        break
+        ;;
       *)
-        echo "Please choose 1, 2, or 3."
+        warn "Please choose 1, 2, 3, or 4."
         ;;
     esac
   done
+
+  while true; do
+    mismatch_hint="$(smtp_port_ssl_hint "$smtp_port" "$smtp_use_ssl")"
+    [[ -z "${mismatch_hint// }" ]] && break
+    warn "$mismatch_hint"
+    if prompt_yes_no "Fix automatically to recommended pair?" "y"; then
+      if [[ "$smtp_port" == "587" ]]; then
+        smtp_use_ssl=false
+      elif [[ "$smtp_port" == "465" ]]; then
+        smtp_use_ssl=true
+      fi
+    else
+      if ! prompt_yes_no "Continue with current SMTP TLS/port mismatch?" "n"; then
+        smtp_port="$(prompt_default "SMTP port (smtp_port)" "$smtp_port")"
+        if prompt_yes_no "Use SMTP SSL (smtp_use_ssl)?" "n"; then
+          smtp_use_ssl=true
+        else
+          smtp_use_ssl=false
+        fi
+      else
+        break
+      fi
+    fi
+  done
+
   if prompt_yes_no "Send email asynchronously (smtp_async)?" "y"; then
     smtp_async=true
   else
@@ -298,51 +362,62 @@ if prompt_yes_no "Configure email notifications?" "y"; then
   fi
   email_sender="$(prompt_default "Email sender (email_sender)" "autopsyguard@example.com")"
   email_recipient="$(prompt_required "Email recipient (email_recipient)")"
-  read -r -p "Email case label (email_case_label, optional): " email_case_label
-  read -r -p "SMTP user (optional, stored in env script as AUTOPSYGUARD_SMTP_USER): " smtp_user
-  read -r -s -p "SMTP password (optional, stored in env script as AUTOPSYGUARD_SMTP_PASSWORD): " smtp_password
-  smtp_password="${smtp_password// /}"
-  echo
+  read -r -p "Email case label (optional): " email_case_label
 
-  if [[ "$smtp_use_ssl" == "true" && "$smtp_port" == "587" ]]; then
-    echo "Suggestion: SMTP port 587 usually uses STARTTLS (smtp_use_ssl=false)."
-  fi
-  if [[ "$smtp_use_ssl" == "false" && "$smtp_port" == "465" ]]; then
-    echo "Suggestion: SMTP port 465 usually uses implicit SSL (smtp_use_ssl=true)."
+  if [[ "$provider_label" == "gmail" ]]; then
+    note "Gmail App Password checklist:"
+    note "  1) Enable 2-Step Verification."
+    note "  2) Generate App Password for Mail."
+    note "  3) Use app password below, never account password."
+    smtp_user="$(prompt_required "SMTP user (your Gmail address)")"
+    read -r -s -p "Google App Password: " smtp_password
+    smtp_password="${smtp_password// /}"
+    echo
+    if ! is_google_app_password_like "$smtp_password"; then
+      blocker "This does not look like a Google App Password (expected 16 letters)."
+      if ! prompt_yes_no "Continue anyway with potentially unsafe/invalid password?" "n"; then
+        blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
+        exit 1
+      fi
+    fi
+  elif [[ "$provider_label" == "local" ]]; then
+    smtp_user=""
+    smtp_password=""
+  else
+    read -r -p "SMTP user (optional; written to .env if provided): " smtp_user
+    read -r -s -p "SMTP password (optional; written to .env if provided): " smtp_password
+    echo
   fi
 fi
-echo
-echo "--- 4. Notifications (WhatsApp) ---"
-echo "You can receive alerts on WhatsApp via CallMeBot API (availability/limits depend on account/region)."
-echo "If WhatsApp setup is not available for you, Telegram is usually simpler."
+
+section "5) Optional Channels"
+note "Why this matters: backup channels reduce single-point notification risk."
 whatsapp_enabled=false
 whatsapp_phone=""
 whatsapp_apikey=""
-if prompt_yes_no "Configure WhatsApp notifications?" "n"; then
+if prompt_yes_no "Configure WhatsApp notifications (CallMeBot)?" "n"; then
   whatsapp_enabled=true
   whatsapp_phone="$(prompt_required "WhatsApp phone (+countrycode...)")"
-  read -r -p "WhatsApp API key (optional; if blank, keep disabled until set): " whatsapp_apikey
+  read -r -p "WhatsApp API key (optional): " whatsapp_apikey
   if [[ -z "${whatsapp_apikey// }" ]]; then
-    echo "Note: WhatsApp requires AUTOPSYGUARD_WHATSAPP_APIKEY before alerts can be sent."
+    warn "WhatsApp stays configured but disabled until AUTOPSYGUARD_WHATSAPP_APIKEY is set."
   fi
 fi
 
-echo
-echo "--- 5. Notifications (Telegram) ---"
-echo "You can receive instant text alerts on Telegram via the free CallMeBot API."
 telegram_enabled=false
 telegram_user=""
-if prompt_yes_no "Configure Telegram notifications?" "n"; then
+if prompt_yes_no "Configure Telegram notifications (CallMeBot)?" "n"; then
   telegram_enabled=true
-  telegram_user="$(prompt_required "Telegram user (e.g. @myusername)")"
+  telegram_user="$(prompt_required "Telegram user (example @myusername)")"
 fi
 
+section "6) Final Review and File Generation"
 mkdir -p "$(dirname "$CONFIG_PATH")"
 mkdir -p "$(dirname "$ENV_FILE_PATH")"
 
 {
   echo "# Generated by scripts/setup-autopsyguard.sh"
-  echo "# You can edit this file manually after setup."
+  echo "# Security-first defaults. Review values before first production run."
   echo "case_dir: $(yaml_quote "$case_dir")"
   if [[ -n "${autopsy_install_dir// }" ]]; then
     echo "autopsy_install_dir: $(yaml_quote "$autopsy_install_dir")"
@@ -351,11 +426,20 @@ mkdir -p "$(dirname "$ENV_FILE_PATH")"
   echo "hang_timeout: $hang_timeout"
   echo "report_interval_hours: $report_interval"
   echo
-  echo "# Email (enabled when smtp_host and email_recipient are set)"
+  echo "# Localization and labels"
+  echo "language: 'auto'"
+  echo "case_name_source: 'real'"
+  echo
+  echo "# Email (enabled when smtp_host + email_recipient are set)"
   echo "smtp_host: $(yaml_quote "$smtp_host")"
   echo "smtp_port: $smtp_port"
   echo "smtp_use_ssl: $smtp_use_ssl"
   echo "smtp_async: $smtp_async"
+  echo "smtp_auth_mode: 'password'"
+  echo "smtp_oauth_provider: ''"
+  echo "smtp_oauth_client_id: ''"
+  echo "smtp_oauth_client_secret: ''"
+  echo "smtp_oauth_token_file: ''"
   echo "email_sender: $(yaml_quote "$email_sender")"
   echo "email_recipient: $(yaml_quote "$email_recipient")"
   echo "email_case_label: $(yaml_quote "$email_case_label")"
@@ -368,11 +452,11 @@ mkdir -p "$(dirname "$ENV_FILE_PATH")"
   echo "# Telegram (CallMeBot)"
   echo "telegram_enabled: $telegram_enabled"
   echo "telegram_user: $(yaml_quote "$telegram_user")"
-} > "$CONFIG_PATH"
+} >"$CONFIG_PATH"
 
 {
   echo "# AutopsyGuard secrets - generated by scripts/setup-autopsyguard.sh"
-  echo "# This file is loaded automatically by AutopsyGuard at startup."
+  echo "# Loaded automatically by AutopsyGuard at startup."
   echo "# Do NOT commit this file to version control."
   if [[ -n "${smtp_user// }" ]]; then
     echo "AUTOPSYGUARD_SMTP_USER=${smtp_user}"
@@ -384,32 +468,41 @@ mkdir -p "$(dirname "$ENV_FILE_PATH")"
     echo "AUTOPSYGUARD_WHATSAPP_APIKEY=${whatsapp_apikey}"
   fi
   if [[ -z "${smtp_user// }" && -z "${smtp_password// }" && -z "${whatsapp_apikey// }" ]]; then
-    echo "# (No secret env vars were provided.)"
+    echo "# (No secrets provided.)"
     echo "# Example:"
     echo "#   AUTOPSYGUARD_SMTP_USER=your-user"
-    echo "#   AUTOPSYGUARD_SMTP_PASSWORD=your-password"
+    echo "#   AUTOPSYGUARD_SMTP_PASSWORD=your-app-password"
     echo "#   AUTOPSYGUARD_WHATSAPP_APIKEY=your-callmebot-key"
   fi
-} > "$ENV_FILE_PATH"
+} >"$ENV_FILE_PATH"
 
 chmod 600 "$ENV_FILE_PATH" 2>/dev/null || true
 
 echo
 echo "Setup complete."
 echo "Config file : $CONFIG_PATH"
-echo "Secrets file: $ENV_FILE_PATH  (loaded automatically by AutopsyGuard)"
+echo "Secrets file: $ENV_FILE_PATH"
+echo "Guide       : docs/setup-wizard-guide.md"
+
+section "Operational Checklist"
+echo "1) Review generated files:"
+echo "   - $CONFIG_PATH"
+echo "   - $ENV_FILE_PATH"
+echo "2) Start monitor:"
+echo "   uv run autopsyguard --config ./$CONFIG_PATH"
+echo "3) Quick email channel smoke-check:"
+echo "   uv run autopsyguard --config ./$CONFIG_PATH --verbose"
+echo "   (Open Autopsy case and confirm startup notification arrives.)"
+echo "4) Full setup guide:"
+echo "   docs/setup-wizard-guide.md"
+
 echo
-echo "Next steps:"
-echo "  1. uv run autopsyguard --config ./$CONFIG_PATH"
-echo "  2. Optional debug run: uv run autopsyguard --config ./$CONFIG_PATH --verbose"
-echo
-echo "Configuration summary:"
-echo "  - Email: $email_enabled"
-echo "  - WhatsApp: $whatsapp_enabled"
-echo "  - Telegram: $telegram_enabled"
-echo "  - Polling: $poll_interval s"
-echo "  - Hang timeout: $hang_timeout s"
-echo
+echo "Top 5 common failures and fixes:"
+echo "  - SMTP auth failed: verify App Password (not account password)."
+echo "  - TLS/port mismatch: use 587+STARTTLS or 465+SSL."
+echo "  - No email received: validate recipient, sender policy, spam folder."
+echo "  - Case not detected: ensure case_dir points to real folder with .aut."
+echo "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."
 
 if [[ "$RUN_AFTER_SETUP" == "true" ]]; then
   uv run autopsyguard --config "./$CONFIG_PATH"

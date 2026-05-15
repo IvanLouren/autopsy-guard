@@ -8,6 +8,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Write-Section {
+    param([string]$Title)
+    Write-Host ""
+    Write-Host ("--- {0} ---" -f $Title) -ForegroundColor Cyan
+}
+
+function Write-Note {
+    param([string]$Message)
+    Write-Host ("[NOTE] {0}" -f $Message) -ForegroundColor Gray
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-Host ("[WARN] {0}" -f $Message) -ForegroundColor Yellow
+}
+
+function Write-Blocker {
+    param([string]$Message)
+    Write-Host ("[BLOCK] {0}" -f $Message) -ForegroundColor Red
+}
+
 function Read-Required {
     param([string]$Prompt)
     while ($true) {
@@ -15,7 +36,7 @@ function Read-Required {
         if (-not [string]::IsNullOrWhiteSpace($value)) {
             return $value.Trim()
         }
-        Write-Host "Value is required." -ForegroundColor Yellow
+        Write-Warn "Value is required."
     }
 }
 
@@ -47,18 +68,12 @@ function Read-YesNo {
             "yes" { return $true }
             "n" { return $false }
             "no" { return $false }
-            default { Write-Host "Please answer y or n." -ForegroundColor Yellow }
+            default { Write-Warn "Please answer y or n." }
         }
     }
 }
 
 function Escape-YamlSingleQuoted {
-    param([string]$Value)
-    if ($null -eq $Value) { return "''" }
-    return "'" + ($Value -replace "'", "''") + "'"
-}
-
-function Escape-PowerShellSingleQuoted {
     param([string]$Value)
     if ($null -eq $Value) { return "''" }
     return "'" + ($Value -replace "'", "''") + "'"
@@ -132,7 +147,6 @@ function Get-AutopsyInstallCandidates {
                     }
                 }
             } catch {
-                # ignore
             }
         }
     }
@@ -144,7 +158,7 @@ function Show-CaseDirHints {
     param([string]$CaseDir)
 
     if (-not (Test-Path -LiteralPath $CaseDir)) {
-        Write-Host "Hint: case_dir path does not exist yet. Validation may fail until the case is available." -ForegroundColor Yellow
+        Write-Warn "case_dir path does not exist yet. Validation may fail until the case is available."
         return
     }
 
@@ -160,73 +174,97 @@ function Show-CaseDirHints {
     }
 
     if (-not $hasAut) {
-        Write-Host "Hint: no .aut file found in case_dir (Autopsy case descriptor)." -ForegroundColor Yellow
+        Write-Warn "No .aut file found in case_dir (Autopsy case descriptor)."
     }
     if (-not ($hasLogDir -or $hasDb)) {
-        Write-Host "Hint: expected either Log\ directory or autopsy.db in case_dir." -ForegroundColor Yellow
+        Write-Warn "Expected either Log\ directory or autopsy.db in case_dir."
     }
+}
+
+function Test-PlaceholderPath {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $false }
+    $v = $PathValue.Trim().ToLowerInvariant()
+    if ($v -eq "c:\path\to\your\case") { return $true }
+    if ($v -eq "/path/to/your/case") { return $true }
+    if ($v -match '(^|[\\/])path([\\/]|$)') { return $true }
+    return $false
+}
+
+function Test-GoogleAppPasswordLike {
+    param([string]$Password)
+    if ([string]::IsNullOrWhiteSpace($Password)) { return $false }
+    $normalized = ($Password -replace '\s', '')
+    if ($normalized.Length -ne 16) { return $false }
+    return $normalized -match '^[A-Za-z]{16}$'
+}
+
+function Validate-SmtpPortSsl {
+    param(
+        [string]$Port,
+        [bool]$UseSsl
+    )
+    if ($Port -eq "587" -and $UseSsl) {
+        return "Port 587 normally requires STARTTLS (smtp_use_ssl=false)."
+    }
+    if ($Port -eq "465" -and -not $UseSsl) {
+        return "Port 465 normally requires implicit SSL (smtp_use_ssl=true)."
+    }
+    return ""
 }
 
 Write-Host ""
 Write-Host "AutopsyGuard Setup Wizard (Windows)" -ForegroundColor Cyan
-Write-Host "This will generate a config file and a .env file for secrets." -ForegroundColor Cyan
-Write-Host "Secrets in .env are loaded automatically by AutopsyGuard at startup." -ForegroundColor Cyan
-Write-Host "OAuth web login for Gmail is supported via autopsyguard-oauth." -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Quick guidance:" -ForegroundColor DarkCyan
-Write-Host "  - case_dir should contain *.aut and (Log\ or autopsy.db)"
-Write-Host "  - autopsy_install_dir is optional (mainly improves JVM crash file search)"
-Write-Host "  - SMTP 587 -> smtp_use_ssl=false (STARTTLS), SMTP 465 -> smtp_use_ssl=true"
-Write-Host "  - Install-dir lookup targets Windows defaults: Program Files / Program Files (x86)"
-Write-Host ""
+Write-Note "This wizard is security-first and optimized for production-safe defaults."
+Write-Note "Gmail path is App Password-first. OAuth is supported by runtime but not configured here."
+Write-Note "Detailed guide: docs/setup-wizard-guide.md"
 
-# Pre-flight check for Autopsy 4.22 on Windows 11
+Write-Section "1) Prerequisites Check"
+Write-Note "Why this matters: missing platform dependencies can break Autopsy before monitoring starts."
+
 $wmicPath = Get-Command "wmic" -ErrorAction SilentlyContinue
 if (-not $wmicPath) {
-    Write-Host "[WARNING]: 'wmic' command is missing from your system!" -ForegroundColor Red
-    Write-Host "Autopsy 4.22.1 requires 'wmic' to manage its embedded Solr service." -ForegroundColor Yellow
-    Write-Host "Because Windows 11 recently removed 'wmic', Autopsy WILL CRASH on startup." -ForegroundColor Yellow
-    Write-Host "To fix this, go to Windows Settings -> System -> Optional Features and install 'WMI Commandline Utility'." -ForegroundColor Yellow
-    Write-Host ""
-    
-    $continueSetup = Read-YesNo "Do you want to continue setup anyway?" $false
-    if (-not $continueSetup) {
-        Write-Host "Setup aborted." -ForegroundColor Red
+    Write-Blocker "'wmic' command is missing. Autopsy 4.22.1 can crash on startup without it."
+    Write-Note "Install 'WMI Commandline Utility' in Windows Optional Features."
+    if (-not (Read-YesNo "Continue setup anyway?" $false)) {
+        Write-Blocker "Setup aborted."
         exit 1
     }
-    Write-Host ""
 }
 
 if (-not $SkipDependencySync) {
     $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($null -eq $uv) {
-        Write-Host "Warning: 'uv' command not found. Install uv first, then run this script again." -ForegroundColor Yellow
-    } else {
-        if (Read-YesNo "Run 'uv sync' now?" $true) {
-            uv sync
-        }
+        Write-Warn "'uv' command not found. Install uv, then run this wizard again."
+    } elseif (Read-YesNo "Run 'uv sync' now?" $true) {
+        uv sync
     }
 }
-Write-Host ""
-Write-Host "--- 1. Target Directories ---" -ForegroundColor Cyan
-Write-Host "AutopsyGuard needs to know where your Autopsy case is located to monitor its logs and locks." -ForegroundColor Gray
-Write-Host "If you don't have one yet, just press Enter to set it up later." -ForegroundColor Gray
-$caseDir = Read-Host "Autopsy case directory (case_dir, optional)"
+
+Write-Section "2) Case and Autopsy Paths"
+Write-Note "Why this matters: monitor needs the real case directory to detect ingest/log/locks correctly."
+Write-Note "Safe default: provide an existing case folder now."
+
+$caseDir = Read-Host "Autopsy case directory (case_dir)"
 if ([string]::IsNullOrWhiteSpace($caseDir)) {
     $caseDir = "C:\Path\To\Your\Case"
-    Write-Host "Note: You must edit config.local.yml to set the actual case_dir before running AutopsyGuard." -ForegroundColor Yellow
-} else {
-    if (-not (Test-Path -LiteralPath $caseDir)) {
-        Write-Host "Warning: path does not currently exist: $caseDir" -ForegroundColor Yellow
-    }
-    Show-CaseDirHints -CaseDir $caseDir
 }
+$caseDir = $caseDir.Trim()
+if (Test-PlaceholderPath $caseDir) {
+    Write-Blocker "You entered a placeholder case_dir."
+    if (-not (Read-YesNo "Proceed in DRAFT mode (you must edit case_dir before running)?" $false)) {
+        $caseDir = Read-Required "Enter a real case_dir path"
+    }
+}
+if (-not (Test-Path -LiteralPath $caseDir)) {
+    Write-Warn "Path does not currently exist: $caseDir"
+}
+Show-CaseDirHints -CaseDir $caseDir
 
 $autopsyInstallDir = ""
 $installCandidates = @(Get-AutopsyInstallCandidates)
 if ($installCandidates.Count -gt 0) {
-    Write-Host ""
-    Write-Host "Detected Autopsy install-dir candidates:" -ForegroundColor Cyan
+    Write-Note "Detected Autopsy install-dir candidates:"
     $max = [Math]::Min(10, $installCandidates.Count)
     for ($i = 0; $i -lt $max; $i++) {
         Write-Host ("  [{0}] {1}" -f ($i + 1), $installCandidates[$i])
@@ -235,13 +273,11 @@ if ($installCandidates.Count -gt 0) {
         Write-Host ("  ... plus {0} more" -f ($installCandidates.Count - 10))
     }
     while ($true) {
-        $selection = Read-Host "Choose candidate number [1], M for manual path, or S to skip"
-        if ([string]::IsNullOrWhiteSpace($selection)) {
-            $selection = "1"
-        }
+        $selection = Read-Host "Choose candidate number [1], M for manual, or S to skip"
+        if ([string]::IsNullOrWhiteSpace($selection)) { $selection = "1" }
         $selection = $selection.Trim()
         if ($selection.Equals("M", [System.StringComparison]::OrdinalIgnoreCase)) {
-            $autopsyInstallDir = Read-Host "Autopsy install directory (optional, for hs_err_pid*.log search)"
+            $autopsyInstallDir = Read-Host "Autopsy install directory (optional)"
             break
         }
         if ($selection.Equals("S", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -253,149 +289,177 @@ if ($installCandidates.Count -gt 0) {
             $autopsyInstallDir = $installCandidates[$idx - 1]
             break
         }
-        Write-Host "Invalid selection. Please choose a valid number, M, or S." -ForegroundColor Yellow
+        Write-Warn "Invalid selection. Choose valid number, M, or S."
     }
 } else {
-    Write-Host "No install dir auto-detected. You can leave it blank (optional)." -ForegroundColor Yellow
-    $autopsyInstallDir = Read-Host "Autopsy install directory (optional, for hs_err_pid*.log search)"
+    Write-Warn "No install dir auto-detected. You can skip (optional)."
+    $autopsyInstallDir = Read-Host "Autopsy install directory (optional)"
 }
 
-Write-Host ""
-Write-Host "--- 2. Performance & Polling ---" -ForegroundColor Cyan
-Write-Host "Configure how often AutopsyGuard checks the system and when to assume the process is hung." -ForegroundColor Gray
+Write-Section "3) Monitoring Performance"
+Write-Note "Why this matters: polling and timeout values define alert speed vs false positives."
 $pollInterval = Read-Default "poll_interval (seconds)" "30.0"
 $hangTimeout = Read-Default "hang_timeout (seconds)" "900.0"
-$reportInterval = Read-Default "report_interval_hours (e.g., 12.0 for half-day, 0.5 for 30 min)" "12.0"
-Write-Host ""
-Write-Host "--- 3. Notifications (Email) ---" -ForegroundColor Cyan
-Write-Host "Configure email alerts for crashes, warnings, and periodic status reports." -ForegroundColor Gray
-Write-Host "Use App Passwords for Gmail/O365. Avoid sharing your main account password." -ForegroundColor Gray
+$reportInterval = Read-Default "report_interval_hours (example 12.0 or 0.5)" "12.0"
+
+Write-Section "4) Notifications Setup"
+Write-Note "Why this matters: reliable alerts require correct SMTP/security settings."
+Write-Note "Recommended production path: Gmail + Google App Password."
+
 $emailEnabled = Read-YesNo "Configure email notifications?" $true
 $smtpHost = ""
 $smtpPort = "587"
 $smtpUseSsl = $false
 $smtpAsync = $true
+$smtpUser = ""
+$smtpPassword = ""
 $emailSender = "autopsyguard@example.com"
 $emailRecipient = ""
 $emailCaseLabel = ""
-$smtpUser = ""
-$smtpPassword = ""
 $smtpAuthMode = "password"
 $smtpOauthProvider = ""
 $smtpOauthClientId = ""
 $smtpOauthClientSecret = ""
 $smtpOauthTokenFile = ""
+$providerLabel = ""
 
 if ($emailEnabled) {
     Write-Host "Email provider presets:" -ForegroundColor Cyan
-    Write-Host "  [1] Gmail (smtp.gmail.com:587 STARTTLS)"
-    Write-Host "  [2] Custom SMTP"
-    $providerConfigured = $false
+    Write-Host "  [1] Gmail (App Password, smtp.gmail.com:587 STARTTLS) [Recommended]"
+    Write-Host "  [2] Office 365 / Outlook (smtp.office365.com:587 STARTTLS)"
+    Write-Host "  [3] Custom SMTP"
+    Write-Host "  [4] Local dev server (localhost:1025)"
     while ($true) {
-        $providerChoice = Read-Host "Provider [2]"
-        if ([string]::IsNullOrWhiteSpace($providerChoice)) {
-            $providerChoice = "2"
-        }
+        $providerChoice = Read-Host "Provider [1]"
+        if ([string]::IsNullOrWhiteSpace($providerChoice)) { $providerChoice = "1" }
         switch ($providerChoice.Trim()) {
             "1" {
+                $providerLabel = "gmail"
                 $smtpHost = "smtp.gmail.com"
                 $smtpPort = "587"
                 $smtpUseSsl = $false
-                Write-Host "Preset selected: Gmail (STARTTLS on port 587)." -ForegroundColor Green
-                $providerConfigured = $true
-                continue
+                break
             }
             "2" {
+                $providerLabel = "office365"
+                $smtpHost = "smtp.office365.com"
+                $smtpPort = "587"
+                $smtpUseSsl = $false
+                break
+            }
+            "3" {
+                $providerLabel = "custom"
                 $smtpHost = Read-Required "SMTP host (smtp_host)"
                 $smtpPort = Read-Default "SMTP port (smtp_port)" "587"
-                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? Use true for port 465, false for STARTTLS on 587" $false
-                $providerConfigured = $true
-                continue
+                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)? true for 465, false for 587 STARTTLS" $false
+                break
+            }
+            "4" {
+                $providerLabel = "local"
+                $smtpHost = "localhost"
+                $smtpPort = "1025"
+                $smtpUseSsl = $false
+                break
             }
             default {
-                Write-Host "Please choose 1, or 2." -ForegroundColor Yellow
+                Write-Warn "Please choose 1, 2, 3, or 4."
             }
         }
-        if ($providerConfigured) {
+        if (-not [string]::IsNullOrWhiteSpace($providerLabel)) { break }
+    }
+
+    while ($true) {
+        $hint = Validate-SmtpPortSsl -Port $smtpPort -UseSsl $smtpUseSsl
+        if ([string]::IsNullOrWhiteSpace($hint)) {
             break
         }
+        Write-Warn $hint
+        if (Read-YesNo "Fix automatically to recommended pair?" $true) {
+            if ($smtpPort -eq "587") {
+                $smtpUseSsl = $false
+            } elseif ($smtpPort -eq "465") {
+                $smtpUseSsl = $true
+            }
+        } else {
+            if (-not (Read-YesNo "Continue with current SMTP TLS/port mismatch?" $false)) {
+                $smtpPort = Read-Default "SMTP port (smtp_port)" $smtpPort
+                $smtpUseSsl = Read-YesNo "Use SMTP SSL (smtp_use_ssl)?" $smtpUseSsl
+            } else {
+                break
+            }
+        }
     }
+
     $smtpAsync = Read-YesNo "Send email asynchronously (smtp_async)?" $true
     $emailSender = Read-Default "Email sender (email_sender)" "autopsyguard@example.com"
     $emailRecipient = Read-Required "Email recipient (email_recipient)"
-    $emailCaseLabel = Read-Host "Email case label (email_case_label, optional)"
+    $emailCaseLabel = Read-Host "Email case label (optional)"
 
-    $defaultOauth = $smtpHost -in @("smtp.gmail.com", "smtp.office365.com")
-    if (Read-YesNo "Use OAuth2 web login for SMTP (recommended for Gmail/O365)?" $defaultOauth) {
-        $smtpAuthMode = "oauth"
-        Write-Host ""
-        Write-Host "OAuth setup needs an app registration first (Client ID)." -ForegroundColor Cyan
-        Write-Host "  - Google: Google Cloud Console > APIs & Services > Credentials > OAuth client ID" -ForegroundColor Gray
-        if (-not (Read-YesNo "Do you already have an OAuth Client ID ready?" $true)) {
-            Write-Host "Switching email auth mode to password for now. You can re-run setup later to enable OAuth." -ForegroundColor Yellow
-            $smtpAuthMode = "password"
-        }
-    }
-
-    if ($smtpAuthMode -eq "oauth") {
-        $smtpOauthProvider = "google"
-
-        $smtpUser = Read-Required "SMTP user / account email (smtp_user)"
-        $smtpOauthClientId = Read-Required "OAuth client id (smtp_oauth_client_id) [from your app registration]"
-        $smtpOauthClientSecret = Read-Host "OAuth client secret (optional; store in env as AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET)"
-        $safeUser = $smtpUser.ToLowerInvariant().Replace("@", "_at_")
-        $defaultTokenFile = ".autopsyguard\oauth\$($smtpOauthProvider)_$safeUser.json"
-        $smtpOauthTokenFile = Read-Default "OAuth token file path (smtp_oauth_token_file)" $defaultTokenFile
-    } else {
-        $smtpAuthMode = "password"
-        $smtpUser = Read-Host "SMTP user (optional, stored in env as AUTOPSYGUARD_SMTP_USER)"
-        $secure = Read-Host "SMTP password (optional, stored in env as AUTOPSYGUARD_SMTP_PASSWORD)" -AsSecureString
+    if ($providerLabel -eq "gmail") {
+        Write-Note "Gmail App Password checklist:"
+        Write-Note "  1) Google account has 2-Step Verification enabled."
+        Write-Note "  2) Create App Password for 'Mail'."
+        Write-Note "  3) Use app password here, never your normal account password."
+        $smtpUser = Read-Required "SMTP user (your Gmail address)"
+        $secure = Read-Host "Google App Password" -AsSecureString
         if ($secure.Length -gt 0) {
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
             try {
                 $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-                if (-not [string]::IsNullOrEmpty($smtpPassword)) {
-                    $smtpPassword = $smtpPassword.Replace(" ", "")
-                }
+                $smtpPassword = $smtpPassword -replace '\s', ''
+            } finally {
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+        if (-not (Test-GoogleAppPasswordLike $smtpPassword)) {
+            Write-Blocker "This does not look like a Google App Password (expected 16 letters)."
+            if (-not (Read-YesNo "Continue anyway with potentially unsafe/invalid password?" $false)) {
+                Write-Blocker "Setup aborted to protect email reliability. Re-run with valid App Password."
+                exit 1
+            }
+        }
+    } elseif ($providerLabel -eq "local") {
+        $smtpUser = ""
+        $smtpPassword = ""
+    } else {
+        $smtpUser = Read-Host "SMTP user (optional; written to .env if provided)"
+        $secure = Read-Host "SMTP password (optional; written to .env if provided)" -AsSecureString
+        if ($secure.Length -gt 0) {
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            try {
+                $smtpPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
             } finally {
                 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
             }
         }
     }
-
-    if ($smtpUseSsl -and $smtpPort -eq "587") {
-        Write-Host "Suggestion: SMTP port 587 usually uses STARTTLS (smtp_use_ssl=false)." -ForegroundColor Yellow
-    }
-    if (-not $smtpUseSsl -and $smtpPort -eq "465") {
-        Write-Host "Suggestion: SMTP port 465 usually uses implicit SSL (smtp_use_ssl=true)." -ForegroundColor Yellow
-    }
 }
-Write-Host ""
-Write-Host "--- 4. Notifications (WhatsApp) ---" -ForegroundColor Cyan
-Write-Host "You can receive alerts on WhatsApp via CallMeBot API (availability/limits depend on account/region)." -ForegroundColor Gray
-Write-Host "If WhatsApp setup is not available for you, Telegram is usually simpler." -ForegroundColor Gray
-$whatsappEnabled = Read-YesNo "Configure WhatsApp notifications?" $false
+
+$whatsappEnabled = $false
 $whatsappPhone = ""
 $whatsappApiKey = ""
-if ($whatsappEnabled) {
+Write-Section "5) Optional Channels"
+Write-Note "Why this matters: secondary channels reduce risk of missed critical alerts."
+if (Read-YesNo "Configure WhatsApp notifications (CallMeBot)?" $false) {
+    $whatsappEnabled = $true
     $whatsappPhone = Read-Required "WhatsApp phone (+countrycode...)"
-    $whatsappApiKey = Read-Host "WhatsApp API key (optional; if blank, keep disabled until set)"
+    $whatsappApiKey = Read-Host "WhatsApp API key (optional)"
     if ([string]::IsNullOrWhiteSpace($whatsappApiKey)) {
-        Write-Host "Note: WhatsApp requires AUTOPSYGUARD_WHATSAPP_APIKEY before alerts can be sent." -ForegroundColor Yellow
+        Write-Warn "WhatsApp channel stays configured but disabled until AUTOPSYGUARD_WHATSAPP_APIKEY is set."
     }
 }
-Write-Host ""
-Write-Host "--- 5. Notifications (Telegram) ---" -ForegroundColor Cyan
-Write-Host "You can receive instant text alerts on Telegram via the free CallMeBot API." -ForegroundColor Gray
-$telegramEnabled = Read-YesNo "Configure Telegram notifications?" $false
+
+$telegramEnabled = $false
 $telegramUser = ""
-if ($telegramEnabled) {
-    $telegramUser = Read-Required "Telegram user (e.g. @myusername)"
+if (Read-YesNo "Configure Telegram notifications (CallMeBot)?" $false) {
+    $telegramEnabled = $true
+    $telegramUser = Read-Required "Telegram user (example @myusername)"
 }
 
+Write-Section "6) Final Review and File Generation"
 $configLines = @()
 $configLines += "# Generated by scripts\setup-autopsyguard.ps1"
-$configLines += "# You can edit this file manually after setup."
+$configLines += "# Security-first defaults. Review values before first production run."
 $configLines += "case_dir: $(Escape-YamlSingleQuoted $caseDir)"
 if (-not [string]::IsNullOrWhiteSpace($autopsyInstallDir)) {
     $configLines += "autopsy_install_dir: $(Escape-YamlSingleQuoted $autopsyInstallDir.Trim())"
@@ -404,16 +468,20 @@ $configLines += "poll_interval: $pollInterval"
 $configLines += "hang_timeout: $hangTimeout"
 $configLines += "report_interval_hours: $reportInterval"
 $configLines += ""
-$configLines += "# Email (enabled when smtp_host and email_recipient are set)"
+$configLines += "# Localization and labels"
+$configLines += "language: 'auto'"
+$configLines += "case_name_source: 'real'"
+$configLines += ""
+$configLines += "# Email (enabled when smtp_host + email_recipient are set)"
 $configLines += "smtp_host: $(Escape-YamlSingleQuoted $smtpHost)"
 $configLines += "smtp_port: $smtpPort"
 $configLines += "smtp_use_ssl: $($smtpUseSsl.ToString().ToLowerInvariant())"
 $configLines += "smtp_async: $($smtpAsync.ToString().ToLowerInvariant())"
-$configLines += "smtp_auth_mode: $(Escape-YamlSingleQuoted $smtpAuthMode)"
-$configLines += "smtp_oauth_provider: $(Escape-YamlSingleQuoted $smtpOauthProvider)"
-$configLines += "smtp_oauth_client_id: $(Escape-YamlSingleQuoted $smtpOauthClientId)"
+$configLines += "smtp_auth_mode: 'password'"
+$configLines += "smtp_oauth_provider: ''"
+$configLines += "smtp_oauth_client_id: ''"
 $configLines += "smtp_oauth_client_secret: ''"
-$configLines += "smtp_oauth_token_file: $(Escape-YamlSingleQuoted $smtpOauthTokenFile)"
+$configLines += "smtp_oauth_token_file: ''"
 $configLines += "email_sender: $(Escape-YamlSingleQuoted $emailSender)"
 $configLines += "email_recipient: $(Escape-YamlSingleQuoted $emailRecipient)"
 $configLines += "email_case_label: $(Escape-YamlSingleQuoted $emailCaseLabel)"
@@ -436,26 +504,22 @@ if (-not [string]::IsNullOrWhiteSpace($configParent) -and -not (Test-Path -Liter
 
 $envLines = @()
 $envLines += "# AutopsyGuard secrets - generated by scripts\setup-autopsyguard.ps1"
-$envLines += "# This file is loaded automatically by AutopsyGuard at startup."
+$envLines += "# Loaded automatically by AutopsyGuard at startup."
 $envLines += "# Do NOT commit this file to version control."
 if (-not [string]::IsNullOrWhiteSpace($smtpUser)) {
     $envLines += "AUTOPSYGUARD_SMTP_USER=" + $smtpUser.Trim()
 }
 if (-not [string]::IsNullOrWhiteSpace($smtpPassword)) {
-    $envLines += "AUTOPSYGUARD_SMTP_PASSWORD=" + $smtpPassword
-}
-if (-not [string]::IsNullOrWhiteSpace($smtpOauthClientSecret)) {
-    $envLines += "AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET=" + $smtpOauthClientSecret.Trim()
+    $envLines += "AUTOPSYGUARD_SMTP_PASSWORD=" + $smtpPassword.Trim()
 }
 if (-not [string]::IsNullOrWhiteSpace($whatsappApiKey)) {
     $envLines += "AUTOPSYGUARD_WHATSAPP_APIKEY=" + $whatsappApiKey.Trim()
 }
 if ($envLines.Count -le 3) {
-    $envLines += "# (No secret env vars were provided.)"
+    $envLines += "# (No secrets provided.)"
     $envLines += "# Example:"
     $envLines += "#   AUTOPSYGUARD_SMTP_USER=your-user"
-    $envLines += "#   AUTOPSYGUARD_SMTP_PASSWORD=your-password"
-    $envLines += "#   AUTOPSYGUARD_SMTP_OAUTH_CLIENT_SECRET=your-oauth-client-secret"
+    $envLines += "#   AUTOPSYGUARD_SMTP_PASSWORD=your-app-password"
     $envLines += "#   AUTOPSYGUARD_WHATSAPP_APIKEY=your-callmebot-key"
 }
 $envTarget = Join-Path -Path (Get-Location) -ChildPath $EnvFilePath
@@ -468,39 +532,28 @@ if (-not [string]::IsNullOrWhiteSpace($envParent) -and -not (Test-Path -LiteralP
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
 Write-Host "Config file : $ConfigPath"
-Write-Host "Secrets file: $EnvFilePath  (loaded automatically by AutopsyGuard)"
+Write-Host "Secrets file: $EnvFilePath"
+Write-Host "Guide       : docs/setup-wizard-guide.md"
+
+Write-Section "Operational Checklist"
+Write-Host "1) Review generated files:"
+Write-Host "   - $ConfigPath"
+Write-Host "   - $EnvFilePath"
+Write-Host "2) Start monitor:"
+Write-Host "   uv run autopsyguard --config .\$ConfigPath"
+Write-Host "3) Quick email channel smoke-check:"
+Write-Host "   uv run autopsyguard --config .\$ConfigPath --verbose"
+Write-Host "   (Open Autopsy case and confirm startup notification arrives.)"
+Write-Host "4) If needed, use full setup notes:"
+Write-Host "   docs/setup-wizard-guide.md"
 
 Write-Host ""
-Write-Host "Next steps:"
-if ($emailEnabled -and $smtpAuthMode -eq "oauth") {
-    $oauthCmd = "uv run autopsyguard-oauth --provider $smtpOauthProvider --email $smtpUser --client-id `"$smtpOauthClientId`" --token-file `"$smtpOauthTokenFile`""
-    if (-not [string]::IsNullOrWhiteSpace($smtpOauthClientSecret)) {
-        $oauthCmd += " --client-secret `"$smtpOauthClientSecret`""
-    }
-
-    Write-Host "  1. Run OAuth login once to create local refresh token:"
-    Write-Host "     $oauthCmd"
-    Write-Host "  2. uv run autopsyguard --config .\$ConfigPath"
-    Write-Host "  3. Optional debug run: uv run autopsyguard --config .\$ConfigPath --verbose"
-} else {
-    Write-Host "  1. uv run autopsyguard --config .\$ConfigPath"
-    Write-Host "  2. Optional debug run: uv run autopsyguard --config .\$ConfigPath --verbose"
-}
-Write-Host ""
-Write-Host "Configuration summary:" -ForegroundColor Cyan
-Write-Host "  - Email:     $($emailEnabled)"
-if ($emailEnabled) {
-    Write-Host "  - Email auth mode: $smtpAuthMode"
-    if ($smtpAuthMode -eq "oauth") {
-        Write-Host "  - OAuth provider: $smtpOauthProvider"
-        Write-Host "  - OAuth token file: $smtpOauthTokenFile"
-    }
-}
-Write-Host "  - WhatsApp:  $($whatsappEnabled)"
-Write-Host "  - Telegram:  $($telegramEnabled)"
-Write-Host "  - Polling:   $pollInterval s"
-Write-Host "  - Hang timeout: $hangTimeout s"
-Write-Host ""
+Write-Host "Top 5 common failures and fixes:"
+Write-Host "  - SMTP auth failed: verify App Password (not account password)."
+Write-Host "  - TLS/port mismatch: use 587+STARTTLS or 465+SSL."
+Write-Host "  - No email received: validate recipient, sender policy, spam folder."
+Write-Host "  - Case not detected: ensure case_dir points to real folder with .aut."
+Write-Host "  - WhatsApp not sending: set AUTOPSYGUARD_WHATSAPP_APIKEY in .env."
 
 if ($RunAfterSetup) {
     uv run autopsyguard --config ".\$ConfigPath"
