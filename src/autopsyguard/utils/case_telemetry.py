@@ -40,10 +40,32 @@ _KEYWORD_MODULE_NAME: dict[str, str] = {
     "extension mismatch": "Extension Mismatch Detector",
 }
 
+_MODULE_NAME_ALIASES: dict[str, str] = {
+    "keywordsearch": "Keyword Search",
+    "keyword search": "Keyword Search",
+    "recentactivity": "Recent Activity",
+    "recent activity": "Recent Activity",
+    "efe": "Embedded File Extractor",
+    "embedded file extractor": "Embedded File Extractor",
+    "image gallery": "Image Gallery",
+    "photorec carver": "PhotoRec Carver",
+}
+
 _INGEST_START_PATTERN = re.compile(r"starting ingest job", re.IGNORECASE)
 _INGEST_FINISH_PATTERN = re.compile(r"finished all ingest tasks for ingest job", re.IGNORECASE)
 _INGEST_JOB_ID_PATTERN = re.compile(r"ingest job id\s*=\s*(\d+)", re.IGNORECASE)
 _DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^\),]+)", re.IGNORECASE)
+
+
+def _canonical_module_name(name: str | None) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "N/A"
+    key = re.sub(r"\s+", " ", raw).strip().lower()
+    alias = _MODULE_NAME_ALIASES.get(key)
+    if alias:
+        return alias
+    return raw
 
 
 def _annotate_lines_with_timestamps(lines: list[str]) -> list[tuple[str, str | None]]:
@@ -84,25 +106,25 @@ def _module_name_from_line(line: str) -> str | None:
         return None
 
     if "recent activity analysis" in low or ".recentactivity." in low:
-        return "Recent Activity"
+        return _canonical_module_name("Recent Activity")
     if "keywordsearch" in low or "keyword search" in low or "kwsdataartifactingestmodule" in low:
-        return "Keyword Search"
+        return _canonical_module_name("Keyword Search")
     if "solr" in low:
-        return "Solr"
+        return _canonical_module_name("Solr")
     if "photorec" in low:
-        return "PhotoRec Carver"
+        return _canonical_module_name("PhotoRec Carver")
     if "embedded file extractor" in low or "embeddedfileextractor" in low:
-        return "Embedded File Extractor"
+        return _canonical_module_name("Embedded File Extractor")
     if "email parser" in low or "emailparser" in low:
-        return "Email Parser"
+        return _canonical_module_name("Email Parser")
     if "yara ingest module" in low:
-        return "YARA Analyzer"
+        return _canonical_module_name("YARA Analyzer")
     if "interesting files" in low:
-        return "Interesting Files Identifier"
+        return _canonical_module_name("Interesting Files Identifier")
     if "hash lookup" in low:
-        return "Hash Lookup"
+        return _canonical_module_name("Hash Lookup")
     if "extension mismatch" in low:
-        return "Extension Mismatch Detector"
+        return _canonical_module_name("Extension Mismatch Detector")
 
     m = re.search(
         r"(?<!ingest\s)(?:\bmodule\b|\bmódulo\b)\s*[:=-]\s*([A-Za-z0-9 _\-/]{3,80})",
@@ -110,7 +132,7 @@ def _module_name_from_line(line: str) -> str | None:
         flags=re.IGNORECASE,
     )
     if m:
-        return m.group(1).strip()
+        return _canonical_module_name(m.group(1).strip())
     return None
 
 
@@ -295,13 +317,14 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
         if module_name is None:
             for kw in _MODULE_KEYWORDS:
                 if kw in low:
-                    module_name = _KEYWORD_MODULE_NAME.get(kw, kw.title())
+                    module_name = _canonical_module_name(_KEYWORD_MODULE_NAME.get(kw, kw.title()))
                     break
         if module_name is None and any(token in low for token in ("exception", "error", "severe")):
             module_name = last_module_by_context.get(current_context)
         if module_name is None:
             continue
 
+        module_name = _canonical_module_name(module_name)
         last_module_by_context[current_context] = module_name
         activities.append(
             {
@@ -357,7 +380,7 @@ def _build_module_activity_summary(
 
     summary: dict[str, dict[str, Any]] = {}
     for idx, item in enumerate(scoped):
-        module_name = str(item.get("module") or "").strip()
+        module_name = _canonical_module_name(str(item.get("module") or "").strip())
         if not module_name:
             continue
         key = module_name.lower()
@@ -375,6 +398,8 @@ def _build_module_activity_summary(
                 "first_seen": ts_text,
                 "last_seen": ts_text,
                 "last_state": state,
+                "activity_events": 1,
+                "error_events": 1 if state == "error" else 0,
                 "occurrence_count": 1,
                 "error_count": 1 if state == "error" else 0,
                 "sample_last_line": line,
@@ -384,8 +409,10 @@ def _build_module_activity_summary(
             }
             continue
 
+        row["activity_events"] = int(row.get("activity_events") or 0) + 1
         row["occurrence_count"] = int(row["occurrence_count"]) + 1
         if state == "error":
+            row["error_events"] = int(row.get("error_events") or 0) + 1
             row["error_count"] = int(row["error_count"]) + 1
         first_epoch = row.get("_first_epoch")
         last_epoch = row.get("_last_epoch")
@@ -407,6 +434,10 @@ def _build_module_activity_summary(
 
     output: list[dict[str, Any]] = []
     for row in summary.values():
+        row["activity_events"] = int(row.get("activity_events") or row.get("occurrence_count") or 0)
+        row["error_events"] = int(row.get("error_events") or row.get("error_count") or 0)
+        row["occurrence_count"] = int(row["activity_events"])
+        row["error_count"] = int(row["error_events"])
         row["confidence"] = _confidence_from_epoch(row.get("_last_epoch"), now_ts=now_ts)
         row.pop("_first_epoch", None)
         row.pop("_last_epoch", None)
@@ -478,7 +509,7 @@ def _merge_folder_activity_fallback(
         for item in merged
     }
     for folder in module_folders:
-        name = str(folder.get("name") or "").strip()
+        name = _canonical_module_name(str(folder.get("name") or "").strip())
         if not name:
             continue
         key = name.lower()
@@ -502,6 +533,8 @@ def _merge_folder_activity_fallback(
                     "first_seen": ts_text,
                     "last_seen": ts_text,
                     "last_state": "active",
+                    "activity_events": 1,
+                    "error_events": 0,
                     "occurrence_count": 1,
                     "error_count": 0,
                     "sample_last_line": f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes",
@@ -570,10 +603,12 @@ def collect_case_telemetry(
     )
     module_activity = [
         {
-            "module": str(item.get("module_name") or item.get("module") or "N/A"),
+            "module": _canonical_module_name(str(item.get("module_name") or item.get("module") or "N/A")),
             "state": str(item.get("last_state") or "active"),
             "line": str(item.get("sample_last_line") or "")[:220],
             "timestamp": item.get("last_seen"),
+            "activity_events": int(item.get("activity_events") or item.get("occurrence_count") or 1),
+            "error_events": int(item.get("error_events") or item.get("error_count") or 0),
             "occurrence_count": int(item.get("occurrence_count") or 1),
             "error_count": int(item.get("error_count") or 0),
             "confidence": str(item.get("confidence") or "stale"),

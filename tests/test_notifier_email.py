@@ -426,7 +426,7 @@ def test_report_builder_renders_module_error_summary_block(tmp_path):
     assert "arrayindexoutofboundsexception" in plain_text
 
 
-def test_report_builder_renders_module_activity_summary_clean_format(tmp_path):
+def test_report_builder_hides_module_activity_summary_and_keeps_compact_module_lines(tmp_path):
     case_dir = tmp_path / "Case"
     case_dir.mkdir()
     (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
@@ -441,6 +441,8 @@ def test_report_builder_renders_module_activity_summary_clean_format(tmp_path):
                 "module_name": "Keyword Search",
                 "last_state": "error",
                 "last_seen": "2026-05-16 17:17:35",
+                "activity_events": 6,
+                "error_events": 2,
                 "error_count": 2,
                 "occurrence_count": 6,
                 "sample_last_line": "SEVERE: Keyword Search experienced an error",
@@ -450,6 +452,8 @@ def test_report_builder_renders_module_activity_summary_clean_format(tmp_path):
                 "module_name": "PhotoRec Carver",
                 "last_state": "active",
                 "last_seen": "2026-05-16 17:18:40",
+                "activity_events": 3,
+                "error_events": 0,
                 "error_count": 0,
                 "occurrence_count": 3,
                 "sample_last_line": "Folder growth signal",
@@ -477,7 +481,64 @@ def test_report_builder_renders_module_activity_summary_clean_format(tmp_path):
         autopsy_pid=None,
         telemetry=telemetry,
     )
-    assert "Module Activity Summary" in html_body
-    assert "error | 2026-05-16 17:17:35 | errors=2 | occurrences=6" in html_body
+    assert "Module Activity Summary" not in html_body
+    assert "Current/Recent Module" in html_body
+    assert "PhotoRec Carver | active | 2026-05-16 17:18:40 | age=" in html_body
+    assert "errors=0 | activity=3" in html_body
+    assert "Keyword/SOLR Activity" in html_body
+    assert "Keyword Search | error | 2026-05-16 17:17:35 | age=" in html_body
+    assert "errors=2 | activity=6" in html_body
     assert "SEVERE: Keyword Search experienced an error" not in html_body
-    assert "Module Activity Raw Errors (sample):" in plain_text
+    assert "Module Activity Summary:" not in plain_text
+    assert "Module Activity Raw Errors (sample):" not in plain_text
+
+
+def test_report_builder_prefers_fresher_activity_over_older_error(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:06:53", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [
+            {
+                "module_name": "Recent Activity",
+                "last_state": "error",
+                "last_seen": "2026-05-16 18:01:45",
+                "activity_events": 404,
+                "error_events": 202,
+                "error_count": 202,
+                "occurrence_count": 404,
+                "sample_last_line": "SEVERE: error line",
+                "confidence": "recent",
+            },
+            {
+                "module_name": "Keyword Search",
+                "last_state": "active",
+                "last_seen": "2026-05-16 18:06:48",
+                "activity_events": 1,
+                "error_events": 0,
+                "error_count": 0,
+                "occurrence_count": 1,
+                "sample_last_line": "active line",
+                "confidence": "current",
+            },
+        ],
+        "solr": {"state": "up", "response_time_seconds": 0.032, "checked_at": "2026-05-16 18:06:57", "error": None},
+        "autopsy_cpu_timeline": {"current": 115.4, "minus_5m": 209.1, "minus_15m": None},
+    }
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "Current/Recent Module" in html_body
+    assert "Keyword Search | active | 2026-05-16 18:06:48" in html_body

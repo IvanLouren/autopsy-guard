@@ -51,6 +51,8 @@ def test_collect_case_telemetry_with_local_db(tmp_path: Path) -> None:
     assert "module_name" in first
     assert "last_state" in first
     assert "occurrence_count" in first
+    assert "activity_events" in first
+    assert "error_events" in first
 
 
 def test_collect_case_telemetry_without_local_db(tmp_path: Path) -> None:
@@ -241,6 +243,7 @@ def test_collect_case_telemetry_reads_rotated_case_logs_for_summary(tmp_path: Pa
     recent = next((x for x in summary if x.get("module_name") == "Recent Activity"), None)
     assert recent is not None
     assert int(recent.get("occurrence_count") or 0) >= 2
+    assert int(recent.get("activity_events") or 0) >= 2
 
 
 def test_collect_case_telemetry_keyword_errors_are_aggregated_in_summary(tmp_path: Path) -> None:
@@ -273,4 +276,45 @@ def test_collect_case_telemetry_keyword_errors_are_aggregated_in_summary(tmp_pat
     assert kw is not None
     assert int(kw.get("occurrence_count") or 0) >= 3
     assert int(kw.get("error_count") or 0) >= 1
+    assert int(kw.get("activity_events") or 0) >= 3
+    assert int(kw.get("error_events") or 0) >= 1
+
+
+def test_collect_case_telemetry_canonicalizes_module_names(tmp_path: Path) -> None:
+    case = tmp_path / "CaseCanon"
+    case.mkdir()
+    (case / "CaseCanon.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-16 12:00:00 INFO: Starting ingest job in file batch mode (data source = Img.E01)",
+                "2026-05-16 12:01:00 INFO: Recent Activity analysis of Img.E01 starting",
+                "2026-05-16 12:02:00 org.sleuthkit.autopsy.recentactivity.SomeClass something",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mod = case / "ModuleOutput"
+    mod.mkdir()
+    recent_dir = mod / "RecentActivity"
+    recent_dir.mkdir()
+    keyword_dir = mod / "keywordsearch"
+    keyword_dir.mkdir()
+    (keyword_dir / "artifact.txt").write_text("x", encoding="utf-8")
+
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    names = {str(x.get("module_name")) for x in telemetry["module_activity_summary"]}
+    assert "Recent Activity" in names
+    assert "RecentActivity" not in names
+    assert "Keyword Search" in names
+    assert "keywordsearch" not in names
 
