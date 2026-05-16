@@ -14,6 +14,7 @@ import enum
 import logging
 import time
 from collections import defaultdict
+import re
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
@@ -36,6 +37,11 @@ from autopsyguard.utils.process_utils import find_autopsy_pid
 from autopsyguard.utils.metrics_store import MetricsStore
 
 logger = logging.getLogger(__name__)
+
+_NONFATAL_SOLR_PING_LOG_PATTERN = re.compile(
+    r"Unknown RequestHandler \(qt\):\s*/?search",
+    re.IGNORECASE,
+)
 
 
 class MonitorState(enum.Enum):
@@ -263,6 +269,7 @@ class Monitor:
             lock_exists=lock_exists,
         )
         ready_alerts = self._collect_alert_notifications(alert_events, now)
+        ready_alerts = self._filter_nonfatal_solr_ping_alerts(ready_alerts)
         if ready_alerts and self._has_ingest_started_ever:
             self.notifier.send_alert(ready_alerts)
             self.whatsapp.send_alert(ready_alerts)
@@ -300,6 +307,17 @@ class Monitor:
                     solr_metrics = self._solr_detector.get_current_metrics()
                 except Exception:
                     solr_metrics = None
+                try:
+                    nonfatal_warning = self._solr_detector.get_nonfatal_warning()
+                    if (
+                        solr_status is not None
+                        and getattr(solr_status, "is_up", False)
+                        and nonfatal_warning
+                        and not getattr(solr_status, "error", None)
+                    ):
+                        solr_status.error = nonfatal_warning
+                except Exception:
+                    pass
                 telemetry = collect_case_telemetry(
                     config=self.config,
                     solr_status=solr_status,
@@ -342,6 +360,7 @@ class Monitor:
                 pid=pid,
                 lock_exists=lock_exists,
             )
+            final_alerts = self._filter_nonfatal_solr_ping_alerts(final_alerts)
             if final_alerts and self._has_ingest_started_ever:
                 self.notifier.send_alert(final_alerts)
                 self.whatsapp.send_alert(final_alerts)
@@ -517,6 +536,41 @@ class Monitor:
         if suppressed:
             logger.info(
                 "Suppressing %d shutdown-noise alert(s) during graceful close window.",
+                suppressed,
+            )
+        return kept
+
+    @staticmethod
+    def _is_nonfatal_solr_ping_event(event: CrashEvent) -> bool:
+        if event.crash_type != CrashType.LOG_ERROR or event.severity != Severity.CRITICAL:
+            return False
+        log_line = str((event.details or {}).get("log_line") or "")
+        if _NONFATAL_SOLR_PING_LOG_PATTERN.search(log_line):
+            return True
+        return False
+
+    def _filter_nonfatal_solr_ping_alerts(self, events: list[CrashEvent]) -> list[CrashEvent]:
+        if not events:
+            return []
+        if not any(self._is_nonfatal_solr_ping_event(ev) for ev in events):
+            return events
+        try:
+            status = self._solr_cache.get_status()
+        except Exception:
+            status = None
+        if status is None or not getattr(status, "is_up", False):
+            return events
+
+        kept: list[CrashEvent] = []
+        suppressed = 0
+        for event in events:
+            if self._is_nonfatal_solr_ping_event(event):
+                suppressed += 1
+                continue
+            kept.append(event)
+        if suppressed:
+            logger.info(
+                "Suppressing %d non-fatal Solr ping noise alert(s) while Solr is reachable.",
                 suppressed,
             )
         return kept

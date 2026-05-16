@@ -34,6 +34,15 @@ from autopsyguard.utils.report_tracker import ReportTracker
 
 logger = logging.getLogger(__name__)
 
+_NONFATAL_PING_HANDLER_PATTERN = re.compile(
+    r"Unknown RequestHandler \(qt\):\s*/?search",
+    re.IGNORECASE,
+)
+_PING_STATUS_400_PATTERN = re.compile(
+    r"path=/admin/ping.*status=400",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class SolrMetrics:
@@ -122,6 +131,8 @@ class SolrDetector(BaseDetector):
         # sessions do not grow memory indefinitely.
         self._reported_log_errors: OrderedDict[str, None] = OrderedDict()
         self._max_reported_log_errors = self._MAX_REPORTED_LOG_ERRORS
+        self._last_nonfatal_warning: str | None = None
+        self._last_nonfatal_warning_ts: float | None = None
         self._initialized = False
         # Timestamp when the monitor started. If provided, used to
         # heuristic-ignore log files that predate monitor startup.
@@ -164,6 +175,17 @@ class SolrDetector(BaseDetector):
         cutoff = now - self._CONNECTION_ERROR_WINDOW_SECONDS
         while self._recent_connection_failures and self._recent_connection_failures[0] < cutoff:
             self._recent_connection_failures.popleft()
+
+    def _remember_nonfatal_warning(self, message: str) -> None:
+        self._last_nonfatal_warning = message
+        self._last_nonfatal_warning_ts = time.time()
+
+    def get_nonfatal_warning(self, *, max_age_seconds: float = 1800.0) -> str | None:
+        if not self._last_nonfatal_warning or self._last_nonfatal_warning_ts is None:
+            return None
+        if (time.time() - self._last_nonfatal_warning_ts) > max_age_seconds:
+            return None
+        return self._last_nonfatal_warning
 
     def _record_connection_failure(self) -> int:
         """Record one failure and return count of failures in the active window."""
@@ -220,9 +242,9 @@ class SolrDetector(BaseDetector):
             events.extend(self._check_logs())
             return events
 
-        # If cached elapsed is available, use it for slow-check; otherwise do direct probe
+        # If cached elapsed is available, use it for slow-check; otherwise do
+        # a cores/info-system probe without /admin/ping.
         if elapsed is None:
-            # Discover a core and perform a lightweight ping for liveness
             cores_url = f"{self._solr_base_url}/solr/admin/cores?action=STATUS&wt=json"
             start_time = time.time()
             try:
@@ -235,60 +257,51 @@ class SolrDetector(BaseDetector):
                         else:
                             # Non-bytes from tests: treat as empty cores list
                             parsed = {}
-                        cores = list(parsed.get("status", {}).keys())
+                        _ = list(parsed.get("status", {}).keys())
                     except (json.JSONDecodeError, Exception) as e:
-                        # Malformed response — treat as connection error so we don't
-                        # silently mark previously-down Solr as recovered when the
-                        # response body cannot be parsed.
-                        elapsed = time.time() - start_time
-                        events.extend(self._handle_connection_error(
-                            ValueError("Malformed Solr response: %s" % e), cores_url
-                        ))
-                        events.extend(self._check_logs())
-                        return events
+                        # Malformed cores payload; fall back to info/system.
+                        raise ValueError("Malformed Solr cores response: %s" % e)
 
-                    # If cores list is empty but parsing succeeded, treat Solr as
-                    # responsive (empty core lists can be valid for a freshly
-                    # started instance).
-                    if not cores:
-                        elapsed = time.time() - start_time
+                    _ = time.time()
+                    elapsed = time.time() - start_time
+                    if self._solr_down_reported:
+                        logger.info(
+                            "Solr service has recovered and is responding on port %d.",
+                            self.config.solr_port,
+                        )
+                    self._handle_connection_recovered()
+            except Exception:
+                info_url = f"{self._solr_base_url}/solr/admin/info/system"
+                start_info = time.time()
+                try:
+                    with urllib.request.urlopen(info_url, timeout=self.config.solr_timeout_seconds) as iresp:
+                        elapsed = time.time() - start_info
+                        status_code = getattr(iresp, "status", 200)
+                        if status_code >= 500:
+                            events.extend(self._handle_connection_error(
+                                Exception(f"HTTP {status_code}"),
+                                info_url,
+                            ))
+                            events.extend(self._check_logs())
+                            return events
                         if self._solr_down_reported:
                             logger.info(
                                 "Solr service has recovered and is responding on port %d.",
                                 self.config.solr_port,
                             )
                         self._handle_connection_recovered()
-                        core = None
+                except urllib.error.URLError as e:
+                    elapsed = self.config.solr_timeout_seconds
+                    if self._is_timeout_error(e):
+                        events.extend(self._handle_timeout(elapsed))
                     else:
-                        core = cores[0]
-
-                    if core:
-                        ping_url = f"{self._solr_base_url}/solr/{core}/admin/ping?wt=json"
-                        start_ping = time.time()
-                        with urllib.request.urlopen(ping_url, timeout=self.config.solr_timeout_seconds) as presp:
-                            elapsed = time.time() - start_ping
-                            # If presp is a test MagicMock, assume success when a status attribute exists and is 200
-                            status_code = getattr(presp, 'status', None)
-                            if status_code == 200:
-                                if self._solr_down_reported:
-                                    logger.info(
-                                        "Solr service has recovered and is responding on port %d.",
-                                        self.config.solr_port,
-                                    )
-                                self._handle_connection_recovered()
-            except urllib.error.URLError as e:
-                elapsed = time.time() - start_time
-                if self._is_timeout_error(e):
-                    events.extend(self._handle_timeout(elapsed))
-                else:
-                    # Use a generic ping-ish URL for reporting if cores discovery failed
-                    events.extend(self._handle_connection_error(e, f"{self._solr_base_url}/solr/admin/ping"))
-                events.extend(self._check_logs())
-                return events
-            except Exception as e:
-                events.extend(self._handle_connection_error(e, f"{self._solr_base_url}/solr/admin/ping"))
-                events.extend(self._check_logs())
-                return events
+                        events.extend(self._handle_connection_error(e, info_url))
+                    events.extend(self._check_logs())
+                    return events
+                except Exception as e:
+                    events.extend(self._handle_connection_error(e, info_url))
+                    events.extend(self._check_logs())
+                    return events
 
         # Check for slow response (potential hang)
         if elapsed is not None:
@@ -819,13 +832,20 @@ class SolrDetector(BaseDetector):
             stripped = line.strip()
             if not stripped:  # Skip empty lines
                 continue
-                
+
+            if _PING_STATUS_400_PATTERN.search(line):
+                self._remember_nonfatal_warning("HTTP 400 (/admin/ping)")
+                continue
+
             # Ignore lines that are just echoed Windows batch script commands from solr.cmd
             if stripped.startswith(("REM ", "set ", "echo ", "IF ")) or re.match(r"^[a-zA-Z]:\\[^>]+>", stripped):
                 continue
                 
             for pattern, severity in patterns:
                 if pattern.search(line):
+                    if _NONFATAL_PING_HANDLER_PATTERN.search(line):
+                        self._remember_nonfatal_warning("HTTP 400 (/admin/ping)")
+                        break
                     # If the line contains a leading timestamp, parse it and
                     # ignore the line if it predates the monitor start time.
                     # This avoids alerting on historical log entries that are

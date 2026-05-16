@@ -50,15 +50,28 @@ class SolrHealthCache:
         return (time.time() - ts) < within_seconds
 
     def _probe(self) -> SolrStatus:
-        # Lightweight liveness check: discover a core via the cores API,
-        # then issue a /solr/{core}/admin/ping request. Fall back to the
-        # heavier /solr/admin/info/system only if cores discovery fails.
+        # Lightweight liveness check: use the cores API as the primary
+        # signal and avoid /admin/ping because some Autopsy/Solr setups
+        # delegate ping to a missing request handler (qt=search), which
+        # produces noisy non-fatal HTTP 400 log spam.
         cores_url = f"http://localhost:{self._config.solr_port}/solr/admin/cores?action=STATUS&wt=json"
         try:
             start = time.time()
             with urllib.request.urlopen(cores_url, timeout=self._config.solr_timeout_seconds) as resp:
                 elapsed = time.time() - start
                 data = resp.read()
+                # Validate body is JSON-like enough to avoid treating
+                # malformed responses as healthy.
+                import json
+                if isinstance(data, bytes):
+                    parsed = json.loads(data)
+                else:
+                    parsed = json.loads(str(data))
+                _ = parsed.get("status", {})
+                if resp.status < 500:
+                    err = None if resp.status == 200 else f"HTTP {resp.status}"
+                    return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time(), error=err)
+                return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {resp.status}")
         except Exception:
             # If cores API unavailable, fall back to info/system probe
             try:
@@ -80,34 +93,6 @@ class SolrHealthCache:
                 return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {code}")
             except Exception as e:
                 return SolrStatus(is_up=False, response_time=None, checked_at=time.time(), error=str(e))
-
-        # Parse cores API and pick first core name
-        try:
-            import json
-            parsed = json.loads(data)
-            status = parsed.get("status", {})
-            cores = list(status.keys())
-            if not cores:
-                raise ValueError("no cores")
-            core = cores[0]
-            ping_url = f"http://localhost:{self._config.solr_port}/solr/{core}/admin/ping?wt=json"
-            start = time.time()
-            try:
-                with urllib.request.urlopen(ping_url, timeout=self._config.solr_timeout_seconds) as presp:
-                    elapsed = time.time() - start
-                    # Consider any HTTP response < 500 as reachable (some cores return 4xx for malformed ping but Solr is alive)
-                    if presp.status < 500:
-                        err = None if presp.status == 200 else f"HTTP {presp.status}"
-                        return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time(), error=err)
-                    return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {presp.status}")
-            except urllib.error.HTTPError as he:
-                elapsed = time.time() - start
-                code = getattr(he, 'code', None) or 0
-                if code < 500:
-                    return SolrStatus(is_up=True, response_time=elapsed, checked_at=time.time(), error=f"HTTP {code}")
-                return SolrStatus(is_up=False, response_time=elapsed, checked_at=time.time(), error=f"HTTP {code}")
-        except Exception as e:
-            return SolrStatus(is_up=False, response_time=None, checked_at=time.time(), error=str(e))
 
     def get_status(self) -> SolrStatus:
         now_time = time.time()

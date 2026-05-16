@@ -1,6 +1,7 @@
 """Tests for Solr health cache circuit breaker."""
 import time
 from unittest.mock import MagicMock, patch
+import json
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.utils.solr_health import SolrHealthCache, SolrStatus
@@ -153,3 +154,28 @@ class TestSolrCircuitBreaker:
         expected_duration = 10.0 * SolrHealthCache._DOWN_CIRCUIT_PROBE_INTERVAL_MULTIPLIER
         actual_duration = cache._circuit_open_until_monotonic - time.monotonic()
         assert abs(actual_duration - expected_duration) < 0.5  # Allow small timing variation
+
+    def test_probe_uses_cores_not_admin_ping(self):
+        """Health probe should avoid /admin/ping and use cores endpoint."""
+        config = MagicMock(spec=MonitorConfig)
+        config.poll_interval = 5.0
+        config.solr_port = 8983
+        config.solr_timeout_seconds = 2.0
+
+        cache = SolrHealthCache(config)
+        seen_urls: list[str] = []
+
+        def _urlopen(url, timeout=None):
+            seen_urls.append(str(url))
+            response = MagicMock()
+            response.status = 200
+            response.read.return_value = json.dumps({"status": {"core0": {}}, "initFailures": {}}).encode("utf-8")
+            response.__enter__.return_value = response
+            return response
+
+        with patch("autopsyguard.utils.solr_health.urllib.request.urlopen", side_effect=_urlopen):
+            status = cache.get_status()
+
+        assert status.is_up is True
+        assert any("/solr/admin/cores" in u for u in seen_urls)
+        assert not any("/admin/ping" in u for u in seen_urls)

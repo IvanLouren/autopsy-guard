@@ -436,34 +436,42 @@ class HangDetector(BaseDetector):
             # Fall back to direct probe on unexpected errors
             pass
 
-        # Fallback: perform a direct lightweight ping probe if cache missing/failed
+        # Fallback: perform a direct lightweight cores/info-system probe
+        # without /admin/ping to avoid non-fatal qt=search noise.
         try:
             cores_url = f"http://localhost:{self.config.solr_port}/solr/admin/cores?action=STATUS&wt=json"
+            start = time.time()
             with urllib.request.urlopen(cores_url, timeout=self.config.solr_ping_timeout) as cresp:
                 import json
-                data = json.loads(cresp.read())
-                cores = list(data.get("status", {}).keys())
-                if not cores:
-                    raise ValueError("no cores")
-                core = cores[0]
-                ping_url = f"http://localhost:{self.config.solr_port}/solr/{core}/admin/ping?wt=json"
-                start = time.time()
-                with urllib.request.urlopen(ping_url, timeout=self.config.solr_ping_timeout) as presp:
-                    elapsed = time.time() - start
-                    if presp.status == 200:
-                        if elapsed > self.config.solr_ping_slow_threshold:
-                            if self._solr_unresponsive_start is None:
-                                self._solr_unresponsive_start = now
-                            if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
-                                return {"status": "slow", "response_time": elapsed}
-                        else:
-                            self._solr_unresponsive_start = None
-                        return None
+                _ = json.loads(cresp.read()).get("status", {})
+                elapsed = time.time() - start
+                if elapsed > self.config.solr_ping_slow_threshold:
+                    if self._solr_unresponsive_start is None:
+                        self._solr_unresponsive_start = now
+                    if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
+                        return {"status": "slow", "response_time": elapsed}
+                else:
+                    self._solr_unresponsive_start = None
+                return None
         except Exception:
-            if self._solr_unresponsive_start is None:
-                self._solr_unresponsive_start = now
-            if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:
-                return {"status": "unresponsive"}
+            try:
+                info_url = f"http://localhost:{self.config.solr_port}/solr/admin/info/system"
+                start = time.time()
+                with urllib.request.urlopen(info_url, timeout=self.config.solr_ping_timeout):
+                    elapsed = time.time() - start
+                    if elapsed > self.config.solr_ping_slow_threshold:
+                        if self._solr_unresponsive_start is None:
+                            self._solr_unresponsive_start = now
+                        if now - self._solr_unresponsive_start >= self.config.solr_ping_slow_duration:
+                            return {"status": "slow", "response_time": elapsed}
+                    else:
+                        self._solr_unresponsive_start = None
+                    return None
+            except Exception:
+                if self._solr_unresponsive_start is None:
+                    self._solr_unresponsive_start = now
+                if now - self._solr_unresponsive_start >= self.config.solr_unresponsive_duration:
+                    return {"status": "unresponsive"}
 
         return None
 

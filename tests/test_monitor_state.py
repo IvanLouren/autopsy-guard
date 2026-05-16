@@ -6,6 +6,7 @@ from unittest.mock import patch
 from autopsyguard.config import MonitorConfig
 from autopsyguard.models import CrashEvent, CrashType, Severity
 from autopsyguard.monitor import Monitor, MonitorState
+from autopsyguard.utils.solr_health import SolrStatus
 
 
 def make_config(tmp_path: Path) -> MonitorConfig:
@@ -253,3 +254,45 @@ def test_shutdown_grace_does_not_suppress_true_crash_signals(tmp_path: Path) -> 
 
     assert len(sent) == 1
     assert sent[0][0].crash_type == CrashType.PROCESS_DISAPPEARED
+
+
+def test_nonfatal_solr_ping_noise_filtered_when_solr_is_up(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._solr_cache.get_status = lambda: SolrStatus(
+        is_up=True,
+        response_time=0.1,
+        checked_at=1.0,
+        error=None,
+    )
+    ev = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.CRITICAL,
+        message="Solr log error in solr.log",
+        details={
+            "log_line": "org.apache.solr.common.SolrException: Unknown RequestHandler (qt): search",
+        },
+    )
+    assert monitor._filter_nonfatal_solr_ping_alerts([ev]) == []
+
+
+def test_nonfatal_solr_ping_noise_not_filtered_when_solr_is_down(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._solr_cache.get_status = lambda: SolrStatus(
+        is_up=False,
+        response_time=None,
+        checked_at=1.0,
+        error="Connection refused",
+    )
+    ev = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.CRITICAL,
+        message="Solr log error in solr.log",
+        details={
+            "log_line": "org.apache.solr.common.SolrException: Unknown RequestHandler (qt): search",
+        },
+    )
+    kept = monitor._filter_nonfatal_solr_ping_alerts([ev])
+    assert len(kept) == 1
+    assert kept[0].crash_type == CrashType.LOG_ERROR
