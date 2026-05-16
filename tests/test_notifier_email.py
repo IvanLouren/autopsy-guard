@@ -424,3 +424,60 @@ def test_report_builder_renders_module_error_summary_block(tmp_path):
     assert "occurrences=6" in html_body
     assert "Module Errors Summary:" in plain_text
     assert "arrayindexoutofboundsexception" in plain_text
+
+
+def test_report_builder_renders_module_activity_summary_clean_format(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 17:18:53", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [{"name": "PhotoRec Carver", "size_bytes": 100, "updated_at": "2026-05-16 17:18:40"}],
+        "module_activity_summary": [
+            {
+                "module_name": "Keyword Search",
+                "last_state": "error",
+                "last_seen": "2026-05-16 17:17:35",
+                "error_count": 2,
+                "occurrence_count": 6,
+                "sample_last_line": "SEVERE: Keyword Search experienced an error",
+                "confidence": "recent",
+            },
+            {
+                "module_name": "PhotoRec Carver",
+                "last_state": "active",
+                "last_seen": "2026-05-16 17:18:40",
+                "error_count": 0,
+                "occurrence_count": 3,
+                "sample_last_line": "Folder growth signal",
+                "confidence": "current",
+            },
+        ],
+        "module_activity_raw": [
+            {
+                "module": "Keyword Search",
+                "state": "error",
+                "timestamp": "2026-05-16 17:17:35",
+                "line": "SEVERE: Keyword Search experienced an error",
+            }
+        ],
+        "solr": {"state": "up", "response_time_seconds": 0.032, "checked_at": "2026-05-16 17:18:57", "error": None},
+        "autopsy_cpu_timeline": {"current": 115.4, "minus_5m": 209.1, "minus_15m": None},
+    }
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "Module Activity Summary" in html_body
+    assert "error | 2026-05-16 17:17:35 | errors=2 | occurrences=6" in html_body
+    assert "SEVERE: Keyword Search experienced an error" not in html_body
+    assert "Module Activity Raw Errors (sample):" in plain_text

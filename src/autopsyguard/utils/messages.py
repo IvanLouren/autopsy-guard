@@ -65,7 +65,7 @@ _MESSAGES: dict[str, str] = {
     "log_title": "Current Autopsy Log (autopsy.log.0)",
     "case_usage_title": "Case Disk Usage",
     "modules_title": "Module Folders",
-    "module_activity_title": "Detected Module Activity",
+    "module_activity_title": "Module Activity Summary",
     "wa_report_title": "AutopsyGuard Report",
     "wa_details_email": "Full details sent by email.",
     "telemetry_title": "Telemetry",

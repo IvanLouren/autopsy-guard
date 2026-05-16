@@ -267,9 +267,35 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     solr = telemetry.get("solr", {})
     cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
     modules = telemetry.get("module_folders", []) or []
+    mod_activity_summary = telemetry.get("module_activity_summary", []) or []
     mod_activity = telemetry.get("module_activity", []) or []
+    if not mod_activity_summary and mod_activity:
+        mod_activity_summary = [
+            {
+                "module_name": item.get("module", "N/A"),
+                "last_state": item.get("state", "active"),
+                "last_seen": item.get("timestamp"),
+                "error_count": item.get("error_count", 0),
+                "occurrence_count": item.get("occurrence_count", 1),
+                "sample_last_line": item.get("line", ""),
+                "confidence": item.get("confidence", "stale"),
+            }
+            for item in mod_activity
+        ]
     module_errors_summary = telemetry.get("module_errors_summary", []) or []
-    latest_activity = _pick_recent_activity(mod_activity)
+    latest_activity = _pick_recent_activity(
+        [
+            {
+                "module": item.get("module_name", item.get("module", "N/A")),
+                "state": item.get("last_state", "active"),
+                "timestamp": item.get("last_seen"),
+                "occurrence_count": item.get("occurrence_count"),
+                "confidence": item.get("confidence"),
+                "line": item.get("sample_last_line", ""),
+            }
+            for item in mod_activity_summary
+        ]
+    )
     log_updated_at = log.get("updated_at") or tr(config, "none")
 
     def _activity_ts(item: dict[str, Any]) -> str:
@@ -365,18 +391,39 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         module_rows = _row("📂 N/A", "N/A")
 
     activity_rows = ""
-    for item in mod_activity[:8]:
-        activity_rows += _row(f"🔎 {item.get('module', 'N/A')}", f"{item.get('state', 'seen')} | {item.get('line', '')[:70]}")
+    for item in mod_activity_summary[:10]:
+        module_name = item.get("module_name", item.get("module", "N/A"))
+        last_state = item.get("last_state", "active")
+        last_seen = item.get("last_seen") or "N/A"
+        error_count = int(item.get("error_count") or 0)
+        occurrence_count = int(item.get("occurrence_count") or 1)
+        confidence = item.get("confidence") or "stale"
+        activity_rows += _row(
+            f"🔎 {module_name}",
+            f"{last_state} | {last_seen} | errors={error_count} | occurrences={occurrence_count} | confidence={confidence}",
+        )
     if not activity_rows:
         activity_rows = _row("🔎 N/A", "N/A")
 
     keyword_solr_items = [
-        item for item in mod_activity
-        if "keyword" in str(item.get("module", "")).lower() or "solr" in str(item.get("module", "")).lower()
+        item
+        for item in mod_activity_summary
+        if "keyword" in str(item.get("module_name", item.get("module", ""))).lower()
+        or "solr" in str(item.get("module_name", item.get("module", ""))).lower()
     ]
     keyword_solr_line = tr(config, "keyword_solr_none")
     if keyword_solr_items:
-        item = _pick_recent_activity(keyword_solr_items)
+        item = _pick_recent_activity(
+            [
+                {
+                    "module": i.get("module_name", i.get("module", "N/A")),
+                    "state": i.get("last_state", "active"),
+                    "timestamp": i.get("last_seen"),
+                    "occurrence_count": i.get("occurrence_count"),
+                }
+                for i in keyword_solr_items
+            ]
+        )
         occurrences = item.get("occurrence_count")
         occurrence_suffix = f" | occurrences={occurrences}" if occurrences else ""
         keyword_solr_line = (
@@ -554,6 +601,17 @@ def _build_plain_text(
         log = telemetry.get("autopsy_log", {})
         lines.append(f"{tr(config, 'plain_db_line')}: {tr(config, 'plain_db_present') if db.get('exists') else tr(config, 'plain_db_missing')}")
         lines.append(f"{tr(config, 'plain_log_lines')}: {log.get('line_count', 'N/A')}")
+        module_activity_summary = telemetry.get("module_activity_summary") or []
+        if module_activity_summary:
+            lines.append(f"{tr(config, 'module_activity_title')}:")
+            for item in module_activity_summary[:10]:
+                lines.append(
+                    "- "
+                    f"{item.get('module_name', item.get('module', 'N/A'))}: "
+                    f"{item.get('last_state', 'active')} | {item.get('last_seen') or 'N/A'} | "
+                    f"errors={int(item.get('error_count') or 0)} | "
+                    f"occurrences={int(item.get('occurrence_count') or 1)}"
+                )
         module_errors_summary = telemetry.get("module_errors_summary") or []
         if module_errors_summary:
             lines.append(f"{tr(config, 'module_errors_summary_title')}:")
@@ -572,6 +630,20 @@ def _build_plain_text(
                 lines.append(
                     f"- {item.get('name', 'N/A')}: "
                     f"{_bytes_to_human(item.get('size_bytes'))}, {item.get('updated_at') or 'N/A'}"
+                )
+        module_activity_raw = telemetry.get("module_activity_raw") or []
+        raw_error_items = [
+            item
+            for item in module_activity_raw
+            if str(item.get("state", "")).lower() == "error"
+        ]
+        if raw_error_items:
+            lines.append("Module Activity Raw Errors (sample):")
+            for item in raw_error_items[:3]:
+                lines.append(
+                    "- "
+                    f"{item.get('module', 'N/A')} | {item.get('timestamp') or 'N/A'} | "
+                    f"{str(item.get('line') or '')[:120]}"
                 )
     if metrics_samples:
         lines.append(tr(config, "plain_includes_attachments"))

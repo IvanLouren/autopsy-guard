@@ -46,6 +46,11 @@ def test_collect_case_telemetry_with_local_db(tmp_path: Path) -> None:
     assert telemetry["autopsy_cpu_timeline"]["minus_5m"] == 33.0
     assert any("PhotoRec Carver" in m["name"] for m in telemetry["module_folders"])
     assert any("Keyword Search" in a["module"] for a in telemetry["module_activity"])
+    assert telemetry["module_activity_summary"]
+    first = telemetry["module_activity_summary"][0]
+    assert "module_name" in first
+    assert "last_state" in first
+    assert "occurrence_count" in first
 
 
 def test_collect_case_telemetry_without_local_db(tmp_path: Path) -> None:
@@ -194,4 +199,78 @@ def test_collect_case_telemetry_adds_folder_activity_signal_when_logs_sparse(tmp
         if item.get("module") == "PhotoRec Carver" and "Folder growth signal" in str(item.get("line"))
     ]
     assert folder_items
+
+
+def test_collect_case_telemetry_reads_rotated_case_logs_for_summary(tmp_path: Path) -> None:
+    case = tmp_path / "CaseRot"
+    case.mkdir()
+    (case / "CaseRot.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.1").write_text(
+        "\n".join(
+            [
+                "2026-05-16 10:00:00 INFO: Starting ingest job in file batch mode (data source = Image.E01)",
+                "2026-05-16 10:01:00 INFO: Recent Activity analysis of Image.E01 starting",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-16 10:03:00 INFO: Recent Activity analysis of Image.E01 finished",
+                "2026-05-16 10:04:00 INFO: Finished all ingest tasks for ingest job (data source = Image.E01, ingest job ID = 1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    summary = telemetry["module_activity_summary"]
+    ingest = next((x for x in summary if x.get("module_name") == "Ingest"), None)
+    assert ingest is not None
+    assert ingest.get("last_state") == "finish"
+    recent = next((x for x in summary if x.get("module_name") == "Recent Activity"), None)
+    assert recent is not None
+    assert int(recent.get("occurrence_count") or 0) >= 2
+
+
+def test_collect_case_telemetry_keyword_errors_are_aggregated_in_summary(tmp_path: Path) -> None:
+    case = tmp_path / "CaseKey"
+    case.mkdir()
+    (case / "CaseKey.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-16 11:00:00 INFO: Starting ingest job in file batch mode (data source = Image.E01)",
+                "2026-05-16 11:01:00 SEVERE: Keyword Search experienced an error during analysis while processing file A.dll (object ID = 10) (data source = Image.E01, ingest job ID = 1)",
+                "2026-05-16 11:01:01 java.nio.charset.CoderMalfunctionError: java.lang.ArrayIndexOutOfBoundsException",
+                "2026-05-16 11:01:02 java.lang.ArrayIndexOutOfBoundsException: Index -87 out of bounds",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    summary = telemetry["module_activity_summary"]
+    kw = next((x for x in summary if x.get("module_name") == "Keyword Search"), None)
+    assert kw is not None
+    assert int(kw.get("occurrence_count") or 0) >= 3
+    assert int(kw.get("error_count") or 0) >= 1
 

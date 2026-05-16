@@ -40,6 +40,11 @@ _KEYWORD_MODULE_NAME: dict[str, str] = {
     "extension mismatch": "Extension Mismatch Detector",
 }
 
+_INGEST_START_PATTERN = re.compile(r"starting ingest job", re.IGNORECASE)
+_INGEST_FINISH_PATTERN = re.compile(r"finished all ingest tasks for ingest job", re.IGNORECASE)
+_INGEST_JOB_ID_PATTERN = re.compile(r"ingest job id\s*=\s*(\d+)", re.IGNORECASE)
+_DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^\),]+)", re.IGNORECASE)
+
 
 def _annotate_lines_with_timestamps(lines: list[str]) -> list[tuple[str, str | None]]:
     """Attach best-effort timestamp to each log line.
@@ -179,62 +184,243 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
-def _tail_lines(path: Path, max_lines: int = 2000) -> list[str]:
-    if not path.is_file():
+def _parse_activity_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _discover_case_log_files(case_dir: Path) -> list[Path]:
+    log_dir = case_dir / "Log"
+    if not log_dir.is_dir():
         return []
+    files: list[Path] = []
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        for child in log_dir.iterdir():
+            if not child.is_file():
+                continue
+            if not child.name.lower().startswith("autopsy.log."):
+                continue
+            files.append(child)
     except OSError:
         return []
-    lines = text.splitlines()
-    if len(lines) <= max_lines:
-        return lines
-    return lines[-max_lines:]
+
+    def _rotation_index(name: str) -> int:
+        try:
+            return int(name.rsplit(".", 1)[1])
+        except Exception:
+            return -1
+
+    files.sort(
+        key=lambda p: (
+            _safe_stat(p).st_mtime if _safe_stat(p) else 0.0,
+            -_rotation_index(p.name),
+            p.name.lower(),
+        )
+    )
+    return files
 
 
-def _extract_module_activity(lines: list[str]) -> list[dict[str, str]]:
+def _read_case_log_lines(case_dir: Path) -> list[str]:
+    all_lines: list[str] = []
+    for path in _discover_case_log_files(case_dir):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        all_lines.extend(text.splitlines())
+    return all_lines
+
+
+def _extract_first(pattern: re.Pattern[str], text: str) -> str | None:
+    m = pattern.search(text)
+    if not m:
+        return None
+    value = (m.group(1) or "").strip()
+    return value or None
+
+
+def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
     activities: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for raw, ts_ctx in reversed(_annotate_lines_with_timestamps(lines)):
+    current_context = "unscoped"
+    ingest_session = 0
+    last_module_by_context: dict[str, str] = {}
+
+    for raw, ts_ctx in _annotate_lines_with_timestamps(lines):
         line = raw.strip()
+        if not line:
+            continue
         low = line.lower()
         if "found ingest module factory" in low:
             continue
         ts = _extract_line_timestamp(line) or ts_ctx
 
-        if "starting ingest job" in low:
-            key = ("ingest", "start")
-            if key not in seen:
-                seen.add(key)
-                activities.append({"module": "Ingest", "state": "start", "line": line[:220], "timestamp": ts})
+        data_source = _extract_first(_DATA_SOURCE_PATTERN, line)
+        job_id = _extract_first(_INGEST_JOB_ID_PATTERN, line)
+
+        if _INGEST_START_PATTERN.search(low):
+            ingest_session += 1
+            current_context = f"s{ingest_session}|j={job_id or 'na'}|d={data_source or 'na'}"
+            activities.append(
+                {
+                    "module": "Ingest",
+                    "state": "start",
+                    "line": line[:220],
+                    "timestamp": ts or "",
+                    "context": current_context,
+                }
+            )
             continue
-        if "finished all ingest tasks for ingest job" in low:
-            key = ("ingest", "finish")
-            if key not in seen:
-                seen.add(key)
-                activities.append({"module": "Ingest", "state": "finish", "line": line[:220], "timestamp": ts})
+        if _INGEST_FINISH_PATTERN.search(low):
+            activities.append(
+                {
+                    "module": "Ingest",
+                    "state": "finish",
+                    "line": line[:220],
+                    "timestamp": ts or "",
+                    "context": current_context,
+                }
+            )
             continue
 
         module_name = _module_name_from_line(line)
-        if module_name:
-            state = _state_from_line(low)
-            key = (module_name.lower(), state)
-            if key not in seen:
-                seen.add(key)
-                activities.append({"module": module_name, "state": state, "line": line[:220], "timestamp": ts})
+        if module_name is None:
+            for kw in _MODULE_KEYWORDS:
+                if kw in low:
+                    module_name = _KEYWORD_MODULE_NAME.get(kw, kw.title())
+                    break
+        if module_name is None and any(token in low for token in ("exception", "error", "severe")):
+            module_name = last_module_by_context.get(current_context)
+        if module_name is None:
             continue
 
-        for kw in _MODULE_KEYWORDS:
-            if kw in low:
-                state = _state_from_line(low)
-                key = (kw, state)
-                if key in seen:
-                    continue
-                seen.add(key)
-                mod_name = _KEYWORD_MODULE_NAME.get(kw, kw.title())
-                activities.append({"module": mod_name, "state": state, "line": line[:220], "timestamp": ts})
-                break
-    return activities[:20]
+        last_module_by_context[current_context] = module_name
+        activities.append(
+            {
+                "module": module_name,
+                "state": _state_from_line(low),
+                "line": line[:220],
+                "timestamp": ts or "",
+                "context": current_context,
+            }
+        )
+    return activities
+
+
+def _select_latest_context(raw_activity: list[dict[str, str]]) -> str | None:
+    if not raw_activity:
+        return None
+    by_context: dict[str, tuple[float, int]] = {}
+    for idx, item in enumerate(raw_activity):
+        context = str(item.get("context") or "unscoped")
+        ts = _parse_activity_ts(item.get("timestamp"))
+        epoch = ts.timestamp() if ts else -1.0
+        prev = by_context.get(context)
+        marker = (epoch, idx)
+        if prev is None or marker > prev:
+            by_context[context] = marker
+    if not by_context:
+        return None
+    return max(by_context.items(), key=lambda it: it[1])[0]
+
+
+def _confidence_from_epoch(last_epoch: float | None, *, now_ts: float) -> str:
+    if last_epoch is None:
+        return "stale"
+    age_seconds = now_ts - last_epoch
+    if age_seconds <= 300:
+        return "current"
+    if age_seconds <= 1800:
+        return "recent"
+    return "stale"
+
+
+def _build_module_activity_summary(
+    raw_activity: list[dict[str, str]],
+    *,
+    now_ts: float,
+) -> list[dict[str, Any]]:
+    if not raw_activity:
+        return []
+    latest_context = _select_latest_context(raw_activity)
+    scoped = [x for x in raw_activity if str(x.get("context") or "unscoped") == latest_context]
+    if not scoped:
+        scoped = list(raw_activity)
+
+    summary: dict[str, dict[str, Any]] = {}
+    for idx, item in enumerate(scoped):
+        module_name = str(item.get("module") or "").strip()
+        if not module_name:
+            continue
+        key = module_name.lower()
+        state = str(item.get("state") or "active")
+        line = str(item.get("line") or "")[:220]
+        ts_obj = _parse_activity_ts(item.get("timestamp"))
+        ts_epoch = ts_obj.timestamp() if ts_obj else None
+        ts_text = ts_obj.strftime("%Y-%m-%d %H:%M:%S") if ts_obj else None
+
+        row = summary.get(key)
+        if row is None:
+            summary[key] = {
+                "module_name": module_name,
+                "module": module_name,
+                "first_seen": ts_text,
+                "last_seen": ts_text,
+                "last_state": state,
+                "occurrence_count": 1,
+                "error_count": 1 if state == "error" else 0,
+                "sample_last_line": line,
+                "_first_epoch": ts_epoch,
+                "_last_epoch": ts_epoch,
+                "_last_index": idx,
+            }
+            continue
+
+        row["occurrence_count"] = int(row["occurrence_count"]) + 1
+        if state == "error":
+            row["error_count"] = int(row["error_count"]) + 1
+        first_epoch = row.get("_first_epoch")
+        last_epoch = row.get("_last_epoch")
+        if ts_epoch is not None:
+            if first_epoch is None or ts_epoch < first_epoch:
+                row["_first_epoch"] = ts_epoch
+                row["first_seen"] = ts_text
+            if last_epoch is None or ts_epoch >= last_epoch:
+                row["_last_epoch"] = ts_epoch
+                row["last_seen"] = ts_text
+                row["last_state"] = state
+                row["sample_last_line"] = line
+                row["_last_index"] = idx
+        else:
+            if row.get("_last_index", -1) <= idx:
+                row["last_state"] = state
+                row["sample_last_line"] = line
+                row["_last_index"] = idx
+
+    output: list[dict[str, Any]] = []
+    for row in summary.values():
+        row["confidence"] = _confidence_from_epoch(row.get("_last_epoch"), now_ts=now_ts)
+        row.pop("_first_epoch", None)
+        row.pop("_last_epoch", None)
+        row.pop("_last_index", None)
+        output.append(row)
+
+    output.sort(
+        key=lambda x: (
+            _parse_activity_ts(x.get("last_seen")).timestamp() if _parse_activity_ts(x.get("last_seen")) else -1.0,
+            str(x.get("module_name") or "").lower(),
+        ),
+        reverse=True,
+    )
+    return output[:40]
 
 
 def _discover_module_dirs(case_dir: Path) -> list[Path]:
@@ -280,28 +466,22 @@ def _module_folder_summary(case_dir: Path) -> list[dict[str, Any]]:
     return output[:40]
 
 
-def _merge_folder_activity_signals(
-    activities: list[dict[str, str]],
+def _merge_folder_activity_fallback(
+    summary: list[dict[str, Any]],
     module_folders: list[dict[str, Any]],
     *,
     now_ts: float,
-) -> list[dict[str, str]]:
-    merged = list(activities)
-    latest_by_module_ts: dict[str, float] = {}
-    for item in activities:
-        mod = str(item.get("module", "")).strip().lower()
-        ts = _extract_line_timestamp(str(item.get("timestamp") or ""))
-        if ts:
-            try:
-                parsed = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
-                latest_by_module_ts[mod] = max(latest_by_module_ts.get(mod, 0.0), parsed)
-            except Exception:
-                pass
-
+) -> list[dict[str, Any]]:
+    merged = list(summary)
+    index: dict[str, dict[str, Any]] = {
+        str(item.get("module_name") or item.get("module") or "").strip().lower(): item
+        for item in merged
+    }
     for folder in module_folders:
         name = str(folder.get("name") or "").strip()
         if not name:
             continue
+        key = name.lower()
         latest_file_mtime = folder.get("_latest_file_mtime")
         try:
             latest_ts = float(latest_file_mtime) if latest_file_mtime is not None else None
@@ -310,23 +490,40 @@ def _merge_folder_activity_signals(
         if latest_ts is None:
             continue
         age_seconds = now_ts - latest_ts
-        # Keep folder signal relevant to recent/ongoing module work.
         if age_seconds > 1800.0:
             continue
-        module_key = name.lower()
-        existing_ts = latest_by_module_ts.get(module_key)
-        if existing_ts is not None and existing_ts >= latest_ts:
+        row = index.get(key)
+        if row is None:
+            ts_text = _fmt_ts(latest_ts)
+            merged.append(
+                {
+                    "module_name": name,
+                    "module": name,
+                    "first_seen": ts_text,
+                    "last_seen": ts_text,
+                    "last_state": "active",
+                    "occurrence_count": 1,
+                    "error_count": 0,
+                    "sample_last_line": f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes",
+                    "confidence": _confidence_from_epoch(latest_ts, now_ts=now_ts),
+                }
+            )
             continue
-        merged.append(
-            {
-                "module": name,
-                "state": "active",
-                "line": f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes",
-                "timestamp": _fmt_ts(latest_ts),
-            }
-        )
-        latest_by_module_ts[module_key] = latest_ts
-    return merged
+        row_last_ts = _parse_activity_ts(row.get("last_seen"))
+        if row_last_ts is None or latest_ts > row_last_ts.timestamp():
+            row["last_seen"] = _fmt_ts(latest_ts)
+            row["last_state"] = "active"
+            row["sample_last_line"] = f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes"
+            row["confidence"] = _confidence_from_epoch(latest_ts, now_ts=now_ts)
+
+    merged.sort(
+        key=lambda x: (
+            _parse_activity_ts(x.get("last_seen")).timestamp() if _parse_activity_ts(x.get("last_seen")) else -1.0,
+            str(x.get("module_name") or "").lower(),
+        ),
+        reverse=True,
+    )
+    return merged[:40]
 
 
 def collect_case_telemetry(
@@ -362,13 +559,27 @@ def collect_case_telemetry(
 
     case_size = _dir_size_bytes(case_dir)
     module_folders = _module_folder_summary(case_dir)
-    activity_lines = _tail_lines(log_path, max_lines=2500)
-    module_activity = _extract_module_activity(activity_lines)
-    module_activity = _merge_folder_activity_signals(
-        module_activity,
+    now_ts = time.time()
+    activity_lines = _read_case_log_lines(case_dir)
+    module_activity_raw = _extract_module_activity_raw(activity_lines)
+    module_activity_summary = _build_module_activity_summary(module_activity_raw, now_ts=now_ts)
+    module_activity_summary = _merge_folder_activity_fallback(
+        module_activity_summary,
         module_folders,
-        now_ts=time.time(),
+        now_ts=now_ts,
     )
+    module_activity = [
+        {
+            "module": str(item.get("module_name") or item.get("module") or "N/A"),
+            "state": str(item.get("last_state") or "active"),
+            "line": str(item.get("sample_last_line") or "")[:220],
+            "timestamp": item.get("last_seen"),
+            "occurrence_count": int(item.get("occurrence_count") or 1),
+            "error_count": int(item.get("error_count") or 0),
+            "confidence": str(item.get("confidence") or "stale"),
+        }
+        for item in module_activity_summary
+    ]
 
     # Strip internal helper fields from public telemetry payload.
     public_module_folders: list[dict[str, Any]] = []
@@ -403,6 +614,8 @@ def collect_case_telemetry(
         "autopsy_log": log_meta,
         "case_size_bytes": case_size,
         "module_folders": public_module_folders,
+        "module_activity_summary": module_activity_summary,
+        "module_activity_raw": module_activity_raw[:120],
         "module_activity": module_activity,
         "solr": solr_meta,
         "autopsy_cpu_timeline": {
