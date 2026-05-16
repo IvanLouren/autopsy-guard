@@ -297,6 +297,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         ]
     )
     log_updated_at = log.get("updated_at") or tr(config, "none")
+    now_dt = datetime.now()
 
     def _activity_ts(item: dict[str, Any]) -> str:
         ts = item.get("timestamp")
@@ -305,10 +306,14 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         return str(log_updated_at)
 
     module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
+    module_age = _age_label(_activity_ts(latest_activity), now_dt)
+    module_errors = int(latest_activity.get("error_count") or 0)
+    module_occurrences = int(latest_activity.get("occurrence_count") or 1)
     latest_module_line = (
         f"{latest_activity.get('module', tr(config, 'none'))} | "
         f"{latest_activity.get('state', tr(config, 'none'))} | "
-        f"{_activity_ts(latest_activity)} | confidence={module_confidence}"
+        f"{_activity_ts(latest_activity)} | {module_age} | "
+        f"confidence={module_confidence} | errors={module_errors} | occurrences={module_occurrences}"
     )
 
     db_line = (
@@ -319,7 +324,12 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     log_line = (
         "N/A"
         if not log.get("exists")
-        else f"{_bytes_to_human(log.get('size_bytes'))} | {log.get('updated_at') or 'N/A'} | {tr(config, 'lines_label')}={log.get('line_count', 0)}"
+        else (
+            f"{_bytes_to_human(log.get('size_bytes'))} | "
+            f"{log.get('updated_at') or 'N/A'} | "
+            f"{tr(config, 'lines_label')}={log.get('line_count', 0)} | "
+            f"{_age_label(log.get('updated_at'), now_dt)}"
+        )
     )
     case_size = _bytes_to_human(telemetry.get("case_size_bytes"))
     solr_raw_state = str(solr.get("state", "unknown")).lower()
@@ -426,10 +436,11 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         )
         occurrences = item.get("occurrence_count")
         occurrence_suffix = f" | occurrences={occurrences}" if occurrences else ""
+        keyword_age = _age_label(_activity_ts(item), now_dt)
         keyword_solr_line = (
             f"{item.get('module', tr(config, 'none'))} | "
             f"{item.get('state', tr(config, 'none'))} | "
-            f"{_activity_ts(item)}{occurrence_suffix}"
+            f"{_activity_ts(item)} | {keyword_age}{occurrence_suffix}"
         )
 
     module_errors_line = tr(config, "module_errors_none")
@@ -548,6 +559,20 @@ def _activity_confidence_label(activity: dict[str, Any], fallback_ts: Any) -> st
     if age_seconds <= 1800:
         return "recent"
     return "stale"
+
+
+def _age_label(value: Any, now_dt: datetime) -> str:
+    ts = _parse_activity_ts(value)
+    if ts is None:
+        return "age=N/A"
+    age_seconds = max(0, int((now_dt - ts).total_seconds()))
+    if age_seconds < 60:
+        return f"age={age_seconds}s"
+    if age_seconds < 3600:
+        return f"age={age_seconds // 60}m"
+    if age_seconds < 86400:
+        return f"age={age_seconds // 3600}h"
+    return f"age={age_seconds // 86400}d"
 
 
 def _build_attachments(metrics_samples: list[dict[str, Any]] | None) -> list[tuple[str, bytes, str]]:
