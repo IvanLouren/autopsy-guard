@@ -138,6 +138,21 @@ Validation expects:
 - `case_name_source`: `real` or `hash` when `email_case_label` is empty
 - notification settings (`smtp_*`, `email_*`, `whatsapp_*`, `telegram_*`)
 
+### Balanced Baseline Defaults (No User Tuning)
+
+If you do not override thresholds, AutopsyGuard now uses a balanced forensic-ingest baseline:
+
+- `cpu_warning_percent: 350.0`
+- `cpu_warning_duration: 600.0`
+- `memory_warning_percent: 92.0`
+- `disk_min_free_gb: 2.0`
+- `hang_confirmation_duration: 90.0`
+- `log_stale_timeout: 900.0`
+- `solr_slow_threshold_seconds: 4.0`
+- `solr_slow_count_threshold: 4`
+
+These defaults are designed to reduce false positives during normal multi-core ingest while still alerting on sustained anomalies.
+
 ### Email Security Policy (Recommended)
 
 - Gmail/Google Workspace: use App Password (with 2FA enabled).

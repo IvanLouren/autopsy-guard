@@ -57,6 +57,23 @@ Rules:
 - `report_interval_hours`
   - controls heartbeat cadence
 
+Balanced baseline defaults (when not overridden):
+
+- `cpu_warning_percent: 350.0`
+- `cpu_warning_duration: 600.0`
+- `memory_warning_percent: 92.0`
+- `disk_min_free_gb: 2.0`
+- `hang_confirmation_duration: 90.0`
+- `log_stale_timeout: 900.0`
+- `solr_slow_threshold_seconds: 4.0`
+- `solr_slow_count_threshold: 4`
+
+When to override:
+
+- lower CPU thresholds for small single-user lab datasets
+- raise CPU thresholds for high-core servers with heavy parallel ingest
+- lower Solr slow thresholds only if you need earlier performance alerts and accept more noise
+
 ## 3.4 Email Notifications
 
 Provider presets:

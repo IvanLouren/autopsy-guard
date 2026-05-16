@@ -27,6 +27,7 @@ class TestHangDetection:
         """Hang requires at least 2 of 3 signals to trigger."""
         config.hang_timeout = 0.0  # immediate for testing
         config.log_stale_timeout = 0.0
+        config.hang_confirmation_duration = 60.0
 
         detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
         detector._startup_grace_until = 0.0

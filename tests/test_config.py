@@ -37,6 +37,22 @@ def test_from_sources_loads_yaml_values(tmp_path: Path) -> None:
     assert config.error_patterns == ["FATAL", "Exception"]
 
 
+def test_monitor_config_balanced_baseline_defaults(tmp_path: Path) -> None:
+    case_dir = tmp_path / "CaseA"
+    case_dir.mkdir()
+
+    config = MonitorConfig(case_dir=case_dir)
+
+    assert config.cpu_warning_percent == 350.0
+    assert config.cpu_warning_duration == 600.0
+    assert config.memory_warning_percent == 92.0
+    assert config.disk_min_free_gb == 2.0
+    assert config.hang_confirmation_duration == 90.0
+    assert config.log_stale_timeout == 900.0
+    assert config.solr_slow_threshold_seconds == 4.0
+    assert config.solr_slow_count_threshold == 4
+
+
 def test_from_sources_cli_overrides_yaml(tmp_path: Path) -> None:
     # Create the case directories so validation passes
     (tmp_path / "CaseA").mkdir()

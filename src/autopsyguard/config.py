@@ -34,7 +34,7 @@ class MonitorConfig:
     hang_cpu_threshold: float = 1.0  # percent
     hang_timeout: float = 300.0  # 5 minutes
     # Minimum duration for correlated hang signals before reporting
-    hang_confirmation_duration: float = 60.0  # 1 minute
+    hang_confirmation_duration: float = 90.0  # 1.5 minutes
     
     # Solr health check settings for hang detection
     solr_ping_timeout: float = 5.0  # timeout for ping requests
@@ -43,21 +43,21 @@ class MonitorConfig:
     solr_unresponsive_duration: float = 30.0  # duration before declaring unresponsive
 
     # Seconds without log file modification before suspecting a hang
-    log_stale_timeout: float = 600.0  # 10 minutes
+    log_stale_timeout: float = 900.0  # 15 minutes
 
     # --- Resource thresholds ---
-    cpu_warning_percent: float = 95.0
+    cpu_warning_percent: float = 350.0
     # Per-core CPU percent threshold (e.g., 90.0 means a single core at 90% will trigger)
     cpu_per_core_warning_percent: float = 90.0
-    cpu_warning_duration: float = 300.0  # sustained for 5 min
-    memory_warning_percent: float = 90.0  # of system RAM
-    disk_min_free_gb: float = 1.0
+    cpu_warning_duration: float = 600.0  # sustained for 10 min
+    memory_warning_percent: float = 92.0  # of system RAM
+    disk_min_free_gb: float = 2.0
 
     # --- Solr detector thresholds/settings ---
     solr_port: int = 23232
     solr_timeout_seconds: float = 5.0
-    solr_slow_threshold_seconds: float = 2.0
-    solr_slow_count_threshold: int = 3
+    solr_slow_threshold_seconds: float = 4.0
+    solr_slow_count_threshold: int = 4
     solr_heap_usage_warning: float = 85.0
     solr_heap_usage_critical: float = 95.0
     solr_cpu_warning: float = 90.0
