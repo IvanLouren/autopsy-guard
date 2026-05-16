@@ -310,8 +310,11 @@ def test_report_builder_solr_up_http400_uses_warning_context_and_timestamp_fallb
 
     assert "Current/Recent Module" in html_body
     assert "Solr | active | 2026-05-15 18:31:42" in html_body
+    assert "source=" in html_body
+    assert "job=" in html_body
+    assert "data_source=" in html_body
     assert "Keyword/SOLR Activity" in html_body
-    assert "Solr | active | 2026-05-15 18:31:42" in html_body
+    assert "Same activity context as Current/Recent Module" in html_body
     assert "last warning=HTTP 400" in html_body
     assert "Solr is up; warning appears non-fatal/historical." in html_body
 
@@ -484,6 +487,9 @@ def test_report_builder_hides_module_activity_summary_and_keeps_compact_module_l
     assert "Module Activity Summary" not in html_body
     assert "Current/Recent Module" in html_body
     assert "PhotoRec Carver | active | 2026-05-16 17:18:40 | age=" in html_body
+    assert "source=" in html_body
+    assert "job=" in html_body
+    assert "data_source=" in html_body
     assert "errors=0 | activity=3" in html_body
     assert "Keyword/SOLR Activity" in html_body
     assert "Keyword Search | error | 2026-05-16 17:17:35 | age=" in html_body
@@ -585,6 +591,9 @@ def test_report_builder_grouped_errors_authoritative_when_present(tmp_path):
     assert "Recent Activity | active | 2026-05-16 18:35:58" in html_body
     assert "errors=0 | activity=601" in html_body
     assert "Current/Recent Module: Recent Activity | active | 2026-05-16 18:35:58" in plain_text
+    assert "source=" in plain_text
+    assert "job=" in plain_text
+    assert "data_source=" in plain_text
     assert "errors=0 | activity=601" in plain_text
 
 
@@ -630,6 +639,67 @@ def test_report_builder_shows_external_memory_consumers_from_recent_events(tmp_p
     assert "External Memory Consumers: java.exe (PID 18748, 2.5 GB)" in plain_text
 
 
+def test_report_builder_external_memory_consumers_not_triggered_label(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [],
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 100.0, "minus_5m": 90.0, "minus_15m": 80.0},
+    }
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "External Memory Consumers" in html_body
+    assert "Not triggered this period" in html_body
+    assert "External Memory Consumers: Not triggered this period" in plain_text
+
+
+def test_report_builder_external_memory_consumers_unavailable_label(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [],
+        "module_errors_summary": [],
+        "external_memory_consumers_state": "unavailable",
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 100.0, "minus_5m": 90.0, "minus_15m": 80.0},
+    }
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "External Memory Consumers" in html_body
+    assert "Unavailable" in html_body
+    assert "External Memory Consumers: Unavailable" in plain_text
+
+
 def test_report_builder_recent_events_header_shows_display_count(tmp_path):
     case_dir = tmp_path / "Case"
     case_dir.mkdir()
@@ -668,3 +738,59 @@ def test_report_builder_recent_events_header_shows_display_count(tmp_path):
         telemetry=telemetry,
     )
     assert "Recent Events (showing 1 of 4)" in html_body
+
+
+def test_report_builder_professor_required_telemetry_blocks_present(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    cfg.email_case_label = "Case Alpha"
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 100, "updated_at": "2026-05-16 18:35:42"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [{"name": "PhotoRec Carver", "size_bytes": 10, "updated_at": "2026-05-16 18:35:43"}],
+        "module_activity_summary": [
+            {
+                "module_name": "Keyword Search",
+                "last_state": "active",
+                "last_seen": "2026-05-16 18:35:44",
+                "activity_events": 5,
+                "error_events": 0,
+                "occurrence_count": 5,
+                "error_count": 0,
+                "confidence": "current",
+                "source": "log",
+                "ingest_job_id": "1",
+                "data_source": "Image.E01",
+            }
+        ],
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 100.0, "minus_5m": 90.0, "minus_15m": 80.0},
+    }
+    subject, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="Autopsy is active (no ingest), with background activity detected.",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=1234,
+        telemetry=telemetry,
+    )
+    assert "Case Alpha" in subject
+    assert "Case DB (autopsy.db)" in html_body
+    assert "Current Autopsy Log (autopsy.log.0)" in html_body
+    assert "Case Disk Usage" in html_body
+    assert "Current/Recent Module" in html_body
+    assert "Keyword/SOLR Activity" in html_body
+    assert "Solr Periodic Status" in html_body
+    assert "Autopsy CPU Timeline" in html_body
+    assert "Module Folders" in html_body
+    assert "PhotoRec Carver" in html_body
+    assert "source=log" in html_body
+    assert "job=1" in html_body
+    assert "data_source=Image.E01" in html_body
+    assert "Current/Recent Module:" in plain_text

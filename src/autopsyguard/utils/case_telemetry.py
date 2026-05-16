@@ -270,6 +270,26 @@ def _extract_first(pattern: re.Pattern[str], text: str) -> str | None:
     return value or None
 
 
+def _context_fields(context: str | None) -> tuple[str, str]:
+    """Extract ingest job/data source from compact context labels."""
+    raw = str(context or "").strip()
+    if not raw or raw == "unscoped":
+        return ("N/A", "N/A")
+    job_id = "N/A"
+    data_source = "N/A"
+    for part in raw.split("|"):
+        part = part.strip()
+        if part.startswith("j="):
+            value = part[2:].strip()
+            if value and value.lower() != "na":
+                job_id = value
+        elif part.startswith("d="):
+            value = part[2:].strip()
+            if value and value.lower() != "na":
+                data_source = value
+    return (job_id, data_source)
+
+
 def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
     activities: list[dict[str, str]] = []
     current_context = "unscoped"
@@ -291,6 +311,7 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
         if _INGEST_START_PATTERN.search(low):
             ingest_session += 1
             current_context = f"s{ingest_session}|j={job_id or 'na'}|d={data_source or 'na'}"
+            current_job, current_ds = _context_fields(current_context)
             activities.append(
                 {
                     "module": "Ingest",
@@ -298,10 +319,15 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
                     "line": line[:220],
                     "timestamp": ts or "",
                     "context": current_context,
+                    "ingest_job_id": current_job,
+                    "data_source": current_ds,
                 }
             )
             continue
         if _INGEST_FINISH_PATTERN.search(low):
+            current_job, current_ds = _context_fields(current_context)
+            merged_job = job_id or (current_job if current_job != "N/A" else "na")
+            merged_ds = data_source or (current_ds if current_ds != "N/A" else "na")
             activities.append(
                 {
                     "module": "Ingest",
@@ -309,6 +335,8 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
                     "line": line[:220],
                     "timestamp": ts or "",
                     "context": current_context,
+                    "ingest_job_id": str(merged_job) if str(merged_job).lower() != "na" else "N/A",
+                    "data_source": str(merged_ds) if str(merged_ds).lower() != "na" else "N/A",
                 }
             )
             continue
@@ -326,6 +354,7 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
 
         module_name = _canonical_module_name(module_name)
         last_module_by_context[current_context] = module_name
+        context_job, context_ds = _context_fields(current_context)
         activities.append(
             {
                 "module": module_name,
@@ -333,6 +362,8 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
                 "line": line[:220],
                 "timestamp": ts or "",
                 "context": current_context,
+                "ingest_job_id": context_job,
+                "data_source": context_ds,
             }
         )
     return activities
@@ -392,6 +423,13 @@ def _build_module_activity_summary(
 
         row = summary.get(key)
         if row is None:
+            context = str(item.get("context") or "unscoped")
+            ingest_job_id = str(item.get("ingest_job_id") or "")
+            data_source = str(item.get("data_source") or "")
+            if not ingest_job_id or ingest_job_id == "N/A":
+                ingest_job_id, _ = _context_fields(context)
+            if not data_source or data_source == "N/A":
+                _, data_source = _context_fields(context)
             summary[key] = {
                 "module_name": module_name,
                 "module": module_name,
@@ -403,6 +441,10 @@ def _build_module_activity_summary(
                 "occurrence_count": 1,
                 "error_count": 1 if state == "error" else 0,
                 "sample_last_line": line,
+                "source": "log",
+                "context": context,
+                "ingest_job_id": ingest_job_id,
+                "data_source": data_source,
                 "_first_epoch": ts_epoch,
                 "_last_epoch": ts_epoch,
                 "_last_index": idx,
@@ -421,16 +463,38 @@ def _build_module_activity_summary(
                 row["_first_epoch"] = ts_epoch
                 row["first_seen"] = ts_text
             if last_epoch is None or ts_epoch >= last_epoch:
+                context = str(item.get("context") or "unscoped")
+                ingest_job_id = str(item.get("ingest_job_id") or "")
+                data_source = str(item.get("data_source") or "")
+                if not ingest_job_id or ingest_job_id == "N/A":
+                    ingest_job_id, _ = _context_fields(context)
+                if not data_source or data_source == "N/A":
+                    _, data_source = _context_fields(context)
                 row["_last_epoch"] = ts_epoch
                 row["last_seen"] = ts_text
                 row["last_state"] = state
                 row["sample_last_line"] = line
                 row["_last_index"] = idx
+                row["source"] = "log"
+                row["context"] = context
+                row["ingest_job_id"] = ingest_job_id
+                row["data_source"] = data_source
         else:
             if row.get("_last_index", -1) <= idx:
+                context = str(item.get("context") or "unscoped")
+                ingest_job_id = str(item.get("ingest_job_id") or "")
+                data_source = str(item.get("data_source") or "")
+                if not ingest_job_id or ingest_job_id == "N/A":
+                    ingest_job_id, _ = _context_fields(context)
+                if not data_source or data_source == "N/A":
+                    _, data_source = _context_fields(context)
                 row["last_state"] = state
                 row["sample_last_line"] = line
                 row["_last_index"] = idx
+                row["source"] = "log"
+                row["context"] = context
+                row["ingest_job_id"] = ingest_job_id
+                row["data_source"] = data_source
 
     output: list[dict[str, Any]] = []
     for row in summary.values():
@@ -539,6 +603,10 @@ def _merge_folder_activity_fallback(
                     "error_count": 0,
                     "sample_last_line": f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes",
                     "confidence": _confidence_from_epoch(latest_ts, now_ts=now_ts),
+                    "source": "folder",
+                    "context": "unscoped",
+                    "ingest_job_id": "N/A",
+                    "data_source": "N/A",
                 }
             )
             continue
@@ -548,6 +616,8 @@ def _merge_folder_activity_fallback(
             row["last_state"] = "active"
             row["sample_last_line"] = f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes"
             row["confidence"] = _confidence_from_epoch(latest_ts, now_ts=now_ts)
+            existing_source = str(row.get("source") or "log").lower()
+            row["source"] = "folder" if existing_source == "folder" else "hybrid"
 
     merged.sort(
         key=lambda x: (
@@ -607,6 +677,9 @@ def collect_case_telemetry(
             "state": str(item.get("last_state") or "active"),
             "line": str(item.get("sample_last_line") or "")[:220],
             "timestamp": item.get("last_seen"),
+            "source": str(item.get("source") or "log"),
+            "ingest_job_id": str(item.get("ingest_job_id") or "N/A"),
+            "data_source": str(item.get("data_source") or "N/A"),
             "activity_events": int(item.get("activity_events") or item.get("occurrence_count") or 1),
             "error_events": int(item.get("error_events") or item.get("error_count") or 0),
             "occurrence_count": int(item.get("occurrence_count") or 1),

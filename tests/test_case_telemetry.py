@@ -53,6 +53,9 @@ def test_collect_case_telemetry_with_local_db(tmp_path: Path) -> None:
     assert "occurrence_count" in first
     assert "activity_events" in first
     assert "error_events" in first
+    assert "source" in first
+    assert "ingest_job_id" in first
+    assert "data_source" in first
 
 
 def test_collect_case_telemetry_without_local_db(tmp_path: Path) -> None:
@@ -106,6 +109,7 @@ def test_collect_case_telemetry_extracts_recent_activity_and_timestamp_context(t
     assert "Keyword Search" in modules
     kw_items = [a for a in telemetry["module_activity"] if a["module"] == "Keyword Search"]
     assert kw_items and kw_items[0].get("timestamp") == "2026-05-15 18:36:30"
+    assert kw_items[0].get("source") == "log"
 
 
 def test_collect_case_telemetry_ignores_factory_lines_and_yara_message_noise(tmp_path: Path) -> None:
@@ -201,6 +205,7 @@ def test_collect_case_telemetry_adds_folder_activity_signal_when_logs_sparse(tmp
         if item.get("module") == "PhotoRec Carver" and "Folder growth signal" in str(item.get("line"))
     ]
     assert folder_items
+    assert folder_items[0].get("source") == "folder"
 
 
 def test_collect_case_telemetry_reads_rotated_case_logs_for_summary(tmp_path: Path) -> None:
@@ -240,6 +245,8 @@ def test_collect_case_telemetry_reads_rotated_case_logs_for_summary(tmp_path: Pa
     ingest = next((x for x in summary if x.get("module_name") == "Ingest"), None)
     assert ingest is not None
     assert ingest.get("last_state") == "finish"
+    assert ingest.get("ingest_job_id") == "1"
+    assert ingest.get("data_source") == "Image.E01"
     recent = next((x for x in summary if x.get("module_name") == "Recent Activity"), None)
     assert recent is not None
     assert int(recent.get("occurrence_count") or 0) >= 2
