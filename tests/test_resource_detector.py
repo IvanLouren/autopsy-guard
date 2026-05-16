@@ -168,6 +168,7 @@ class TestExternalMemoryPressure:
         config.memory_warning_percent = 85.0
 
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -221,6 +222,7 @@ class TestExternalMemoryPressure:
         config.memory_warning_percent = 85.0
 
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -254,6 +256,7 @@ class TestExternalMemoryPressure:
     def test_external_pressure_near_duplicate_is_suppressed_within_cooldown(self, config: MonitorConfig) -> None:
         config.memory_warning_percent = 85.0
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -288,6 +291,7 @@ class TestExternalMemoryPressure:
     def test_external_pressure_significant_change_realerts_inside_cooldown(self, config: MonitorConfig) -> None:
         config.memory_warning_percent = 85.0
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -324,6 +328,7 @@ class TestExternalMemoryPressure:
         """Child Java/Solr should be attributed to Autopsy, not external apps."""
         config.memory_warning_percent = 85.0
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -390,6 +395,7 @@ class TestExternalMemoryPressure:
         config.memory_warning_percent = 85.0
         config.solr_port = 23232
         detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
 
         MemInfo = namedtuple("MemInfo", ["rss"])
         VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
@@ -447,5 +453,67 @@ class TestExternalMemoryPressure:
         assert details["autopsy_related_sources"]["2001"] == "global"
         assert "java.exe (PID 2001" in details["autopsy_child_consumers"]
         assert "java.exe (PID 2001" not in details["top_consumers_external"]
+
+    def test_external_pressure_only_percent_jitter_does_not_realert_in_cooldown(self, config: MonitorConfig) -> None:
+        config.memory_warning_percent = 85.0
+        detector = ResourceDetector(config)
+        detector._external_mem_sustain_seconds = 0.0
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+        proc = MagicMock()
+        proc.cpu_percent.return_value = 10.0
+        proc.memory_info.return_value = MemInfo(rss=6 * 1024**3)
+        proc.name.return_value = "autopsy64.exe"
+        proc.children.return_value = []
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=1000), \
+             patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+            mock_psutil.Process.return_value = proc
+            mock_psutil.virtual_memory.side_effect = [
+                VmemResult(percent=90.8, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=94.4, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=92.6, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=93.8, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=90.8, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=94.4, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=92.6, used=14 * 1024**3, total=16 * 1024**3),
+                VmemResult(percent=93.8, used=14 * 1024**3, total=16 * 1024**3),
+            ]
+            mock_psutil.disk_usage.return_value = MagicMock(
+                free=50 * 1024**3, total=100 * 1024**3
+            )
+            mock_psutil.cpu_count.return_value = 8
+
+            external_a = MagicMock()
+            external_a.info = {
+                "pid": 5001,
+                "name": "Code.exe",
+                "cmdline": ["Code.exe"],
+                "create_time": 1000.0,
+                "exe": "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                "memory_info": MagicMock(rss=2 * 1024**3),
+            }
+            external_b = MagicMock()
+            external_b.info = {
+                "pid": 5002,
+                "name": "chrome.exe",
+                "cmdline": ["chrome.exe"],
+                "create_time": 1000.0,
+                "exe": "C:\\Program Files\\Google\\Chrome\\chrome.exe",
+                "memory_info": MagicMock(rss=1 * 1024**3),
+            }
+            mock_psutil.process_iter.return_value = [external_a, external_b]
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            first = detector.check()
+            second = detector.check()
+            third = detector.check()
+            fourth = detector.check()
+
+        emitted = [*first, *second, *third, *fourth]
+        ext_events = [e for e in emitted if "Other processes" in e.message]
+        assert len(ext_events) == 1
 
 

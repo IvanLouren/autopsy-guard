@@ -37,10 +37,14 @@ class ResourceDetector(BaseDetector):
         self._proc_pid: int | None = None
         self._external_mem_last_alert_ts: float | None = None
         self._external_mem_last_signature: tuple[float, float, float] | None = None
+        self._external_mem_last_tier: str | None = None
+        self._external_mem_last_top_pids: tuple[int, ...] | None = None
+        self._external_mem_high_since: float | None = None
+        self._external_mem_sustain_seconds = 45.0
         self._external_mem_cooldown_seconds = 600.0
-        self._external_mem_min_delta_percent = 1.0
-        self._external_mem_min_delta_fraction = 5.0
-        self._external_mem_min_delta_other_gb = 0.5
+        self._external_mem_min_delta_percent = 3.0
+        self._external_mem_min_delta_fraction = 10.0
+        self._external_mem_min_delta_other_gb = 1.0
         self._autopsy_names = {n.lower() for n in get_autopsy_process_names()}
         self._java_names = {n.lower() for n in get_java_process_names()}
 
@@ -421,6 +425,7 @@ class ResourceDetector(BaseDetector):
         # Only trigger when system memory is high
         if system_percent < self.config.memory_warning_percent:
             self._external_mem_warning_reported = False
+            self._external_mem_high_since = None
             return []
 
         # Check if Autopsy is NOT the main consumer (< 50% of used memory)
@@ -428,6 +433,14 @@ class ResourceDetector(BaseDetector):
         if autopsy_fraction >= 0.5:
             # Autopsy is the dominant consumer — the existing memory check handles this
             self._external_mem_warning_reported = False
+            self._external_mem_high_since = None
+            return []
+
+        now = time.time()
+        if self._external_mem_high_since is None:
+            self._external_mem_high_since = now
+        sustained_for = now - self._external_mem_high_since
+        if sustained_for < self._external_mem_sustain_seconds:
             return []
 
         # Find top 5 external (non-Autopsy-tree) processes by memory.
@@ -475,21 +488,34 @@ class ResourceDetector(BaseDetector):
             for name, p_pid, rss in child_top
         )
 
-        now = time.time()
         current_signature = (
             round(system_percent, 1),
             round(autopsy_fraction * 100.0, 1),
             round(other_used_gb, 1),
         )
+        top_pid_signature = tuple(int(p_pid) for _, p_pid, _ in top_5)
+        tier = "critical" if system_percent >= 95.0 else "warning"
+        severity = Severity.CRITICAL if tier == "critical" else Severity.WARNING
         if self._external_mem_last_alert_ts is not None and self._external_mem_last_signature is not None:
             elapsed = now - self._external_mem_last_alert_ts
-            prev_system_pct, prev_autopsy_frac_pct, prev_other_used_gb = self._external_mem_last_signature
+            _prev_system_pct, prev_autopsy_frac_pct, prev_other_used_gb = self._external_mem_last_signature
             changed_meaningfully = (
-                abs(current_signature[0] - prev_system_pct) >= self._external_mem_min_delta_percent
-                or abs(current_signature[1] - prev_autopsy_frac_pct) >= self._external_mem_min_delta_fraction
+                abs(current_signature[1] - prev_autopsy_frac_pct) >= self._external_mem_min_delta_fraction
                 or abs(current_signature[2] - prev_other_used_gb) >= self._external_mem_min_delta_other_gb
             )
-            if elapsed < self._external_mem_cooldown_seconds and not changed_meaningfully:
+            prev_top = self._external_mem_last_top_pids or ()
+            top_overlap = len(set(prev_top) & set(top_pid_signature))
+            min_top_len = min(len(prev_top), len(top_pid_signature))
+            top_changed_materially = False
+            if prev_top and top_pid_signature:
+                if prev_top[0] != top_pid_signature[0]:
+                    top_changed_materially = True
+                elif min_top_len >= 3:
+                    top_changed_materially = top_overlap < 3
+                else:
+                    top_changed_materially = top_overlap < min_top_len
+            tier_changed = tier != (self._external_mem_last_tier or "warning")
+            if elapsed < self._external_mem_cooldown_seconds and not (tier_changed or top_changed_materially or changed_meaningfully):
                 logger.debug(
                     "Suppressing near-duplicate external memory pressure alert (elapsed=%.1fs, signature=%s)",
                     elapsed,
@@ -500,9 +526,11 @@ class ResourceDetector(BaseDetector):
         self._external_mem_warning_reported = True
         self._external_mem_last_alert_ts = now
         self._external_mem_last_signature = current_signature
+        self._external_mem_last_tier = tier
+        self._external_mem_last_top_pids = top_pid_signature
         return [CrashEvent(
             crash_type=CrashType.HIGH_RESOURCE_USAGE,
-            severity=Severity.WARNING,
+            severity=severity,
             message=(
                 f"System memory at {system_percent:.1f}% but Autopsy only uses "
                 f"{autopsy_gb:.1f} GB ({autopsy_fraction * 100:.0f}% of used). "
