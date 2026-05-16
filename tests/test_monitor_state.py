@@ -296,3 +296,82 @@ def test_nonfatal_solr_ping_noise_not_filtered_when_solr_is_down(tmp_path: Path)
     kept = monitor._filter_nonfatal_solr_ping_alerts([ev])
     assert len(kept) == 1
     assert kept[0].crash_type == CrashType.LOG_ERROR
+
+
+def test_keyword_error_burst_is_aggregated_into_single_alert(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 1000.0
+    events = [
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="SEVERE error in autopsy.log.0",
+            details={
+                "line": "SEVERE: Keyword Search experienced an error during analysis while processing file foo.dll (object ID = 11365) (data source = image.E01, ingest job ID = 7)"
+            },
+        ),
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="Exception detected in autopsy.log.0",
+            details={"line": "java.nio.charset.CoderMalfunctionError: java.lang.ArrayIndexOutOfBoundsException"},
+        ),
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="Exception detected in autopsy.log.0",
+            details={"line": "java.lang.ArrayIndexOutOfBoundsException: Index -87 out of bounds for length 128"},
+        ),
+    ]
+
+    aggregated = monitor._aggregate_keyword_search_alerts(events, now=now)
+    assert len(aggregated) == 1
+    assert aggregated[0].crash_type == CrashType.LOG_ERROR
+    assert aggregated[0].details.get("aggregated_incident") is True
+    assert "Keyword Search error burst detected" in aggregated[0].message
+
+    summary = list(monitor._module_error_summary_since_report.values())
+    assert len(summary) == 1
+    assert summary[0]["module"] == "Keyword Search"
+    assert int(summary[0]["occurrence_count"]) == 3
+
+
+def test_post_ingest_resource_alerts_suppressed_inside_grace_window(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+    monitor._post_ingest_resource_grace_until = 1000.0
+    now = 950.0
+    events = [
+        CrashEvent(
+            crash_type=CrashType.HIGH_RESOURCE_USAGE,
+            severity=Severity.WARNING,
+            message="Autopsy sustained CPU at 220%",
+        ),
+        CrashEvent(
+            crash_type=CrashType.SOLR_CRASH,
+            severity=Severity.CRITICAL,
+            message="Solr disappeared",
+        ),
+    ]
+
+    filtered = monitor._filter_post_ingest_resource_alerts(events, now=now)
+    assert len(filtered) == 1
+    assert filtered[0].crash_type == CrashType.SOLR_CRASH
+
+
+def test_post_ingest_resource_alerts_emit_after_grace_window(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+    monitor._post_ingest_resource_grace_until = 1000.0
+    event = CrashEvent(
+        crash_type=CrashType.HIGH_RESOURCE_USAGE,
+        severity=Severity.WARNING,
+        message="Autopsy sustained CPU at 220%",
+    )
+
+    filtered = monitor._filter_post_ingest_resource_alerts([event], now=1001.0)
+    assert len(filtered) == 1
+    assert filtered[0].crash_type == CrashType.HIGH_RESOURCE_USAGE

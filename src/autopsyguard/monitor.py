@@ -14,6 +14,7 @@ import enum
 import logging
 import time
 from collections import defaultdict
+from datetime import datetime
 import re
 
 from autopsyguard.config import MonitorConfig
@@ -42,6 +43,9 @@ _NONFATAL_SOLR_PING_LOG_PATTERN = re.compile(
     r"Unknown RequestHandler \(qt\):\s*/?search",
     re.IGNORECASE,
 )
+_INGEST_JOB_ID_PATTERN = re.compile(r"ingest job id\s*=\s*(\d+)", re.IGNORECASE)
+_DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^,\)]+)", re.IGNORECASE)
+_OBJECT_ID_PATTERN = re.compile(r"object id\s*=\s*(\d+)", re.IGNORECASE)
 
 
 class MonitorState(enum.Enum):
@@ -105,6 +109,11 @@ class Monitor:
         self._last_alert_signature_at: dict[str, float] = {}
         self._shutdown_noise_grace_seconds = min(90.0, max(45.0, self.config.poll_interval * 12.0))
         self._shutdown_noise_grace_until: float = 0.0
+        self._post_ingest_resource_grace_seconds = 90.0
+        self._post_ingest_resource_grace_until: float = 0.0
+        self._keyword_incident_ttl_seconds = 1800.0
+        self._keyword_incidents: dict[str, dict[str, object]] = {}
+        self._module_error_summary_since_report: dict[str, dict[str, object]] = {}
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -237,6 +246,8 @@ class Monitor:
             # Ingest just started
             self._ingest_start_time = self._log_detector.ingest_start_time
             self._was_ingest_running = True
+            self._keyword_incidents.clear()
+            self._module_error_summary_since_report.clear()
 
             if not self._has_ingest_started_ever:
                 # Align the report timer exactly to the start of the ingest
@@ -255,6 +266,7 @@ class Monitor:
             self.whatsapp.send_ingest_report(duration)
             self.telegram.send_ingest_report(duration)
             self._shutdown_noise_grace_until = time.time() + self._shutdown_noise_grace_seconds
+            self._post_ingest_resource_grace_until = time.time() + self._post_ingest_resource_grace_seconds
 
             self._was_ingest_running = False
             self._ingest_start_time = None
@@ -268,6 +280,8 @@ class Monitor:
             pid=pid,
             lock_exists=lock_exists,
         )
+        alert_events = self._filter_post_ingest_resource_alerts(alert_events, now=now)
+        alert_events = self._aggregate_keyword_search_alerts(alert_events, now=now)
         ready_alerts = self._collect_alert_notifications(alert_events, now)
         ready_alerts = self._filter_nonfatal_solr_ping_alerts(ready_alerts)
         if ready_alerts and self._has_ingest_started_ever:
@@ -324,6 +338,7 @@ class Monitor:
                     solr_metrics=solr_metrics,
                     cpu_snapshots=cpu_timeline,
                 )
+                self._inject_module_error_summary(telemetry)
                 status_mode = self._classify_runtime_status(telemetry=telemetry)
                 status_text = self._status_text_for_mode(status_mode)
                 
@@ -349,6 +364,7 @@ class Monitor:
                 self._last_report_time = now
                 self._events_since_last_report = 0
                 self._report_count += 1
+                self._module_error_summary_since_report.clear()
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         if pid is None and not lock_exists:
@@ -360,6 +376,8 @@ class Monitor:
                 pid=pid,
                 lock_exists=lock_exists,
             )
+            final_alerts = self._filter_post_ingest_resource_alerts(final_alerts, now=time.time())
+            final_alerts = self._aggregate_keyword_search_alerts(final_alerts, now=time.time())
             final_alerts = self._filter_nonfatal_solr_ping_alerts(final_alerts)
             if final_alerts and self._has_ingest_started_ever:
                 self.notifier.send_alert(final_alerts)
@@ -572,6 +590,230 @@ class Monitor:
             logger.info(
                 "Suppressing %d non-fatal Solr ping noise alert(s) while Solr is reachable.",
                 suppressed,
+            )
+        return kept
+
+    @staticmethod
+    def _event_epoch(event: CrashEvent, now: float) -> float:
+        try:
+            return float(event.timestamp.timestamp())
+        except Exception:
+            return now
+
+    @staticmethod
+    def _ts_label(epoch: float | None) -> str | None:
+        if epoch is None:
+            return None
+        try:
+            return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_first_match(pattern: re.Pattern[str], text: str) -> str | None:
+        match = pattern.search(text)
+        if not match:
+            return None
+        value = (match.group(1) or "").strip()
+        return value or None
+
+    def _keyword_context(self, event: CrashEvent) -> dict[str, str] | None:
+        if event.crash_type != CrashType.LOG_ERROR:
+            return None
+
+        details = event.details or {}
+        line = str(details.get("line") or details.get("log_line") or "")
+        haystack = f"{event.message} {line}".strip()
+        low = haystack.lower()
+
+        keyword_markers = (
+            "keyword search",
+            "keywordsearch",
+            "org.sleuthkit.autopsy.keywordsearch",
+            "codermalfunctionerror",
+            "arrayindexoutofboundsexception",
+        )
+        if not any(marker in low for marker in keyword_markers):
+            return None
+
+        if "arrayindexoutofboundsexception" in low:
+            signature = "arrayindexoutofboundsexception"
+        elif "codermalfunctionerror" in low:
+            signature = "codermalfunctionerror"
+        elif "experienced an error during analysis" in low:
+            signature = "analysis_error"
+        else:
+            signature = "keyword_error"
+
+        ingest_job_id = self._extract_first_match(_INGEST_JOB_ID_PATTERN, haystack)
+        data_source = self._extract_first_match(_DATA_SOURCE_PATTERN, haystack)
+        object_id = self._extract_first_match(_OBJECT_ID_PATTERN, haystack)
+        incident_key = (
+            f"keyword|job={ingest_job_id or 'unknown'}|"
+            f"src={data_source or 'unknown'}"
+        )
+        return {
+            "incident_key": incident_key,
+            "signature": signature,
+            "ingest_job_id": ingest_job_id or "unknown",
+            "data_source": data_source or "unknown",
+            "object_id": object_id or "unknown",
+            "line": line or event.message,
+            "module": "Keyword Search",
+        }
+
+    def _record_module_error_summary(self, incident: dict[str, object]) -> None:
+        summary_key = str(incident["incident_key"])
+        signatures = incident.get("signatures")
+        if isinstance(signatures, set) and signatures:
+            signature_text = ",".join(sorted(str(x) for x in signatures))
+        else:
+            signature_text = str(incident.get("signature") or "keyword_error")
+        self._module_error_summary_since_report[summary_key] = {
+            "module": str(incident["module"]),
+            "signature": signature_text,
+            "ingest_job_id": str(incident["ingest_job_id"]),
+            "data_source": str(incident["data_source"]),
+            "occurrence_count": int(incident["occurrence_count"]),
+            "first_seen": self._ts_label(float(incident["first_seen"])),
+            "last_seen": self._ts_label(float(incident["last_seen"])),
+            "state": "error",
+        }
+
+    def _prune_keyword_incidents(self, now: float) -> None:
+        cutoff = now - self._keyword_incident_ttl_seconds
+        stale = [
+            key
+            for key, value in self._keyword_incidents.items()
+            if float(value.get("last_seen", 0.0)) < cutoff
+        ]
+        for key in stale:
+            self._keyword_incidents.pop(key, None)
+
+    def _find_recent_keyword_incident_key(self, now: float, *, max_age_seconds: float = 120.0) -> str | None:
+        winner_key: str | None = None
+        winner_ts = 0.0
+        cutoff = now - max_age_seconds
+        for key, incident in self._keyword_incidents.items():
+            last_seen = float(incident.get("last_seen", 0.0))
+            if last_seen < cutoff:
+                continue
+            if last_seen >= winner_ts:
+                winner_ts = last_seen
+                winner_key = key
+        return winner_key
+
+    def _aggregate_keyword_search_alerts(self, events: list[CrashEvent], *, now: float) -> list[CrashEvent]:
+        if not events:
+            return []
+
+        self._prune_keyword_incidents(now)
+        aggregated: list[CrashEvent] = []
+        for event in events:
+            context = self._keyword_context(event)
+            if context is None:
+                aggregated.append(event)
+                continue
+
+            event_epoch = self._event_epoch(event, now)
+            key = context["incident_key"]
+            if context.get("ingest_job_id") == "unknown" and context.get("data_source") == "unknown":
+                fallback_key = self._find_recent_keyword_incident_key(event_epoch)
+                if fallback_key:
+                    key = fallback_key
+            existing = self._keyword_incidents.get(key)
+            if existing is None:
+                existing = {
+                    **context,
+                    "first_seen": event_epoch,
+                    "last_seen": event_epoch,
+                    "occurrence_count": 1,
+                    "signatures": {context["signature"]},
+                }
+                self._keyword_incidents[key] = existing
+                summary_event = CrashEvent(
+                    crash_type=CrashType.LOG_ERROR,
+                    severity=Severity.WARNING,
+                    message=(
+                        "Keyword Search error burst detected "
+                        f"(signature={context['signature']}, job={context['ingest_job_id']}, "
+                        f"source={context['data_source']}). Repeated lines are aggregated."
+                    ),
+                    details={
+                        "module": "Keyword Search",
+                        "aggregated_incident": True,
+                        "occurrence_count": 1,
+                        "first_seen": self._ts_label(event_epoch),
+                        "last_seen": self._ts_label(event_epoch),
+                        "signature": context["signature"],
+                        "ingest_job_id": context["ingest_job_id"],
+                        "data_source": context["data_source"],
+                        "object_id": context["object_id"],
+                        "line": context["line"],
+                    },
+                )
+                aggregated.append(summary_event)
+            else:
+                existing["last_seen"] = event_epoch
+                existing["occurrence_count"] = int(existing.get("occurrence_count", 0)) + 1
+                signatures = existing.get("signatures")
+                if isinstance(signatures, set):
+                    signatures.add(context["signature"])
+                elif isinstance(signatures, list):
+                    signatures.append(context["signature"])
+                    existing["signatures"] = set(signatures)
+                else:
+                    existing["signatures"] = {str(existing.get("signature") or "keyword_error"), context["signature"]}
+
+            self._record_module_error_summary(self._keyword_incidents[key])
+
+        return aggregated
+
+    def _inject_module_error_summary(self, telemetry: dict[str, object]) -> None:
+        if not self._module_error_summary_since_report:
+            return
+        summary_items = sorted(
+            self._module_error_summary_since_report.values(),
+            key=lambda item: str(item.get("last_seen") or ""),
+            reverse=True,
+        )
+        telemetry["module_errors_summary"] = summary_items
+        module_activity = telemetry.get("module_activity")
+        if isinstance(module_activity, list):
+            for item in summary_items[:3]:
+                module_activity.insert(
+                    0,
+                    {
+                        "module": item.get("module", "Keyword Search"),
+                        "state": "error",
+                        "timestamp": item.get("last_seen"),
+                        "line": (
+                            f"Aggregated errors: signature={item.get('signature')} | "
+                            f"occurrences={item.get('occurrence_count')} | "
+                            f"job={item.get('ingest_job_id')}"
+                        ),
+                    },
+                )
+
+    def _filter_post_ingest_resource_alerts(self, events: list[CrashEvent], *, now: float) -> list[CrashEvent]:
+        if not events:
+            return []
+        if self._log_detector.ingest_running or now > self._post_ingest_resource_grace_until:
+            return events
+
+        kept: list[CrashEvent] = []
+        suppressed = 0
+        for event in events:
+            if event.crash_type == CrashType.HIGH_RESOURCE_USAGE:
+                suppressed += 1
+                continue
+            kept.append(event)
+        if suppressed:
+            remaining = max(0.0, self._post_ingest_resource_grace_until - now)
+            logger.info(
+                "Suppressing %d post-ingest resource alert(s) during grace window (%.0fs left).",
+                suppressed,
+                remaining,
             )
         return kept
 

@@ -77,6 +77,8 @@ _MESSAGES: dict[str, str] = {
     "last_warning": "last warning",
     "keyword_solr_title": "Keyword/SOLR Activity",
     "keyword_solr_none": "No recent Keyword/SOLR activity detected.",
+    "module_errors_summary_title": "Module Errors Summary",
+    "module_errors_none": "No grouped module errors in this period.",
     "solr_context_transient": "Possible transient/local access contention.",
     "solr_context_outage": "Sustained outage indication; investigate Solr health.",
     "solr_context_up_warning": "Solr is up; warning appears non-fatal/historical.",
@@ -119,4 +121,3 @@ def tr(_config: Any, key: str, **kwargs: Any) -> str:
         except Exception:
             return msg
     return msg
-

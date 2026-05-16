@@ -268,6 +268,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     cpu_tl = telemetry.get("autopsy_cpu_timeline", {})
     modules = telemetry.get("module_folders", []) or []
     mod_activity = telemetry.get("module_activity", []) or []
+    module_errors_summary = telemetry.get("module_errors_summary", []) or []
     latest_activity = _pick_recent_activity(mod_activity)
     log_updated_at = log.get("updated_at") or tr(config, "none")
 
@@ -376,11 +377,25 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     keyword_solr_line = tr(config, "keyword_solr_none")
     if keyword_solr_items:
         item = _pick_recent_activity(keyword_solr_items)
+        occurrences = item.get("occurrence_count")
+        occurrence_suffix = f" | occurrences={occurrences}" if occurrences else ""
         keyword_solr_line = (
             f"{item.get('module', tr(config, 'none'))} | "
             f"{item.get('state', tr(config, 'none'))} | "
-            f"{_activity_ts(item)}"
+            f"{_activity_ts(item)}{occurrence_suffix}"
         )
+
+    module_errors_line = tr(config, "module_errors_none")
+    if module_errors_summary:
+        parts: list[str] = []
+        for item in module_errors_summary[:3]:
+            parts.append(
+                f"{item.get('module', 'N/A')} ({item.get('signature', 'unknown')}): "
+                f"occurrences={item.get('occurrence_count', 1)}, "
+                f"first={item.get('first_seen') or 'N/A'}, "
+                f"last={item.get('last_seen') or 'N/A'}"
+            )
+        module_errors_line = " ; ".join(parts)
 
     top = (
         _row("🗃️ " + tr(config, "db_title"), db_line)
@@ -388,6 +403,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         + _row("🗄️ " + tr(config, "case_usage_title"), case_size)
         + _row("🧭 " + tr(config, "module_recent_title"), latest_module_line)
         + _row("🔎 " + tr(config, "keyword_solr_title"), keyword_solr_line)
+        + _row("🧯 " + tr(config, "module_errors_summary_title"), module_errors_line)
         + _row("🔬 " + tr(config, "solr_title"), solr_line)
         + _row("🖥️ " + tr(config, "cpu_history_title"), cpu_line)
     )
@@ -538,6 +554,17 @@ def _build_plain_text(
         log = telemetry.get("autopsy_log", {})
         lines.append(f"{tr(config, 'plain_db_line')}: {tr(config, 'plain_db_present') if db.get('exists') else tr(config, 'plain_db_missing')}")
         lines.append(f"{tr(config, 'plain_log_lines')}: {log.get('line_count', 'N/A')}")
+        module_errors_summary = telemetry.get("module_errors_summary") or []
+        if module_errors_summary:
+            lines.append(f"{tr(config, 'module_errors_summary_title')}:")
+            for item in module_errors_summary[:5]:
+                lines.append(
+                    "- "
+                    f"{item.get('module', 'N/A')} ({item.get('signature', 'unknown')}), "
+                    f"occurrences={item.get('occurrence_count', 1)}, "
+                    f"first={item.get('first_seen') or 'N/A'}, "
+                    f"last={item.get('last_seen') or 'N/A'}"
+                )
         modules = telemetry.get("module_folders") or []
         if modules:
             lines.append(f"{tr(config, 'modules_title')}:")
