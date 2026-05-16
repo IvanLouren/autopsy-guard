@@ -34,6 +34,12 @@ class ResourceDetector(BaseDetector):
         self._external_mem_warning_reported = False
         self._proc: psutil.Process | None = None
         self._proc_pid: int | None = None
+        self._external_mem_last_alert_ts: float | None = None
+        self._external_mem_last_signature: tuple[float, float, float] | None = None
+        self._external_mem_cooldown_seconds = 600.0
+        self._external_mem_min_delta_percent = 1.0
+        self._external_mem_min_delta_fraction = 5.0
+        self._external_mem_min_delta_other_gb = 0.5
 
     @property
     def name(self) -> str:
@@ -281,9 +287,6 @@ class ResourceDetector(BaseDetector):
             self._external_mem_warning_reported = False
             return []
 
-        if self._external_mem_warning_reported:
-            return []
-
         # Find top 5 non-Autopsy processes by memory
         from autopsyguard.platform_utils import get_autopsy_process_names, get_java_process_names
         autopsy_names = {n.lower() for n in get_autopsy_process_names()}
@@ -319,7 +322,31 @@ class ResourceDetector(BaseDetector):
             for name, p_pid, rss in top_5
         )
 
+        now = time.time()
+        current_signature = (
+            round(system_percent, 1),
+            round(autopsy_fraction * 100.0, 1),
+            round(other_used_gb, 1),
+        )
+        if self._external_mem_last_alert_ts is not None and self._external_mem_last_signature is not None:
+            elapsed = now - self._external_mem_last_alert_ts
+            prev_system_pct, prev_autopsy_frac_pct, prev_other_used_gb = self._external_mem_last_signature
+            changed_meaningfully = (
+                abs(current_signature[0] - prev_system_pct) >= self._external_mem_min_delta_percent
+                or abs(current_signature[1] - prev_autopsy_frac_pct) >= self._external_mem_min_delta_fraction
+                or abs(current_signature[2] - prev_other_used_gb) >= self._external_mem_min_delta_other_gb
+            )
+            if elapsed < self._external_mem_cooldown_seconds and not changed_meaningfully:
+                logger.debug(
+                    "Suppressing near-duplicate external memory pressure alert (elapsed=%.1fs, signature=%s)",
+                    elapsed,
+                    current_signature,
+                )
+                return []
+
         self._external_mem_warning_reported = True
+        self._external_mem_last_alert_ts = now
+        self._external_mem_last_signature = current_signature
         return [CrashEvent(
             crash_type=CrashType.HIGH_RESOURCE_USAGE,
             severity=Severity.WARNING,

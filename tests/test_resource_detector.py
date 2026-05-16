@@ -251,4 +251,73 @@ class TestExternalMemoryPressure:
         ext_events = [e for e in events if "Other processes" in e.message]
         assert len(ext_events) == 0
 
+    def test_external_pressure_near_duplicate_is_suppressed_within_cooldown(self, config: MonitorConfig) -> None:
+        config.memory_warning_percent = 85.0
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+        proc = MagicMock()
+        proc.cpu_percent.return_value = 10.0
+        proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=1000), \
+             patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+            mock_psutil.Process.return_value = proc
+            mock_psutil.virtual_memory.return_value = VmemResult(
+                percent=91.0,
+                used=30 * 1024**3,
+                total=32 * 1024**3,
+            )
+            mock_psutil.disk_usage.return_value = MagicMock(
+                free=50 * 1024**3, total=100 * 1024**3
+            )
+            mock_psutil.cpu_count.return_value = 8
+            mock_psutil.process_iter.return_value = []
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            first = detector.check()
+            second = detector.check()
+
+        first_ext = [e for e in first if "Other processes" in e.message]
+        second_ext = [e for e in second if "Other processes" in e.message]
+        assert len(first_ext) == 1
+        assert len(second_ext) == 0
+
+    def test_external_pressure_significant_change_realerts_inside_cooldown(self, config: MonitorConfig) -> None:
+        config.memory_warning_percent = 85.0
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+        proc = MagicMock()
+        proc.cpu_percent.return_value = 10.0
+        proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid", return_value=1000), \
+             patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+            mock_psutil.Process.return_value = proc
+            mock_psutil.virtual_memory.side_effect = [
+                VmemResult(percent=90.0, used=30 * 1024**3, total=32 * 1024**3),
+                VmemResult(percent=90.0, used=30 * 1024**3, total=32 * 1024**3),
+                VmemResult(percent=95.0, used=31 * 1024**3, total=32 * 1024**3),
+                VmemResult(percent=95.0, used=31 * 1024**3, total=32 * 1024**3),
+            ]
+            mock_psutil.disk_usage.return_value = MagicMock(
+                free=50 * 1024**3, total=100 * 1024**3
+            )
+            mock_psutil.cpu_count.return_value = 8
+            mock_psutil.process_iter.return_value = []
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            first = detector.check()
+            second = detector.check()
+
+        first_ext = [e for e in first if "Other processes" in e.message]
+        second_ext = [e for e in second if "Other processes" in e.message]
+        assert len(first_ext) == 1
+        assert len(second_ext) == 1
+
 

@@ -152,6 +152,23 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
+def _dir_latest_file_mtime(path: Path) -> float | None:
+    latest: float | None = None
+    try:
+        for root, _, files in os.walk(path):
+            for name in files:
+                f = Path(root) / name
+                try:
+                    mtime = f.stat().st_mtime
+                except OSError:
+                    continue
+                if latest is None or mtime > latest:
+                    latest = mtime
+    except OSError:
+        return None
+    return latest
+
+
 def _count_lines(path: Path) -> int:
     if not path.is_file():
         return 0
@@ -248,16 +265,68 @@ def _module_folder_summary(case_dir: Path) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for folder in folders:
         st = _safe_stat(folder)
+        latest_file_mtime = _dir_latest_file_mtime(folder)
+        updated_mtime = latest_file_mtime if latest_file_mtime is not None else (st.st_mtime if st else None)
         output.append(
             {
                 "name": folder.name,
                 "path": str(folder),
-                "updated_at": _fmt_ts(st.st_mtime if st else None),
+                "updated_at": _fmt_ts(updated_mtime),
                 "size_bytes": _dir_size_bytes(folder),
+                "_latest_file_mtime": latest_file_mtime,
             }
         )
     output.sort(key=lambda x: x.get("name", "").lower())
     return output[:40]
+
+
+def _merge_folder_activity_signals(
+    activities: list[dict[str, str]],
+    module_folders: list[dict[str, Any]],
+    *,
+    now_ts: float,
+) -> list[dict[str, str]]:
+    merged = list(activities)
+    latest_by_module_ts: dict[str, float] = {}
+    for item in activities:
+        mod = str(item.get("module", "")).strip().lower()
+        ts = _extract_line_timestamp(str(item.get("timestamp") or ""))
+        if ts:
+            try:
+                parsed = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
+                latest_by_module_ts[mod] = max(latest_by_module_ts.get(mod, 0.0), parsed)
+            except Exception:
+                pass
+
+    for folder in module_folders:
+        name = str(folder.get("name") or "").strip()
+        if not name:
+            continue
+        latest_file_mtime = folder.get("_latest_file_mtime")
+        try:
+            latest_ts = float(latest_file_mtime) if latest_file_mtime is not None else None
+        except Exception:
+            latest_ts = None
+        if latest_ts is None:
+            continue
+        age_seconds = now_ts - latest_ts
+        # Keep folder signal relevant to recent/ongoing module work.
+        if age_seconds > 1800.0:
+            continue
+        module_key = name.lower()
+        existing_ts = latest_by_module_ts.get(module_key)
+        if existing_ts is not None and existing_ts >= latest_ts:
+            continue
+        merged.append(
+            {
+                "module": name,
+                "state": "active",
+                "line": f"Folder growth signal: size={int(folder.get('size_bytes') or 0)} bytes",
+                "timestamp": _fmt_ts(latest_ts),
+            }
+        )
+        latest_by_module_ts[module_key] = latest_ts
+    return merged
 
 
 def collect_case_telemetry(
@@ -295,6 +364,18 @@ def collect_case_telemetry(
     module_folders = _module_folder_summary(case_dir)
     activity_lines = _tail_lines(log_path, max_lines=2500)
     module_activity = _extract_module_activity(activity_lines)
+    module_activity = _merge_folder_activity_signals(
+        module_activity,
+        module_folders,
+        now_ts=time.time(),
+    )
+
+    # Strip internal helper fields from public telemetry payload.
+    public_module_folders: list[dict[str, Any]] = []
+    for folder in module_folders:
+        clean = dict(folder)
+        clean.pop("_latest_file_mtime", None)
+        public_module_folders.append(clean)
 
     solr_meta: dict[str, Any] = {
         "state": "unknown",
@@ -321,7 +402,7 @@ def collect_case_telemetry(
         "autopsy_db": db_meta,
         "autopsy_log": log_meta,
         "case_size_bytes": case_size,
-        "module_folders": module_folders,
+        "module_folders": public_module_folders,
         "module_activity": module_activity,
         "solr": solr_meta,
         "autopsy_cpu_timeline": {

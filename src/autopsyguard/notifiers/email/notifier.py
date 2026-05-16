@@ -385,7 +385,7 @@ class EmailNotifier(BaseNotifier):
                         if self.config.smtp_password:
                             server.login(self.config.smtp_user, self.config.smtp_password)
                         server.send_message(msg)
-                    logger.info("📧 Email enviado: %s", subject[:60])
+                    logger.info("📧 Email sent: %s", subject[:60])
                     return True
                 except (smtplib.SMTPException, OSError, TimeoutError) as e:
                     last_exc = e

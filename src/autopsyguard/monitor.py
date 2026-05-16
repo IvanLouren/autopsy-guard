@@ -97,6 +97,8 @@ class Monitor:
         self._pending_alert_started_at: float | None = None
         self._alert_cooldown_seconds = max(90.0, self.config.poll_interval * 12.0)
         self._last_alert_signature_at: dict[str, float] = {}
+        self._shutdown_noise_grace_seconds = min(90.0, max(45.0, self.config.poll_interval * 12.0))
+        self._shutdown_noise_grace_until: float = 0.0
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -200,6 +202,11 @@ class Monitor:
         self._metrics_store.record_sample()
         events = self.run_once()
         now = time.time()
+        pid = find_autopsy_pid()
+        lock_exists = (
+            get_case_lock_file(self.config.case_dir).exists()
+            or get_global_lock_file().exists()
+        )
 
         # During launcher/case-open warmup (before first ingest start), Autopsy
         # can transiently churn Solr child JVMs and replay Solr log warnings.
@@ -217,9 +224,44 @@ class Monitor:
                 warmup_filtered.append(event)
             events = warmup_filtered
 
+        # Check for ingest state transitions before alert dispatch so shutdown
+        # grace suppression can apply to late Solr/log noise in the same cycle.
+        is_ingest_running = self._log_detector.ingest_running
+        if is_ingest_running and not self._was_ingest_running:
+            # Ingest just started
+            self._ingest_start_time = self._log_detector.ingest_start_time
+            self._was_ingest_running = True
+
+            if not self._has_ingest_started_ever:
+                # Align the report timer exactly to the start of the ingest
+                self._last_report_time = time.time()
+                self._events_since_last_report = 0
+                self._has_ingest_started_ever = True
+
+        elif not is_ingest_running and self._was_ingest_running:
+            # Ingest just finished
+            duration = 0.0
+            if self._ingest_start_time is not None:
+                duration = time.time() - self._ingest_start_time
+
+            logger.info("Ingest job finished after %.1fs. Sending reports.", duration)
+            self.notifier.send_ingest_report(duration)
+            self.whatsapp.send_ingest_report(duration)
+            self.telegram.send_ingest_report(duration)
+            self._shutdown_noise_grace_until = time.time() + self._shutdown_noise_grace_seconds
+
+            self._was_ingest_running = False
+            self._ingest_start_time = None
+
         # Send immediate alerts for critical/warning events, but correlate
         # multi-detector bursts into one incident before dispatching.
         alert_events = [e for e in events if e.severity in (Severity.CRITICAL, Severity.WARNING)]
+        alert_events = self._filter_shutdown_noise_alerts(
+            alert_events,
+            now=now,
+            pid=pid,
+            lock_exists=lock_exists,
+        )
         ready_alerts = self._collect_alert_notifications(alert_events, now)
         if ready_alerts and self._has_ingest_started_ever:
             self.notifier.send_alert(ready_alerts)
@@ -232,33 +274,6 @@ class Monitor:
             for event in events:
                 self._handle_event(event)
                 self._events_since_last_report += 1
-
-        # Check for ingest state transitions
-        is_ingest_running = self._log_detector.ingest_running
-        if is_ingest_running and not self._was_ingest_running:
-            # Ingest just started
-            self._ingest_start_time = self._log_detector.ingest_start_time
-            self._was_ingest_running = True
-            
-            if not self._has_ingest_started_ever:
-                # Align the report timer exactly to the start of the ingest
-                self._last_report_time = time.time()
-                self._events_since_last_report = 0
-                self._has_ingest_started_ever = True
-            
-        elif not is_ingest_running and self._was_ingest_running:
-            # Ingest just finished
-            duration = 0.0
-            if self._ingest_start_time is not None:
-                duration = time.time() - self._ingest_start_time
-            
-            logger.info("Ingest job finished after %.1fs. Sending reports.", duration)
-            self.notifier.send_ingest_report(duration)
-            self.whatsapp.send_ingest_report(duration)
-            self.telegram.send_ingest_report(duration)
-            
-            self._was_ingest_running = False
-            self._ingest_start_time = None
 
         # Check periodic reporting (Heartbeat)
         if self._has_ingest_started_ever:
@@ -318,15 +333,15 @@ class Monitor:
                 self._report_count += 1
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
-        pid = find_autopsy_pid()
-        lock_exists = (
-            get_case_lock_file(self.config.case_dir).exists()
-            or get_global_lock_file().exists()
-        )
-
         if pid is None and not lock_exists:
             # Flush any buffered correlation incident before shutdown.
             final_alerts = self._flush_pending_alerts(time.time(), force=True)
+            final_alerts = self._filter_shutdown_noise_alerts(
+                final_alerts,
+                now=time.time(),
+                pid=pid,
+                lock_exists=lock_exists,
+            )
             if final_alerts and self._has_ingest_started_ever:
                 self.notifier.send_alert(final_alerts)
                 self.whatsapp.send_alert(final_alerts)
@@ -461,6 +476,50 @@ class Monitor:
         for key in stale_keys:
             self._last_alert_signature_at.pop(key, None)
         return events
+
+    @staticmethod
+    def _is_shutdown_noise_event(event: CrashEvent) -> bool:
+        shutdown_noise_types = {CrashType.SOLR_CRASH, CrashType.LOG_ERROR}
+        if event.crash_type in shutdown_noise_types:
+            return True
+        if event.crash_type != CrashType.CORRELATED_INCIDENT:
+            return False
+        event_types = event.details.get("event_types") or []
+        if not event_types:
+            return False
+        normalized = {str(x).upper() for x in event_types}
+        return normalized.issubset({"SOLR_CRASH", "LOG_ERROR"})
+
+    def _filter_shutdown_noise_alerts(
+        self,
+        events: list[CrashEvent],
+        *,
+        now: float,
+        pid: int | None,
+        lock_exists: bool,
+    ) -> list[CrashEvent]:
+        if not events:
+            return []
+        in_shutdown_grace = now <= self._shutdown_noise_grace_until
+        case_closing = pid is None and not lock_exists
+        if not in_shutdown_grace and not case_closing:
+            return events
+        if self._log_detector.ingest_running:
+            return events
+
+        kept: list[CrashEvent] = []
+        suppressed = 0
+        for event in events:
+            if self._is_shutdown_noise_event(event):
+                suppressed += 1
+                continue
+            kept.append(event)
+        if suppressed:
+            logger.info(
+                "Suppressing %d shutdown-noise alert(s) during graceful close window.",
+                suppressed,
+            )
+        return kept
 
     @staticmethod
     def _handle_event(event: CrashEvent) -> None:

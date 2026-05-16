@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import smtplib
 from datetime import datetime
 from unittest.mock import patch
@@ -89,6 +90,35 @@ def test_dispatch_email_retries_and_succeeds(tmp_path):
 
     assert ok is True
     assert calls['count'] == 3
+
+
+def test_dispatch_email_logs_english_sent_message(tmp_path, caplog):
+    cfg = make_config(tmp_path)
+    notifier = EmailNotifier(cfg)
+
+    class DummySMTP:
+        def __init__(self, *a, **k):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def ehlo(self):
+            return None
+        def has_extn(self, name):
+            return False
+        def starttls(self):
+            return None
+        def login(self, user, pwd):
+            return None
+        def send_message(self, msg):
+            return None
+
+    with patch("autopsyguard.notifiers.email.notifier.smtplib.SMTP", DummySMTP):
+        with caplog.at_level(logging.INFO):
+            assert notifier._dispatch_email("Subject", "<b>ok</b>", plain_text="ok") is True
+
+    assert any("Email sent:" in rec.message for rec in caplog.records)
 
 
 

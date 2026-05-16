@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -133,4 +134,64 @@ def test_collect_case_telemetry_ignores_factory_lines_and_yara_message_noise(tmp
     assert "YARA Analyzer" in modules
     assert "No rule set was selected for this ingest job" not in modules
     assert "PhotoRec Carver" not in modules
+
+
+def test_module_folder_updated_at_uses_latest_nested_file_mtime(tmp_path: Path) -> None:
+    case = tmp_path / "CaseD"
+    case.mkdir()
+    (case / "CaseD.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text("line\n", encoding="utf-8")
+    mod_dir = case / "ModuleOutput" / "PhotoRec Carver"
+    mod_dir.mkdir(parents=True)
+    old_file = mod_dir / "old.txt"
+    new_file = mod_dir / "new.txt"
+    old_file.write_text("a", encoding="utf-8")
+    new_file.write_text("b", encoding="utf-8")
+    now = time.time()
+    os.utime(old_file, (now - 7200, now - 7200))
+    os.utime(new_file, (now - 120, now - 120))
+    os.utime(mod_dir, (now - 9999, now - 9999))
+
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    folders = telemetry["module_folders"]
+    photorec = next((x for x in folders if x.get("name") == "PhotoRec Carver"), None)
+    assert photorec is not None
+    assert photorec.get("updated_at") is not None
+
+
+def test_collect_case_telemetry_adds_folder_activity_signal_when_logs_sparse(tmp_path: Path) -> None:
+    case = tmp_path / "CaseE"
+    case.mkdir()
+    (case / "CaseE.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text("INFO: unrelated startup line\n", encoding="utf-8")
+    mod_dir = case / "ModuleOutput" / "PhotoRec Carver"
+    mod_dir.mkdir(parents=True)
+    artifact = mod_dir / "artifact.bin"
+    artifact.write_bytes(b"123")
+    now = time.time()
+    os.utime(artifact, (now - 60, now - 60))
+
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    activities = telemetry["module_activity"]
+    folder_items = [
+        item for item in activities
+        if item.get("module") == "PhotoRec Carver" and "Folder growth signal" in str(item.get("line"))
+    ]
+    assert folder_items
 

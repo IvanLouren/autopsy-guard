@@ -186,3 +186,70 @@ def test_pre_ingest_warmup_filters_critical_solr_log_noise(tmp_path: Path) -> No
         monitor._handle_active()
 
     assert handled == []
+
+
+def test_shutdown_grace_suppresses_post_ingest_solr_noise_alerts(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._state = MonitorState.ACTIVE
+    monitor._metrics_store.record_sample = lambda: None
+    monitor._has_ingest_started_ever = True
+    monitor._was_ingest_running = True
+    monitor._ingest_start_time = 100.0
+    monitor._log_detector._ingest_running = False
+    monitor.notifier.send_ingest_report = lambda *_args, **_kwargs: True
+    monitor.whatsapp.send_ingest_report = lambda *_args, **_kwargs: True
+    monitor.telegram.send_ingest_report = lambda *_args, **_kwargs: True
+
+    events = [
+        CrashEvent(
+            crash_type=CrashType.SOLR_CRASH,
+            severity=Severity.WARNING,
+            message="Child Java process disappeared",
+        ),
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.CRITICAL,
+            message="Solr log error in solr.log.stderr",
+        ),
+    ]
+    monitor.run_once = lambda: events
+
+    sent: list[list[CrashEvent]] = []
+    monitor.notifier.send_alert = lambda payload: sent.append(payload) or True
+    monitor.whatsapp.send_alert = lambda *_args, **_kwargs: True
+    monitor.telegram.send_alert = lambda *_args, **_kwargs: True
+
+    with patch("autopsyguard.monitor.find_autopsy_pid", return_value=123):
+        monitor._handle_active()
+
+    assert sent == []
+    assert monitor._shutdown_noise_grace_until > 0
+
+
+def test_shutdown_grace_does_not_suppress_true_crash_signals(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._state = MonitorState.ACTIVE
+    monitor._metrics_store.record_sample = lambda: None
+    monitor._has_ingest_started_ever = True
+    monitor._log_detector._ingest_running = False
+    monitor._shutdown_noise_grace_until = 9999999999.0
+
+    event = CrashEvent(
+        crash_type=CrashType.PROCESS_DISAPPEARED,
+        severity=Severity.CRITICAL,
+        message="Autopsy disappeared",
+    )
+    monitor.run_once = lambda: [event]
+
+    sent: list[list[CrashEvent]] = []
+    monitor.notifier.send_alert = lambda payload: sent.append(payload) or True
+    monitor.whatsapp.send_alert = lambda *_args, **_kwargs: True
+    monitor.telegram.send_alert = lambda *_args, **_kwargs: True
+
+    with patch("autopsyguard.monitor.find_autopsy_pid", return_value=123):
+        monitor._handle_active()
+
+    assert len(sent) == 1
+    assert sent[0][0].crash_type == CrashType.PROCESS_DISAPPEARED

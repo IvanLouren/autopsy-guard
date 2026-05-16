@@ -29,24 +29,26 @@ class TestHangDetection:
         config.log_stale_timeout = 0.0
 
         detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
+        detector._startup_grace_until = 0.0
 
         log_file = config.case_dir / "Log" / "autopsy.log.0"
         log_file.write_text("some log content", encoding="utf-8")
 
         # Mock the internal signal methods to simulate 2 active signals
-        with patch.object(detector, "_check_cpu_signal") as mock_cpu:
-            with patch.object(detector, "_check_log_signal") as mock_log:
-                with patch.object(detector, "_check_solr_signal") as mock_solr:
-                    # Two signals active
-                    mock_cpu.return_value = {"pid": 1000, "cpu": 0.0, "duration": 400}
-                    mock_log.return_value = {"stale_seconds": 700, "last_mtime": time.time() - 1000}
-                    mock_solr.return_value = None  # Only 2 of 3 needed
-                    
-                    # First call starts hang tracking
-                    detector.check()
-                    # Simulate 61 seconds passing for sustained correlation
-                    detector._hang_start_time = time.time() - 61
-                    events = detector.check()
+        with patch("autopsyguard.detectors.hang_detector.find_autopsy_pid", return_value=None):
+            with patch.object(detector, "_check_cpu_signal") as mock_cpu:
+                with patch.object(detector, "_check_log_signal") as mock_log:
+                    with patch.object(detector, "_check_solr_signal") as mock_solr:
+                        # Two signals active
+                        mock_cpu.return_value = {"pid": 1000, "cpu": 0.0, "duration": 400}
+                        mock_log.return_value = {"stale_seconds": 700, "last_mtime": time.time() - 1000}
+                        mock_solr.return_value = None  # Only 2 of 3 needed
+
+                        # First call starts hang tracking
+                        detector.check()
+                        # Simulate 61 seconds passing for sustained correlation
+                        detector._hang_start_time = time.time() - 61
+                        events = detector.check()
 
         hang_events = [e for e in events if e.crash_type == CrashType.HANG]
         assert len(hang_events) == 1
@@ -118,12 +120,14 @@ class TestHangDetection:
         detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
         detector._hang_reported = True
         detector._hang_start_time = time.time() - 100
+        detector._startup_grace_until = 0.0
 
         # All signals clear
-        with patch.object(HangDetector, "_check_cpu_signal", return_value=None):
-            with patch.object(HangDetector, "_check_log_signal", return_value=None):
-                with patch.object(HangDetector, "_check_solr_signal", return_value=None):
-                    detector.check()
+        with patch("autopsyguard.detectors.hang_detector.find_autopsy_pid", return_value=None):
+            with patch.object(HangDetector, "_check_cpu_signal", return_value=None):
+                with patch.object(HangDetector, "_check_log_signal", return_value=None):
+                    with patch.object(HangDetector, "_check_solr_signal", return_value=None):
+                        detector.check()
 
         # Hang should be cleared
         assert detector._hang_reported is False
