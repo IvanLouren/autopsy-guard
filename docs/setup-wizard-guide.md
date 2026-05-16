@@ -89,15 +89,23 @@ Wizard prints:
 
 ## 4. Verification Procedure (Post-Setup)
 
-1. Run monitor:
+1. Launch Autopsy and open the target case first.
+2. Wait for case load to complete. Do not start ingest yet.
+3. Run monitor:
    - `uv run autopsyguard --config config.local.yml`
-2. Run verbose smoke-check:
+4. Run verbose smoke-check:
    - `uv run autopsyguard --config config.local.yml --verbose`
-3. Open Autopsy + case and wait for startup notification.
-4. Confirm:
+5. After AutopsyGuard is running, start ingest in Autopsy.
+6. Confirm:
    - notification delivery (email/WA/TG)
    - expected telemetry in periodic report
    - `autopsyguard.log` written in state directory
+
+Required operator order:
+
+1. Open case in Autopsy
+2. Start AutopsyGuard
+3. Start ingest
 
 ## 5. Troubleshooting Quick Matrix
 

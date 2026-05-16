@@ -58,19 +58,33 @@ Wizard behavior:
 - writes `config.local.yml` + `.env` with deterministic structure
 - prints an operational checklist and common-failure fixes
 
-### 2) Start Monitoring
+### 2) Open Autopsy Case First
+
+1. Launch Autopsy.
+2. Open the target case.
+3. Wait until the case is fully loaded (before starting ingest).
+
+### 3) Start Monitoring
 
 ```bash
 uv run autopsyguard --config config.local.yml
 ```
 
-### 3) Verify Alerts Quickly
+### 4) Verify Alerts Quickly
 
 ```bash
 uv run autopsyguard --config config.local.yml --verbose
 ```
 
-Open Autopsy and the target case. Confirm startup notification reaches your channel.
+### 5) Start Ingest Only After AutopsyGuard Is Running
+
+Required execution order:
+
+1. Open case in Autopsy
+2. Start AutopsyGuard
+3. Start ingest
+
+This order ensures startup detection, ingest start detection, and periodic telemetry are captured from the beginning.
 
 ## CLI reference
 
