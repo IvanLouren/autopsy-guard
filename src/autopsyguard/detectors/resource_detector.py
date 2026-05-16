@@ -275,16 +275,22 @@ class ResourceDetector(BaseDetector):
         autopsy_pid: int,
         *,
         root_proc: psutil.Process | None = None,
-    ) -> dict[int, tuple[str, int]]:
-        """Return PID->(name,rss_bytes) for Autopsy launcher + JVM children."""
+    ) -> tuple[dict[int, tuple[str, int]], dict[int, str]]:
+        """Return related process map + source metadata for Autopsy attribution.
+
+        Returns:
+            - related: PID -> (name, rss_bytes)
+            - sources: PID -> source tag ("root", "tree", "global", "both")
+        """
         root = root_proc
         if root is None:
             try:
                 root = psutil.Process(autopsy_pid)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                return {}
+                return {}, {}
 
         related: dict[int, tuple[str, int]] = {}
+        sources: dict[int, str] = {}
         try:
             root_mem = int(root.memory_info().rss)
         except Exception:
@@ -294,6 +300,7 @@ class ResourceDetector(BaseDetector):
         except Exception:
             root_name = "autopsy"
         related[autopsy_pid] = (root_name, root_mem)
+        sources[autopsy_pid] = "root"
 
         try:
             children = root.children(recursive=True)
@@ -306,6 +313,79 @@ class ResourceDetector(BaseDetector):
                 rss = int(child.memory_info().rss)
                 name = child.name() or "java"
                 related[child.pid] = (name, rss)
+                sources[child.pid] = "tree"
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception:
+                continue
+
+        # Windows/process-chain fallback:
+        # Solr JVM may not appear under Autopsy tree. Attribute those JVMs to
+        # Autopsy if they match strong Solr signatures.
+        global_solr = self._collect_global_solr_related_processes(now=time.time())
+        for g_pid, (g_name, g_rss) in global_solr.items():
+            if g_pid not in related:
+                related[g_pid] = (g_name, g_rss)
+                sources[g_pid] = "global"
+            elif sources.get(g_pid) == "tree":
+                sources[g_pid] = "both"
+
+        return related, sources
+
+    def _looks_like_solr_java_cmdline(self, cmdline: list[object], *, solr_port: int) -> bool:
+        """Best-effort Solr JVM matcher using command-line markers."""
+        if not cmdline:
+            return False
+        cmd = " ".join(str(x).lower() for x in cmdline)
+        port_token = f":{solr_port}"
+        markers = (
+            "solr",
+            "start.jar",
+            "org.apache.solr",
+            "-dsolr.",
+            "solr.port",
+        )
+        if any(marker in cmd for marker in markers):
+            return True
+        return port_token in cmd
+
+    def _collect_global_solr_related_processes(self, *, now: float) -> dict[int, tuple[str, int]]:
+        """Find Solr JVMs even if not parented under the tracked Autopsy PID."""
+        related: dict[int, tuple[str, int]] = {}
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time", "exe", "memory_info"]):
+            try:
+                proc_pid = int(proc.info.get("pid"))
+                proc_name_raw = proc.info.get("name") or "java"
+                proc_name = str(proc_name_raw).lower()
+                cmdline = proc.info.get("cmdline") or []
+                exe = proc.info.get("exe")
+                create_time = float(proc.info.get("create_time") or 0.0)
+                age_s = now - create_time if create_time > 0 else 0.0
+                mem_info = proc.info.get("memory_info")
+                rss = int(mem_info.rss) if mem_info is not None else 0
+
+                # Is this a JVM-like process?
+                is_java = proc_name in self._java_names
+                if not is_java and cmdline:
+                    first = Path(str(cmdline[0])).name.lower()
+                    is_java = first in self._java_names
+                if not is_java and exe:
+                    try:
+                        is_java = Path(str(exe)).name.lower() in self._java_names
+                    except Exception:
+                        pass
+                if not is_java:
+                    continue
+
+                if self._looks_like_solr_java_cmdline(cmdline, solr_port=self.config.solr_port):
+                    related[proc_pid] = (str(proc_name_raw), rss)
+                elif age_s >= 15.0:
+                    # Fallback when cmdline was unavailable in proc.info.
+                    try:
+                        if not cmdline and self._looks_like_solr_java_cmdline(proc.cmdline(), solr_port=self.config.solr_port):
+                            related[proc_pid] = (str(proc_name_raw), rss)
+                    except Exception:
+                        pass
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
             except Exception:
@@ -332,7 +412,7 @@ class ResourceDetector(BaseDetector):
         except Exception:
             return []
 
-        related = self._collect_autopsy_related_processes(pid, root_proc=proc)
+        related, related_sources = self._collect_autopsy_related_processes(pid, root_proc=proc)
         if not related:
             return []
         autopsy_rss = sum(rss for _, rss in related.values())
@@ -435,6 +515,10 @@ class ResourceDetector(BaseDetector):
                 "autopsy_fraction_of_used": round(autopsy_fraction * 100, 1),
                 "other_used_gb": round(other_used_gb, 2),
                 "autopsy_related_pids": sorted(exclude_pids),
+                "autopsy_related_sources": {
+                    str(r_pid): related_sources.get(r_pid, "unknown")
+                    for r_pid in sorted(exclude_pids)
+                },
                 "autopsy_child_consumers": child_list,
                 "top_consumers_external": top_list,
                 # Backward-compatible key for existing templates/parsers.

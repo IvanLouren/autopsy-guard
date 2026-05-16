@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from autopsyguard.config import MonitorConfig
-from autopsyguard.models import CrashEvent
+from autopsyguard.models import CrashEvent, CrashType
 from autopsyguard.notifiers.email.templates import (
     BASE_TEMPLATE,
     METRIC_BOX,
@@ -64,8 +64,19 @@ def build_report_email(
 
     metrics_html = _build_metrics_bar(config, metrics)
     chart_html, inline_images = _build_chart(config, metrics_samples, recent_events)
-    recent_events_html = _build_recent_events_table(config, recent_events)
+    recent_events_html = _build_recent_events_table(config, recent_events, total_events=events_last_period)
     details_table = _build_details_table(config, system_status, events_last_period, uptime, autopsy_pid)
+    # Surface latest external-memory-consumer context directly in telemetry.
+    for _ts, _ev in reversed(recent_events):
+        try:
+            if _ev.crash_type == CrashType.HIGH_RESOURCE_USAGE:
+                top_external = str(_ev.details.get("top_consumers_external") or "").strip()
+                if top_external:
+                    telemetry_data["external_memory_top_consumers"] = top_external
+                    break
+        except Exception:
+            continue
+
     telemetry_html = _build_telemetry_sections(config, telemetry_data)
 
     body_content = (
@@ -183,7 +194,12 @@ def _build_chart(
     return chart_html, inline_images
 
 
-def _build_recent_events_table(config: MonitorConfig, recent_events: list[tuple[datetime, CrashEvent]]) -> str:
+def _build_recent_events_table(
+    config: MonitorConfig,
+    recent_events: list[tuple[datetime, CrashEvent]],
+    *,
+    total_events: int | None = None,
+) -> str:
     if not recent_events:
         return ""
     rows = ""
@@ -198,11 +214,15 @@ def _build_recent_events_table(config: MonitorConfig, recent_events: list[tuple[
             <td style="padding:8px 12px; border-bottom:1px solid #f3f4f6; font-size:12px; color:#374151;">{event.message[:70]}{'...' if len(event.message) > 70 else ''}</td>
         </tr>
         """
+    events_label = tr(config, "recent_events", count=len(recent_events))
+    if total_events is not None and total_events > len(recent_events):
+        events_label = f"Recent Events (showing {len(recent_events)} of {total_events})"
+
     return f"""
     <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
             <tr><td style="background-color:#fef3c7; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
-                <strong style="color:#92400e; font-size:14px;">⚠️ {tr(config, "recent_events", count=len(recent_events))}</strong>
+                <strong style="color:#92400e; font-size:14px;">⚠️ {events_label}</strong>
             </td></tr>
             <tr><td style="padding:0;">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows}</table>
@@ -283,6 +303,16 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             for item in mod_activity
         ]
     module_errors_summary = telemetry.get("module_errors_summary", []) or []
+    grouped_error_map: dict[str, int] = {}
+    for item in module_errors_summary:
+        try:
+            mod = str(item.get("module") or "").strip().lower()
+            if not mod:
+                continue
+            grouped_error_map[mod] = grouped_error_map.get(mod, 0) + int(item.get("occurrence_count") or 0)
+        except Exception:
+            continue
+    grouped_errors_authoritative = "module_errors_summary" in telemetry
     latest_activity = _pick_recent_activity(
         [
             {
@@ -309,7 +339,9 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
 
     module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
     module_age = _age_label(_activity_ts(latest_activity), now_dt)
-    module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+    raw_module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+    module_key = str(latest_activity.get("module") or "").strip().lower()
+    module_errors = grouped_error_map.get(module_key, 0) if grouped_errors_authoritative else raw_module_errors
     module_activity_events = int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0)
     latest_module_line = (
         f"{latest_activity.get('module', tr(config, 'none'))} | "
@@ -426,7 +458,9 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             ]
         )
         activity_events = int(item.get("activity_events") or item.get("occurrence_count") or 0)
-        error_events = int(item.get("error_count") or item.get("error_events") or 0)
+        raw_error_events = int(item.get("error_count") or item.get("error_events") or 0)
+        keyword_key = str(item.get("module") or "").strip().lower()
+        error_events = grouped_error_map.get(keyword_key, 0) if grouped_errors_authoritative else raw_error_events
         keyword_age = _age_label(_activity_ts(item), now_dt)
         keyword_confidence = _activity_confidence_label(item, log_updated_at)
         keyword_solr_line = (
@@ -448,6 +482,10 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             )
         module_errors_line = " ; ".join(parts)
 
+    external_mem_line = str(telemetry.get("external_memory_top_consumers") or "").strip()
+    if not external_mem_line:
+        external_mem_line = tr(config, "none")
+
     top = (
         _row("🗃️ " + tr(config, "db_title"), db_line)
         + _row("🧾 " + tr(config, "log_title"), log_line)
@@ -455,6 +493,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         + _row("🧭 " + tr(config, "module_recent_title"), latest_module_line)
         + _row("🔎 " + tr(config, "keyword_solr_title"), keyword_solr_line)
         + _row("🧯 " + tr(config, "module_errors_summary_title"), module_errors_line)
+        + _row("🧠 External Memory Consumers", external_mem_line)
         + _row("🔬 " + tr(config, "solr_title"), solr_line)
         + _row("🖥️ " + tr(config, "cpu_history_title"), cpu_line)
     )
@@ -645,7 +684,20 @@ def _build_plain_text(
         )
         module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
         module_age = _age_label(latest_activity.get("timestamp"), now_dt)
-        module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+        module_errors_summary = telemetry.get("module_errors_summary") or []
+        grouped_error_map: dict[str, int] = {}
+        for item in module_errors_summary:
+            try:
+                mod = str(item.get("module") or "").strip().lower()
+                if not mod:
+                    continue
+                grouped_error_map[mod] = grouped_error_map.get(mod, 0) + int(item.get("occurrence_count") or 0)
+            except Exception:
+                continue
+        grouped_errors_authoritative = "module_errors_summary" in telemetry
+        raw_module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+        module_key = str(latest_activity.get("module") or "").strip().lower()
+        module_errors = grouped_error_map.get(module_key, 0) if grouped_errors_authoritative else raw_module_errors
         module_activity_events = int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0)
         latest_module_line = (
             f"{latest_activity.get('module', tr(config, 'none'))} | "
@@ -677,7 +729,9 @@ def _build_plain_text(
                 ]
             )
             keyword_activity_events = int(item.get("activity_events") or item.get("occurrence_count") or 0)
-            keyword_errors = int(item.get("error_count") or item.get("error_events") or 0)
+            raw_keyword_errors = int(item.get("error_count") or item.get("error_events") or 0)
+            keyword_key = str(item.get("module") or "").strip().lower()
+            keyword_errors = grouped_error_map.get(keyword_key, 0) if grouped_errors_authoritative else raw_keyword_errors
             keyword_confidence = _activity_confidence_label(item, log_updated_at)
             keyword_age = _age_label(item.get("timestamp"), now_dt)
             keyword_solr_line = (
@@ -691,7 +745,6 @@ def _build_plain_text(
         lines.append(f"{tr(config, 'plain_log_lines')}: {log.get('line_count', 'N/A')}")
         lines.append(f"{tr(config, 'module_recent_title')}: {latest_module_line}")
         lines.append(f"{tr(config, 'keyword_solr_title')}: {keyword_solr_line}")
-        module_errors_summary = telemetry.get("module_errors_summary") or []
         if module_errors_summary:
             lines.append(f"{tr(config, 'module_errors_summary_title')}:")
             for item in module_errors_summary[:5]:
@@ -702,6 +755,9 @@ def _build_plain_text(
                     f"first={item.get('first_seen') or 'N/A'}, "
                     f"last={item.get('last_seen') or 'N/A'}"
                 )
+        external_mem_line = str(telemetry.get("external_memory_top_consumers") or "").strip()
+        if external_mem_line:
+            lines.append(f"External Memory Consumers: {external_mem_line}")
         modules = telemetry.get("module_folders") or []
         if modules:
             lines.append(f"{tr(config, 'modules_title')}:")

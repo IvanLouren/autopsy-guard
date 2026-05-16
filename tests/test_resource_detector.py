@@ -385,4 +385,67 @@ class TestExternalMemoryPressure:
         assert "java.exe" in details["autopsy_child_consumers"]
         assert details["autopsy_rss_gb"] == pytest.approx(10.0, rel=0.05)
 
+    def test_global_solr_java_is_not_counted_as_external_consumer(self, config: MonitorConfig) -> None:
+        """Solr JVM found outside Autopsy child tree should still be attributed to Autopsy."""
+        config.memory_warning_percent = 85.0
+        config.solr_port = 23232
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
+            with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+                # Autopsy root process has no visible Java children.
+                proc = MagicMock()
+                proc.cpu_percent.return_value = 10.0
+                proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+                proc.name.return_value = "autopsy64.exe"
+                proc.children.return_value = []
+                mock_psutil.Process.return_value = proc
+
+                mock_psutil.virtual_memory.return_value = VmemResult(
+                    percent=91.0,
+                    used=30 * 1024**3,
+                    total=32 * 1024**3,
+                )
+                mock_psutil.disk_usage.return_value = MagicMock(
+                    free=50 * 1024**3, total=100 * 1024**3
+                )
+                mock_psutil.cpu_count.return_value = 8
+
+                # Global Solr JVM + normal external apps.
+                solr_proc = MagicMock()
+                solr_proc.info = {
+                    "pid": 2001,
+                    "name": "java.exe",
+                    "cmdline": ["java.exe", "-Dsolr.port=23232", "org.apache.solr.core.CoreContainer"],
+                    "create_time": 1000.0,
+                    "exe": "C:\\Program Files\\Java\\bin\\java.exe",
+                    "memory_info": MagicMock(rss=6 * 1024**3),
+                }
+                ext_proc = MagicMock()
+                ext_proc.info = {
+                    "pid": 5001,
+                    "name": "Code.exe",
+                    "cmdline": ["Code.exe"],
+                    "create_time": 1000.0,
+                    "exe": "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                    "memory_info": MagicMock(rss=10 * 1024**3),
+                }
+                mock_psutil.process_iter.return_value = [solr_proc, ext_proc]
+                mock_psutil.NoSuchProcess = Exception
+                mock_psutil.AccessDenied = PermissionError
+
+                events = detector.check()
+
+        ext_events = [e for e in events if "Other processes" in e.message]
+        assert len(ext_events) == 1
+        details = ext_events[0].details
+        assert 2001 in details["autopsy_related_pids"]
+        assert details["autopsy_related_sources"]["2001"] == "global"
+        assert "java.exe (PID 2001" in details["autopsy_child_consumers"]
+        assert "java.exe (PID 2001" not in details["top_consumers_external"]
+
 

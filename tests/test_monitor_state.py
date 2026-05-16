@@ -397,3 +397,14 @@ def test_post_ingest_grace_suppresses_buffered_resource_flush(tmp_path: Path) ->
     # Pipeline must suppress this post-ingest flush during grace window.
     suppressed = monitor._filter_post_ingest_resource_alerts(ready, now=120.0)
     assert suppressed == []
+
+
+def test_inject_module_error_summary_sets_empty_key_when_no_incidents(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._module_error_summary_since_report.clear()
+    telemetry: dict[str, object] = {}
+
+    monitor._inject_module_error_summary(telemetry)
+
+    assert telemetry["module_errors_summary"] == []

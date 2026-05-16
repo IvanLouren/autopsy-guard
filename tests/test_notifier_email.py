@@ -542,3 +542,129 @@ def test_report_builder_prefers_fresher_activity_over_older_error(tmp_path):
     )
     assert "Current/Recent Module" in html_body
     assert "Keyword Search | active | 2026-05-16 18:06:48" in html_body
+
+
+def test_report_builder_grouped_errors_authoritative_when_present(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [
+            {
+                "module_name": "Recent Activity",
+                "last_state": "active",
+                "last_seen": "2026-05-16 18:35:58",
+                "activity_events": 601,
+                "error_events": 279,
+                "error_count": 279,
+                "occurrence_count": 601,
+                "sample_last_line": "active line",
+                "confidence": "current",
+            }
+        ],
+        # Explicitly present and empty means grouped errors in this period are none.
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 341.6, "minus_5m": 503.9, "minus_15m": 332.4},
+    }
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "Recent Activity | active | 2026-05-16 18:35:58" in html_body
+    assert "errors=0 | activity=601" in html_body
+    assert "Current/Recent Module: Recent Activity | active | 2026-05-16 18:35:58" in plain_text
+    assert "errors=0 | activity=601" in plain_text
+
+
+def test_report_builder_shows_external_memory_consumers_from_recent_events(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [],
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 100.0, "minus_5m": 90.0, "minus_15m": 80.0},
+    }
+    recent_events = [
+        (
+            datetime.now(),
+            CrashEvent(
+                crash_type=CrashType.HIGH_RESOURCE_USAGE,
+                severity=Severity.WARNING,
+                message="External memory pressure",
+                timestamp=datetime.now(),
+                details={"top_consumers_external": "java.exe (PID 18748, 2.5 GB), Code.exe (PID 10064, 0.4 GB)"},
+            ),
+        )
+    ]
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=1,
+        uptime="1m 0s",
+        recent_events=recent_events,
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "External Memory Consumers" in html_body
+    assert "java.exe (PID 18748, 2.5 GB)" in html_body
+    assert "External Memory Consumers: java.exe (PID 18748, 2.5 GB)" in plain_text
+
+
+def test_report_builder_recent_events_header_shows_display_count(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [],
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 100.0, "minus_5m": 90.0, "minus_15m": 80.0},
+    }
+    recent_events = [
+        (
+            datetime.now(),
+            CrashEvent(
+                crash_type=CrashType.LOG_ERROR,
+                severity=Severity.WARNING,
+                message="Error A",
+                timestamp=datetime.now(),
+                details={},
+            ),
+        )
+    ]
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=4,
+        uptime="1m 0s",
+        recent_events=recent_events,
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "Recent Events (showing 1 of 4)" in html_body

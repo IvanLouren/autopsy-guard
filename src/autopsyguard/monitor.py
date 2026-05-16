@@ -771,6 +771,7 @@ class Monitor:
         return aggregated
 
     def _inject_module_error_summary(self, telemetry: dict[str, object]) -> None:
+        telemetry["module_errors_summary"] = []
         if not self._module_error_summary_since_report:
             return
         summary_items = sorted(
