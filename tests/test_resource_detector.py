@@ -320,4 +320,69 @@ class TestExternalMemoryPressure:
         assert len(first_ext) == 1
         assert len(second_ext) == 1
 
+    def test_autopsy_child_java_is_not_counted_as_external_consumer(self, config: MonitorConfig) -> None:
+        """Child Java/Solr should be attributed to Autopsy, not external apps."""
+        config.memory_warning_percent = 85.0
+        detector = ResourceDetector(config)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VmemResult = namedtuple("VmemResult", ["percent", "used", "total"])
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
+            with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+                # Autopsy root process
+                proc = MagicMock()
+                proc.cpu_percent.return_value = 10.0
+                proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+                proc.name.return_value = "autopsy64.exe"
+
+                # Child Java/Solr process (must be treated as Autopsy usage)
+                child = MagicMock()
+                child.pid = 2000
+                child.name.return_value = "java.exe"
+                child.cmdline.return_value = ["java.exe", "org.apache.solr.core.CoreContainer"]
+                child.memory_info.return_value = MemInfo(rss=8 * 1024**3)
+                proc.children.return_value = [child]
+
+                mock_psutil.Process.return_value = proc
+
+                # 30 GB used out of 32 GB. Autopsy total should be 10 GB (2 + 8).
+                mock_psutil.virtual_memory.return_value = VmemResult(
+                    percent=93.0,
+                    used=30 * 1024**3,
+                    total=32 * 1024**3,
+                )
+                mock_psutil.disk_usage.return_value = MagicMock(
+                    free=50 * 1024**3, total=100 * 1024**3
+                )
+                mock_psutil.cpu_count.return_value = 8
+
+                # External process list includes java child PID too; detector must exclude it.
+                fake_procs = []
+                for name, pid, rss_gb in [
+                    ("java.exe", 2000, 8),
+                    ("Code.exe", 5001, 2),
+                    ("chrome.exe", 5002, 1),
+                ]:
+                    fp = MagicMock()
+                    fp.info = {
+                        "pid": pid,
+                        "name": name,
+                        "memory_info": MagicMock(rss=rss_gb * 1024**3),
+                    }
+                    fake_procs.append(fp)
+                mock_psutil.process_iter.return_value = fake_procs
+                mock_psutil.NoSuchProcess = Exception
+                mock_psutil.AccessDenied = PermissionError
+
+                events = detector.check()
+
+        ext_events = [e for e in events if "Other processes" in e.message]
+        assert len(ext_events) == 1
+        details = ext_events[0].details
+        assert "java.exe" not in details["top_consumers"]
+        assert "java.exe" in details["autopsy_child_consumers"]
+        assert details["autopsy_rss_gb"] == pytest.approx(10.0, rel=0.05)
+
 

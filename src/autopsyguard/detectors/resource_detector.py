@@ -18,6 +18,7 @@ from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
 import autopsyguard.utils.process_utils as process_utils
+from autopsyguard.platform_utils import get_autopsy_process_names, get_java_process_names
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class ResourceDetector(BaseDetector):
         self._external_mem_min_delta_percent = 1.0
         self._external_mem_min_delta_fraction = 5.0
         self._external_mem_min_delta_other_gb = 0.5
+        self._autopsy_names = {n.lower() for n in get_autopsy_process_names()}
+        self._java_names = {n.lower() for n in get_java_process_names()}
 
     @property
     def name(self) -> str:
@@ -253,6 +256,62 @@ class ResourceDetector(BaseDetector):
     # External memory pressure
     # ------------------------------------------------------------------
 
+    def _is_java_like_process(self, proc: psutil.Process) -> bool:
+        try:
+            name = (proc.name() or "").lower()
+        except Exception:
+            name = ""
+        if name in self._java_names:
+            return True
+
+        try:
+            cmd = " ".join(str(x).lower() for x in (proc.cmdline() or []))
+        except Exception:
+            cmd = ""
+        return any(marker in cmd for marker in ("org.sleuthkit.autopsy", "org.apache.solr", "keywordsearch", "solr"))
+
+    def _collect_autopsy_related_processes(
+        self,
+        autopsy_pid: int,
+        *,
+        root_proc: psutil.Process | None = None,
+    ) -> dict[int, tuple[str, int]]:
+        """Return PID->(name,rss_bytes) for Autopsy launcher + JVM children."""
+        root = root_proc
+        if root is None:
+            try:
+                root = psutil.Process(autopsy_pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return {}
+
+        related: dict[int, tuple[str, int]] = {}
+        try:
+            root_mem = int(root.memory_info().rss)
+        except Exception:
+            root_mem = 0
+        try:
+            root_name = root.name() or "autopsy"
+        except Exception:
+            root_name = "autopsy"
+        related[autopsy_pid] = (root_name, root_mem)
+
+        try:
+            children = root.children(recursive=True)
+        except Exception:
+            children = []
+        for child in children:
+            try:
+                if not self._is_java_like_process(child):
+                    continue
+                rss = int(child.memory_info().rss)
+                name = child.name() or "java"
+                related[child.pid] = (name, rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception:
+                continue
+        return related
+
     def _check_external_memory_pressure(self, pid: int) -> list[CrashEvent]:
         """Detect when system memory is high but Autopsy is NOT the main consumer.
 
@@ -263,7 +322,6 @@ class ResourceDetector(BaseDetector):
         try:
             system_mem = psutil.virtual_memory()
             proc = self._proc if self._proc is not None and self._proc_pid == pid else psutil.Process(pid)
-            autopsy_rss = proc.memory_info().rss
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return []
 
@@ -271,9 +329,14 @@ class ResourceDetector(BaseDetector):
             system_used = int(system_mem.used)
             system_total = int(system_mem.total)
             system_percent = float(system_mem.percent)
-            autopsy_rss = int(autopsy_rss)
         except Exception:
             return []
+
+        related = self._collect_autopsy_related_processes(pid, root_proc=proc)
+        if not related:
+            return []
+        autopsy_rss = sum(rss for _, rss in related.values())
+        autopsy_rss = max(0, min(autopsy_rss, system_used))
 
         # Only trigger when system memory is high
         if system_percent < self.config.memory_warning_percent:
@@ -287,11 +350,8 @@ class ResourceDetector(BaseDetector):
             self._external_mem_warning_reported = False
             return []
 
-        # Find top 5 non-Autopsy processes by memory
-        from autopsyguard.platform_utils import get_autopsy_process_names, get_java_process_names
-        autopsy_names = {n.lower() for n in get_autopsy_process_names()}
-        java_names = {n.lower() for n in get_java_process_names()}
-        exclude_pids = {pid}  # Autopsy PID
+        # Find top 5 external (non-Autopsy-tree) processes by memory.
+        exclude_pids = set(related.keys())
 
         top_procs: list[tuple[str, int, float]] = []  # (name, pid, rss_bytes)
         try:
@@ -300,7 +360,7 @@ class ResourceDetector(BaseDetector):
                     p_pid = p.info["pid"]
                     p_name = (p.info.get("name") or "").lower()
                     p_mem = p.info.get("memory_info")
-                    if p_pid in exclude_pids or p_name in autopsy_names:
+                    if p_pid in exclude_pids or p_name in self._autopsy_names:
                         continue
                     if p_mem is not None:
                         rss = int(p_mem.rss)
@@ -313,13 +373,26 @@ class ResourceDetector(BaseDetector):
         # Sort by RSS descending and take top 5
         top_procs.sort(key=lambda x: x[2], reverse=True)
         top_5 = top_procs[:5]
+        child_top = sorted(
+            [
+                (proc_name, proc_pid, rss)
+                for proc_pid, (proc_name, rss) in related.items()
+                if proc_pid != pid
+            ],
+            key=lambda x: x[2],
+            reverse=True,
+        )[:5]
 
         # Build message
         autopsy_gb = autopsy_rss / (1024**3)
-        other_used_gb = (system_used - autopsy_rss) / (1024**3)
+        other_used_gb = max(0.0, (system_used - autopsy_rss) / (1024**3))
         top_list = ", ".join(
             f"{name} (PID {p_pid}, {rss / (1024**3):.1f} GB)"
             for name, p_pid, rss in top_5
+        )
+        child_list = ", ".join(
+            f"{name} (PID {p_pid}, {rss / (1024**3):.1f} GB)"
+            for name, p_pid, rss in child_top
         )
 
         now = time.time()
@@ -353,13 +426,18 @@ class ResourceDetector(BaseDetector):
             message=(
                 f"System memory at {system_percent:.1f}% but Autopsy only uses "
                 f"{autopsy_gb:.1f} GB ({autopsy_fraction * 100:.0f}% of used). "
-                f"Other processes are consuming {other_used_gb:.1f} GB."
+                f"Other processes are consuming {other_used_gb:.1f} GB "
+                f"(Autopsy child JVMs excluded from external consumers)."
             ),
             details={
                 "system_memory_percent": system_percent,
                 "autopsy_rss_gb": round(autopsy_gb, 2),
                 "autopsy_fraction_of_used": round(autopsy_fraction * 100, 1),
                 "other_used_gb": round(other_used_gb, 2),
+                "autopsy_related_pids": sorted(exclude_pids),
+                "autopsy_child_consumers": child_list,
+                "top_consumers_external": top_list,
+                # Backward-compatible key for existing templates/parsers.
                 "top_consumers": top_list,
             },
         )]
