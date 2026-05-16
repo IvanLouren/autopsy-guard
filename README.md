@@ -26,6 +26,7 @@ This repository is a final-year software engineering project focused on operatio
 ## First 15 Minutes (Recommended Onboarding)
 
 This project is designed to be configured through the setup wizards first.
+The wizard is a helpful quickstart path, not the final word for heavy/production tuning.
 
 ### 0) Do This First: Gmail App Password
 
@@ -57,6 +58,13 @@ Wizard behavior:
 - uses App Password-first guidance for Gmail
 - writes `config.local.yml` + `.env` with deterministic structure
 - prints an operational checklist and common-failure fixes
+
+For real intense/long-running production workloads, review and tune from:
+
+- `config.development.example.yml`
+- `config.production.example.yml`
+
+Use the wizard output as a starting point, then align thresholds and cadence with your environment.
 
 ### 2) Open Autopsy Case First
 

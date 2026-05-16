@@ -1,6 +1,7 @@
 # AutopsyGuard Setup Wizard Guide
 
 This guide explains every setup wizard step for operators who need predictable, production-safe onboarding.
+The wizard is a quickstart accelerator. For high-intensity or production-grade setups, use the example config templates as the primary tuning reference after initial wizard generation.
 
 ## 1. Prerequisites Checklist
 
@@ -133,3 +134,14 @@ Required operator order:
 | TLS errors | 587/STARTTLS or 465/SSL pairing |
 | Case validation fails | `case_dir` points to real case, contains `*.aut` |
 | Channel silent (WA/TG) | required channel keys/users configured |
+
+## 6. Quickstart vs Production Tuning
+
+- Quickstart: use wizard to generate a valid working baseline fast.
+- Production/heavy ingest: review and tune using:
+  - `config.development.example.yml`
+  - `config.production.example.yml`
+- Recommended workflow:
+  1. generate with wizard
+  2. compare against the example template closest to your environment
+  3. tighten thresholds/report cadence before long runs
