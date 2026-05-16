@@ -375,3 +375,25 @@ def test_post_ingest_resource_alerts_emit_after_grace_window(tmp_path: Path) -> 
     filtered = monitor._filter_post_ingest_resource_alerts([event], now=1001.0)
     assert len(filtered) == 1
     assert filtered[0].crash_type == CrashType.HIGH_RESOURCE_USAGE
+
+
+def test_post_ingest_grace_suppresses_buffered_resource_flush(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+    monitor._correlation_window_seconds = 10.0
+    monitor._post_ingest_resource_grace_until = 200.0
+    event = CrashEvent(
+        crash_type=CrashType.HIGH_RESOURCE_USAGE,
+        severity=Severity.WARNING,
+        message="Autopsy sustained CPU at 220%",
+    )
+
+    # Resource event is buffered before it would be flushed.
+    assert monitor._collect_alert_notifications([event], now=100.0) == []
+    ready = monitor._collect_alert_notifications([], now=120.0)
+    assert len(ready) == 1
+
+    # Pipeline must suppress this post-ingest flush during grace window.
+    suppressed = monitor._filter_post_ingest_resource_alerts(ready, now=120.0)
+    assert suppressed == []

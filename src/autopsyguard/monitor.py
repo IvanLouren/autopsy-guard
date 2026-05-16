@@ -283,6 +283,7 @@ class Monitor:
         alert_events = self._filter_post_ingest_resource_alerts(alert_events, now=now)
         alert_events = self._aggregate_keyword_search_alerts(alert_events, now=now)
         ready_alerts = self._collect_alert_notifications(alert_events, now)
+        ready_alerts = self._filter_post_ingest_resource_alerts(ready_alerts, now=now)
         ready_alerts = self._filter_nonfatal_solr_ping_alerts(ready_alerts)
         if ready_alerts and self._has_ingest_started_ever:
             self.notifier.send_alert(ready_alerts)
