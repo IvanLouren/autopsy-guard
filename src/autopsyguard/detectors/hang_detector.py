@@ -30,7 +30,7 @@ import psutil
 from autopsyguard.config import MonitorConfig
 from autopsyguard.detectors.base import BaseDetector
 from autopsyguard.models import CrashEvent, CrashType, Severity
-from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file
+from autopsyguard.platform_utils import get_autopsy_log_dir, get_case_log_file, get_java_process_names
 from autopsyguard.utils.process_utils import find_autopsy_pid
 
 logger = logging.getLogger(__name__)
@@ -77,9 +77,12 @@ class HangDetector(BaseDetector):
         super().__init__(config)
         self._solr_cache = solr_cache
         self._log_detector = log_detector
+        self._proc: psutil.Process | None = None
+        self._proc_pid: int | None = None
+        self._proc_cache: dict[int, psutil.Process] = {}
+        self._java_names = {n.lower() for n in get_java_process_names()}
         # CPU tracking
         self._low_cpu_start: float | None = None
-        self._last_cpu_value: float | None = None
         
         # Log tracking
         self._log_stale_start: float | None = None
@@ -94,6 +97,8 @@ class HangDetector(BaseDetector):
         
         # Process restart tracking
         self._last_known_pid: int | None = None
+        self._startup_grace_until = 0.0
+        self._pid_switch_grace_seconds = max(15.0, self.config.poll_interval * 3.0)
 
     @property
     def name(self) -> str:
@@ -112,6 +117,14 @@ class HangDetector(BaseDetector):
                             self._last_known_pid, current_pid)
                 self._reset_hang_state()
             self._last_known_pid = current_pid
+            if current_pid is not None:
+                self._startup_grace_until = now + self._pid_switch_grace_seconds
+            else:
+                self._startup_grace_until = 0.0
+            if current_pid is None:
+                self._proc = None
+                self._proc_pid = None
+                self._proc_cache.clear()
 
         # Collect signals (fetch PID once and pass through)
         cpu_signal = self._check_cpu_signal(now, current_pid)
@@ -130,6 +143,10 @@ class HangDetector(BaseDetector):
                     "Hang signals present but no ingest job active — "
                     "suppressing (Autopsy is idle)"
                 )
+            return events
+
+        # Ignore transient signal spikes during startup/transition windows.
+        if now < self._startup_grace_until:
             return events
         
         # Need at least 2 signals to declare a hang
@@ -181,31 +198,30 @@ class HangDetector(BaseDetector):
         """
         if pid is None:
             self._low_cpu_start = None
-            self._last_cpu_value = None
+            self._proc = None
+            self._proc_pid = None
+            self._proc_cache.clear()
             return None
 
         try:
-            proc = psutil.Process(pid)
-            # Use non-blocking measurement to avoid adding 100ms blocking
-            # per detector call. `interval=None` returns percent since the
-            # last call for this process; the first call may return 0.0.
-            # This trade-off reduces latency at short `poll_interval` values.
-            cpu = proc.cpu_percent(interval=None)
+            proc = self._proc if self._proc is not None and self._proc_pid == pid else psutil.Process(pid)
+            if proc is not self._proc:
+                try:
+                    proc.cpu_percent(interval=0.1)
+                except Exception:
+                    pass
+                self._proc = proc
+                self._proc_pid = pid
+                logger.debug("Rebuilt Autopsy process cache for PID %s", pid)
+            cpu, sampled_pids = self._sample_cpu_tree(pid, root_proc=proc)
+            if sampled_pids:
+                logger.debug("HangDetector CPU tree sample: root_pid=%s sampled=%s cpu=%.2f%%", pid, sampled_pids, cpu)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._low_cpu_start = None
+            self._proc = None
+            self._proc_pid = None
+            self._proc_cache.clear()
             return None
-
-        # Discard the first sample after PID discovery — psutil returns 0.0
-        # on the first call for a process, which would otherwise start the
-        # low-CPU timer too early and may cause false-positive hang detection.
-        if self._last_cpu_value is None:
-            try:
-                self._last_cpu_value = float(cpu)
-            except Exception:
-                self._last_cpu_value = 0.0
-            return None
-
-        self._last_cpu_value = cpu
         
         if cpu <= self.config.hang_cpu_threshold:
             if self._low_cpu_start is None:
@@ -223,6 +239,91 @@ class HangDetector(BaseDetector):
             self._low_cpu_start = None
 
         return None
+
+    def _is_java_like_process(self, proc: psutil.Process) -> bool:
+        try:
+            name = (proc.name() or "").lower()
+        except Exception:
+            name = ""
+        if name in self._java_names:
+            return True
+
+        try:
+            cmd = " ".join(str(x).lower() for x in (proc.cmdline() or []))
+        except Exception:
+            cmd = ""
+        if any(marker in cmd for marker in ("org.sleuthkit.autopsy", "org.apache.solr", "keywordsearch", "solr")):
+            return True
+        return False
+
+    def _collect_related_pids(
+        self,
+        pid: int,
+        *,
+        root_proc: psutil.Process | None = None,
+    ) -> list[int]:
+        pids: set[int] = {pid}
+        parent = root_proc
+        if parent is None:
+            try:
+                parent = psutil.Process(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return []
+        try:
+            children = parent.children(recursive=True)
+        except Exception:
+            children = []
+
+        for child in children:
+            try:
+                if self._is_java_like_process(child):
+                    pids.add(child.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return sorted(pids)
+
+    def _sample_cpu_tree(
+        self,
+        pid: int,
+        *,
+        root_proc: psutil.Process | None = None,
+    ) -> tuple[float, list[int]]:
+        pids = self._collect_related_pids(pid, root_proc=root_proc)
+        if not pids:
+            return 0.0, []
+
+        total_cpu = 0.0
+        sampled: list[int] = []
+        live_pids = set(pids)
+        for tree_pid in pids:
+            proc = self._proc_cache.get(tree_pid)
+            if proc is None and root_proc is not None and tree_pid == pid:
+                # Reuse root process object already acquired by _check_cpu_signal
+                # to avoid duplicate Process(...) calls and double-priming.
+                self._proc_cache[tree_pid] = root_proc
+                sampled.append(tree_pid)
+                continue
+            if proc is None:
+                try:
+                    proc = psutil.Process(tree_pid)
+                    proc.cpu_percent(interval=0.1)
+                    self._proc_cache[tree_pid] = proc
+                    sampled.append(tree_pid)
+                    continue
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            try:
+                total_cpu += float(proc.cpu_percent(interval=None))
+                sampled.append(tree_pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                self._proc_cache.pop(tree_pid, None)
+            except Exception:
+                continue
+
+        stale = [cached_pid for cached_pid in self._proc_cache if cached_pid not in live_pids]
+        for stale_pid in stale:
+            self._proc_cache.pop(stale_pid, None)
+        return total_cpu, sampled
 
     def _check_log_signal(self, now: float) -> LogSignal | None:
         """Check if log files have stopped being written.
@@ -382,10 +483,12 @@ class HangDetector(BaseDetector):
     def _reset_hang_state(self) -> None:
         """Reset all hang tracking state when process restarts."""
         self._low_cpu_start = None
-        self._last_cpu_value = None
         self._log_stale_start = None
         self._last_log_mtime = None
         self._solr_unresponsive_start = None
         self._hang_reported = False
         self._hang_start_time = None
+        self._proc = None
+        self._proc_pid = None
+        self._proc_cache.clear()
 

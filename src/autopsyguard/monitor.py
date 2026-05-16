@@ -95,6 +95,8 @@ class Monitor:
         self._pending_alert_events: list[CrashEvent] = []
         self._pending_alert_keys: set[str] = set()
         self._pending_alert_started_at: float | None = None
+        self._alert_cooldown_seconds = max(90.0, self.config.poll_interval * 12.0)
+        self._last_alert_signature_at: dict[str, float] = {}
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -421,8 +423,44 @@ class Monitor:
         if (has_priority or has_critical) and (
             pending_before == 0 or len(self._pending_alert_events) > len(alert_events)
         ):
-            return self._flush_pending_alerts(now, force=True)
-        return self._flush_pending_alerts(now, force=False)
+            ready = self._flush_pending_alerts(now, force=True)
+            return self._apply_alert_cooldown(ready, now)
+        ready = self._flush_pending_alerts(now, force=False)
+        return self._apply_alert_cooldown(ready, now)
+
+    def _alert_batch_signature(self, events: list[CrashEvent]) -> str:
+        if not events:
+            return ""
+        if len(events) == 1 and events[0].crash_type == CrashType.CORRELATED_INCIDENT:
+            event_types = events[0].details.get("event_types") or []
+            type_part = ",".join(sorted(str(x) for x in event_types))
+            sev = events[0].severity.name
+            return f"{sev}|CORRELATED|{type_part}"
+        sev = "CRITICAL" if any(e.severity == Severity.CRITICAL for e in events) else "WARNING"
+        type_part = ",".join(sorted(e.crash_type.name for e in events))
+        return f"{sev}|{type_part}"
+
+    def _apply_alert_cooldown(self, events: list[CrashEvent], now: float) -> list[CrashEvent]:
+        if not events:
+            return []
+        signature = self._alert_batch_signature(events)
+        if not signature:
+            return events
+        last_sent = self._last_alert_signature_at.get(signature)
+        if last_sent is not None and (now - last_sent) < self._alert_cooldown_seconds:
+            logger.info(
+                "Suppressing duplicate alert signature within cooldown (%ss): %s",
+                int(self._alert_cooldown_seconds),
+                signature,
+            )
+            return []
+        self._last_alert_signature_at[signature] = now
+        # Prune stale entries.
+        stale_cutoff = now - (self._alert_cooldown_seconds * 3.0)
+        stale_keys = [k for k, ts in self._last_alert_signature_at.items() if ts < stale_cutoff]
+        for key in stale_keys:
+            self._last_alert_signature_at.pop(key, None)
+        return events
 
     @staticmethod
     def _handle_event(event: CrashEvent) -> None:

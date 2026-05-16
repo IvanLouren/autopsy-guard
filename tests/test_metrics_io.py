@@ -85,6 +85,49 @@ class TestMetricsStoreIO:
         assert sample["autopsy_cpu_percent"] == 0.0
         store.close()
 
+    def test_record_sample_reuses_autopsy_process(self, tmp_path: Path) -> None:
+        """record_sample() should reuse the same psutil.Process for the same PID."""
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        db_path = tmp_path / "test.db"
+
+        store = MetricsStore(case_dir=case_dir, db_path=db_path)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VirtualMem = namedtuple("VirtualMem", ["percent", "used", "total"])
+        DiskUsage = namedtuple("DiskUsage", ["free", "total"])
+        DiskIO = namedtuple("DiskIO", ["read_bytes", "write_bytes", "read_count", "write_count", "read_time", "write_time"])
+        IoCounters = namedtuple("IoCounters", ["read_count", "write_count", "read_bytes", "write_bytes"])
+
+        mock_proc = MagicMock()
+        mock_proc.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+        mock_proc.cpu_percent.return_value = 10.0
+        mock_proc.io_counters.return_value = IoCounters(
+            read_count=100,
+            write_count=50,
+            read_bytes=500_000_000,
+            write_bytes=200_000_000,
+        )
+
+        with patch("autopsyguard.utils.metrics_store.find_autopsy_pid", return_value=1234), \
+             patch("autopsyguard.utils.metrics_store.psutil") as mock_psutil:
+            mock_psutil.cpu_percent.return_value = 45.0
+            mock_psutil.virtual_memory.return_value = VirtualMem(percent=60.0, used=8*1024**3, total=16*1024**3)
+            mock_psutil.disk_usage.return_value = DiskUsage(free=100*1024**3, total=500*1024**3)
+            mock_psutil.disk_io_counters.return_value = DiskIO(
+                read_bytes=1_000_000_000, write_bytes=800_000_000,
+                read_count=5000, write_count=3000, read_time=100, write_time=80,
+            )
+            mock_psutil.Process.return_value = mock_proc
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            store.record_sample()
+            store.record_sample()
+
+        assert mock_psutil.Process.call_count == 1
+        store.close()
+
     def test_record_sample_no_autopsy_process(self, tmp_path: Path) -> None:
         """When Autopsy is not running, autopsy I/O should be 0."""
         case_dir = tmp_path / "case"
@@ -140,6 +183,65 @@ class TestMetricsStoreIO:
         assert got[0.0] == 30.0
         assert got[300.0] == 20.0
         assert got[900.0] == 10.0
+        store.close()
+
+    def test_record_sample_sums_cpu_across_autopsy_java_tree(self, tmp_path: Path) -> None:
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        db_path = tmp_path / "test.db"
+        store = MetricsStore(case_dir=case_dir, db_path=db_path)
+
+        MemInfo = namedtuple("MemInfo", ["rss"])
+        VirtualMem = namedtuple("VirtualMem", ["percent", "used", "total"])
+        DiskUsage = namedtuple("DiskUsage", ["free", "total"])
+        DiskIO = namedtuple("DiskIO", ["read_bytes", "write_bytes", "read_count", "write_count", "read_time", "write_time"])
+        IoCounters = namedtuple("IoCounters", ["read_count", "write_count", "read_bytes", "write_bytes"])
+
+        root = MagicMock()
+        root.pid = 1234
+        root.name.return_value = "autopsy64.exe"
+        root.cmdline.return_value = ["autopsy64.exe"]
+        root.memory_info.return_value = MemInfo(rss=2 * 1024**3)
+        root.io_counters.return_value = IoCounters(read_count=1, write_count=1, read_bytes=10, write_bytes=20)
+        root.cpu_percent.side_effect = [0.0, 3.0]
+
+        child = MagicMock()
+        child.pid = 5678
+        child.name.return_value = "java.exe"
+        child.cmdline.return_value = ["java.exe", "org.sleuthkit.autopsy.keywordsearch.Server"]
+        child.cpu_percent.side_effect = [0.0, 7.0]
+        root.children.return_value = [child]
+
+        def _proc_for_pid(pid: int):
+            if pid == 1234:
+                return root
+            if pid == 5678:
+                return child
+            raise Exception("unexpected pid")
+
+        with patch("autopsyguard.utils.metrics_store.find_autopsy_pid", return_value=1234), \
+             patch("autopsyguard.utils.metrics_store.psutil") as mock_psutil:
+            mock_psutil.cpu_percent.return_value = 45.0
+            mock_psutil.virtual_memory.return_value = VirtualMem(percent=60.0, used=8 * 1024**3, total=16 * 1024**3)
+            mock_psutil.disk_usage.return_value = DiskUsage(free=100 * 1024**3, total=500 * 1024**3)
+            mock_psutil.disk_io_counters.return_value = DiskIO(
+                read_bytes=1_000_000_000,
+                write_bytes=800_000_000,
+                read_count=5000,
+                write_count=3000,
+                read_time=100,
+                write_time=80,
+            )
+            mock_psutil.Process.side_effect = _proc_for_pid
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            store.record_sample()
+            store.record_sample()
+
+        samples = store.fetch_samples(since_ts=0)
+        assert len(samples) == 2
+        assert samples[-1]["autopsy_cpu_percent"] == pytest.approx(10.0)
         store.close()
 
 

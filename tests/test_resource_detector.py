@@ -64,6 +64,29 @@ class TestCpuMonitoring:
 
         assert events == []
 
+    def test_reuses_cached_process_for_cpu_sampling(self, config: MonitorConfig) -> None:
+        detector = ResourceDetector(config)
+
+        with patch("autopsyguard.utils.process_utils.find_autopsy_pid") as mock_find:
+            mock_find.return_value = 1000
+            with patch("autopsyguard.detectors.resource_detector.psutil") as mock_psutil:
+                proc = MagicMock()
+                proc.cpu_percent.return_value = 10.0
+                MemInfo = namedtuple("MemInfo", ["rss"])
+                proc.memory_info.return_value = MemInfo(rss=1 * 1024**3)
+                mock_psutil.Process.return_value = proc
+
+                VmemResult = namedtuple("VmemResult", ["total"])
+                mock_psutil.virtual_memory.return_value = VmemResult(total=16 * 1024**3)
+                mock_psutil.disk_usage.return_value = MagicMock(
+                    free=50 * 1024**3, total=100 * 1024**3
+                )
+
+                detector.check()
+                detector.check()
+
+        assert mock_psutil.Process.call_count == 1
+
 
 class TestMemoryMonitoring:
     """Crash type 6: excessive memory usage."""

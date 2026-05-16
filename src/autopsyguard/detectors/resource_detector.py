@@ -32,9 +32,8 @@ class ResourceDetector(BaseDetector):
         self._mem_warning_reported = False
         self._disk_warning_reported = False
         self._external_mem_warning_reported = False
-        # Track whether we've seen a cpu_percent sample for a given PID
-        # because psutil returns 0.0 on the very first call for a process.
-        self._seen_cpu_pid: set[int] = set()
+        self._proc: psutil.Process | None = None
+        self._proc_pid: int | None = None
 
     @property
     def name(self) -> str:
@@ -48,6 +47,9 @@ class ResourceDetector(BaseDetector):
             events.extend(self._check_cpu(pid))
             events.extend(self._check_memory(pid))
             events.extend(self._check_external_memory_pressure(pid))
+        else:
+            self._proc = None
+            self._proc_pid = None
 
         events.extend(self._check_disk())
 
@@ -60,7 +62,15 @@ class ResourceDetector(BaseDetector):
     def _check_cpu(self, pid: int) -> list[CrashEvent]:
         now = time.time()
         try:
-            proc = psutil.Process(pid)
+            proc = self._proc if self._proc is not None and self._proc_pid == pid else psutil.Process(pid)
+            if proc is not self._proc:
+                try:
+                    proc.cpu_percent(interval=0.1)
+                except Exception:
+                    pass
+                self._proc = proc
+                self._proc_pid = pid
+                logger.debug("Rebuilt Autopsy process cache for PID %s", pid)
             # Use non-blocking measurement: `interval=None` returns the
             # percentage since the last call to `cpu_percent()` for this
             # process. This avoids blocking the monitoring loop for 100ms
@@ -70,22 +80,17 @@ class ResourceDetector(BaseDetector):
             cpu = proc.cpu_percent(interval=None)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._high_cpu_since = None
+            self._proc = None
+            self._proc_pid = None
             return []
 
-        # Discard the first non-informative sample for this PID. psutil
-        # often returns 0.0 on the first call — in that case we ignore
-        # the sample. If the first sample is non-zero (e.g. tests/mocks),
-        # treat it as valid.
-        if pid not in self._seen_cpu_pid:
-            self._seen_cpu_pid.add(pid)
-            try:
-                cpu_val = float(cpu)
-            except Exception:
-                cpu_val = None
-            if cpu_val == 0.0:
-                return []
-            if cpu_val is not None:
-                cpu = cpu_val
+        # The cached process has already been warmed once, so a sample of
+        # 0.0 now represents an actual idle reading rather than a psutil
+        # bootstrap artifact.
+        try:
+            cpu = float(cpu)
+        except Exception:
+            cpu = 0.0
 
         # Interpret psutil's process CPU percent: can exceed 100% when
         # the process uses multiple logical cores (e.g. 250% ~= 2.5 cores).
@@ -162,7 +167,7 @@ class ResourceDetector(BaseDetector):
 
     def _check_memory(self, pid: int) -> list[CrashEvent]:
         try:
-            proc = psutil.Process(pid)
+            proc = self._proc if self._proc is not None and self._proc_pid == pid else psutil.Process(pid)
             mem_info = proc.memory_info()
             system_mem = psutil.virtual_memory()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -251,7 +256,7 @@ class ResourceDetector(BaseDetector):
         """
         try:
             system_mem = psutil.virtual_memory()
-            proc = psutil.Process(pid)
+            proc = self._proc if self._proc is not None and self._proc_pid == pid else psutil.Process(pid)
             autopsy_rss = proc.memory_info().rss
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return []

@@ -236,7 +236,8 @@ def test_report_builder_includes_solr_and_recent_module_summary(tmp_path):
     assert "Keyword/SOLR Activity" in html_body
     assert "checked at=" in html_body
     assert "last error=" in html_body
-    assert "Possible transient/local access contention." in html_body
+    assert "Sustained outage indication; investigate Solr health." in html_body
+    assert "Current: 7.0% (0.1 cores)" in html_body
     assert "autopsy.db: missing" in plain_text
 
 
@@ -315,3 +316,40 @@ def test_report_builder_prefers_active_module_over_ingest_start(tmp_path):
     assert "Current/Recent Module" in html_body
     assert "Keyword Search | active | 2026-05-15 18:31:42" in html_body
 
+
+def test_report_builder_solr_na_values_render_without_invalid_units(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": False, "size_bytes": None, "updated_at": None},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-15 18:31:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity": [],
+        "solr": {
+            "state": "down",
+            "response_time_seconds": None,
+            "checked_at": "2026-05-15 18:31:42",
+            "error": None,
+            "heap_usage_percent": None,
+            "cpu_percent": None,
+        },
+        "autopsy_cpu_timeline": {"current": None, "minus_5m": None, "minus_15m": None},
+    }
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "rt=N/A" in html_body
+    assert "heap=N/A" in html_body
+    assert "cpu=N/A" in html_body
+    assert "last error=N/A" in html_body
+    assert "N/As" not in html_body

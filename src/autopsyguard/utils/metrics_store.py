@@ -11,7 +11,7 @@ from typing import Any
 import psutil
 
 from autopsyguard.utils.process_utils import find_autopsy_pid
-from autopsyguard.platform_utils import get_autopsyguard_state_dir
+from autopsyguard.platform_utils import get_autopsyguard_state_dir, get_java_process_names
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,12 @@ class MetricsStore:
         # Cache of columns to insert for the current DB schema to avoid
         # running PRAGMA table_info on every sample (filesystem op).
         self._insert_cols: list[str] | None = None
+        # Cache the Autopsy process handle per PID so process.cpu_percent()
+        # keeps its sampling baseline across polls.
+        self._autopsy_proc: psutil.Process | None = None
+        self._autopsy_proc_pid: int | None = None
+        self._autopsy_proc_cache: dict[int, psutil.Process] = {}
+        self._java_names = {n.lower() for n in get_java_process_names()}
 
     def _configure_db(self) -> None:
         """Apply pragma settings that improve durability and reduce locking."""
@@ -105,6 +111,117 @@ class MetricsStore:
     def _get_table_columns(self, table: str) -> list[str]:
         cur = self._conn.execute(f"PRAGMA table_info({table})")
         return [row[1] for row in cur.fetchall()]
+
+    def _get_autopsy_process(self, autopsy_pid: int) -> psutil.Process | None:
+        if self._autopsy_proc is not None and self._autopsy_proc_pid == autopsy_pid:
+            return self._autopsy_proc
+
+        try:
+            proc = psutil.Process(autopsy_pid)
+            try:
+                proc.cpu_percent(interval=0.1)
+            except Exception:
+                pass
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            self._autopsy_proc = None
+            self._autopsy_proc_pid = None
+            return None
+
+        self._autopsy_proc = proc
+        self._autopsy_proc_pid = autopsy_pid
+        logger.debug("Rebuilt Autopsy process cache for PID %s", autopsy_pid)
+        return proc
+
+    def _is_java_like_process(self, proc: psutil.Process) -> bool:
+        try:
+            name = (proc.name() or "").lower()
+        except Exception:
+            name = ""
+        if name in self._java_names:
+            return True
+
+        try:
+            cmd = " ".join(str(x).lower() for x in (proc.cmdline() or []))
+        except Exception:
+            cmd = ""
+        if any(marker in cmd for marker in ("org.sleuthkit.autopsy", "org.apache.solr", "keywordsearch", "solr")):
+            return True
+        return False
+
+    def _collect_autopsy_related_pids(
+        self,
+        autopsy_pid: int,
+        *,
+        root_proc: psutil.Process | None = None,
+    ) -> list[int]:
+        root = root_proc
+        if root is None:
+            try:
+                root = psutil.Process(autopsy_pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return []
+
+        pids: set[int] = {autopsy_pid}
+        try:
+            children = root.children(recursive=True)
+        except Exception:
+            children = []
+
+        for child in children:
+            try:
+                if self._is_java_like_process(child):
+                    pids.add(child.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return sorted(pids)
+
+    def _sample_autopsy_cpu_tree(
+        self,
+        autopsy_pid: int,
+        *,
+        root_proc: psutil.Process | None = None,
+    ) -> tuple[float, list[int]]:
+        pids = self._collect_autopsy_related_pids(autopsy_pid, root_proc=root_proc)
+        if not pids:
+            return 0.0, []
+
+        total_cpu = 0.0
+        sampled: list[int] = []
+        live_pids = set(pids)
+        for pid in pids:
+            proc = self._autopsy_proc_cache.get(pid)
+            if proc is None and root_proc is not None and pid == autopsy_pid:
+                # Reuse the already-open root process handle from caller to avoid
+                # duplicate psutil.Process() constructions and preserve the
+                # first-sample priming semantics.
+                self._autopsy_proc_cache[pid] = root_proc
+                sampled.append(pid)
+                continue
+            if proc is None:
+                try:
+                    proc = psutil.Process(pid)
+                    # Prime baseline; skip contribution for this first sighting.
+                    proc.cpu_percent(interval=0.1)
+                    self._autopsy_proc_cache[pid] = proc
+                    sampled.append(pid)
+                    continue
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            try:
+                total_cpu += float(proc.cpu_percent(interval=None))
+                sampled.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                self._autopsy_proc_cache.pop(pid, None)
+            except Exception:
+                continue
+
+        # Drop stale cached processes that are no longer part of this tree.
+        stale_cached = [pid for pid in self._autopsy_proc_cache if pid not in live_pids]
+        for pid in stale_cached:
+            self._autopsy_proc_cache.pop(pid, None)
+
+        return total_cpu, sampled
 
     def _current_schema_version(self) -> int:
         try:
@@ -213,29 +330,37 @@ class MetricsStore:
             autopsy_write = 0
             autopsy_cpu = 0.0
             if autopsy_pid is not None:
-                try:
-                    proc = psutil.Process(autopsy_pid)
-                    autopsy_rss = proc.memory_info().rss
-                    # Non-blocking process CPU snapshot (can exceed 100 for multicore usage)
+                proc = self._get_autopsy_process(autopsy_pid)
+                if proc is not None:
                     try:
-                        autopsy_cpu = float(proc.cpu_percent(interval=None))
-                    except Exception:
+                        autopsy_rss = proc.memory_info().rss
+                        # Process-tree CPU snapshot (launcher + relevant JVM children).
+                        autopsy_cpu, sampled_pids = self._sample_autopsy_cpu_tree(
+                            autopsy_pid,
+                            root_proc=proc,
+                        )
+                        if sampled_pids:
+                            logger.debug(
+                                "Autopsy CPU tree sample: root_pid=%s sampled_pids=%s cpu=%.2f%%",
+                                autopsy_pid,
+                                sampled_pids,
+                                autopsy_cpu,
+                            )
+                        # Per-process I/O: cumulative read/write bytes for Autopsy
+                        # On Linux this needs root or CAP_SYS_PTRACE for other users' processes
+                        try:
+                            io = proc.io_counters()
+                            autopsy_read = int(io.read_bytes)
+                            autopsy_write = int(io.write_bytes)
+                        except (psutil.AccessDenied, AttributeError):
+                            # AccessDenied on Linux without privileges, or
+                            # AttributeError if io_counters not available on platform
+                            autopsy_read = 0
+                            autopsy_write = 0
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        autopsy_pid = None
+                        autopsy_rss = None
                         autopsy_cpu = 0.0
-                    # Per-process I/O: cumulative read/write bytes for Autopsy
-                    # On Linux this needs root or CAP_SYS_PTRACE for other users' processes
-                    try:
-                        io = proc.io_counters()
-                        autopsy_read = int(io.read_bytes)
-                        autopsy_write = int(io.write_bytes)
-                    except (psutil.AccessDenied, AttributeError):
-                        # AccessDenied on Linux without privileges, or
-                        # AttributeError if io_counters not available on platform
-                        autopsy_read = 0
-                        autopsy_write = 0
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    autopsy_pid = None
-                    autopsy_rss = None
-                    autopsy_cpu = 0.0
 
             # Desired mapping of column -> value (covers all schema versions)
             value_map = {

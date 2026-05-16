@@ -277,10 +277,11 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             return str(ts)
         return str(log_updated_at)
 
+    module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
     latest_module_line = (
         f"{latest_activity.get('module', tr(config, 'none'))} | "
         f"{latest_activity.get('state', tr(config, 'none'))} | "
-        f"{_activity_ts(latest_activity)}"
+        f"{_activity_ts(latest_activity)} | confidence={module_confidence}"
     )
 
     db_line = (
@@ -295,29 +296,39 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     )
     case_size = _bytes_to_human(telemetry.get("case_size_bytes"))
     solr_raw_state = str(solr.get("state", "unknown")).lower()
-    if solr_raw_state == "up":
-        solr_state = tr(config, "solr_up")
-    elif solr_raw_state == "down":
-        solr_state = tr(config, "solr_down")
-    else:
-        solr_state = tr(config, "none")
-
-    solr_error = solr.get("error") or tr(config, "none")
+    solr_rt = _format_optional_float(solr.get("response_time_seconds"), suffix="s")
+    solr_heap = _format_optional_float(solr.get("heap_usage_percent"), suffix="%")
+    solr_cpu = _format_optional_float(solr.get("cpu_percent"), suffix="%")
+    solr_error = str(solr.get("error") or "").strip() or tr(config, "none")
     solr_checked_at = solr.get("checked_at") or tr(config, "none")
     context = ""
     error_label = tr(config, "last_error")
+    solr_state = tr(config, "none")
     if solr_raw_state == "down":
-        err_low = str(solr.get("error") or "").lower()
+        solr_state = tr(config, "solr_down")
+        err_low = solr_error.lower()
         if any(token in err_low for token in ("connection", "refused", "forcibly", "reset", "timed out", "timeout")):
+            context = tr(config, "solr_context_outage")
+        elif "http 4" in err_low:
             context = tr(config, "solr_context_transient")
         else:
             context = tr(config, "solr_context_outage")
-    elif solr_raw_state == "up" and solr.get("error"):
-        context = tr(config, "solr_context_up_warning")
-        error_label = tr(config, "last_warning")
+    elif solr_raw_state == "up":
+        rt_val = _coerce_float(solr.get("response_time_seconds"))
+        slow_threshold = max(0.0, float(getattr(config, "solr_slow_threshold_seconds", 2.0)))
+        if solr.get("error"):
+            solr_state = "UP_WITH_WARNING"
+            context = tr(config, "solr_context_up_warning")
+            error_label = tr(config, "last_warning")
+        elif rt_val is not None and rt_val > slow_threshold:
+            solr_state = "DEGRADED"
+            context = "Solr is reachable but response latency is elevated."
+        else:
+            solr_state = tr(config, "solr_up")
+
     solr_line = (
-        f"{solr_state} | rt={solr.get('response_time_seconds') or 'N/A'}s | "
-        f"heap={solr.get('heap_usage_percent') or 'N/A'}% | cpu={solr.get('cpu_percent') or 'N/A'}% | "
+        f"{solr_state} | rt={solr_rt} | "
+        f"heap={solr_heap} | cpu={solr_cpu} | "
         f"{tr(config, 'checked_at')}={solr_checked_at} | {error_label}={solr_error}"
     )
     if context:
@@ -326,10 +337,21 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     cpu_now = cpu_tl.get("current")
     cpu_5m = cpu_tl.get("minus_5m")
     cpu_15m = cpu_tl.get("minus_15m")
+    cpu_cores_now = (cpu_now / 100.0) if cpu_now is not None else None
+    cpu_cores_5m = (cpu_5m / 100.0) if cpu_5m is not None else None
+    cpu_cores_15m = (cpu_15m / 100.0) if cpu_15m is not None else None
+
+    def _cpu_sample_label(label: str, cpu_value: float | None, core_value: float | None) -> str:
+        if cpu_value is None:
+            return f"{label}: N/A"
+        if core_value is None:
+            return f"{label}: {cpu_value:.1f}%"
+        return f"{label}: {cpu_value:.1f}% ({core_value:.1f} cores)"
+
     cpu_line = (
-        f"{tr(config, 'cpu_now')}: {f'{cpu_now:.1f}%' if cpu_now is not None else 'N/A'} | "
-        f"{tr(config, 'cpu_5m')}: {f'{cpu_5m:.1f}%' if cpu_5m is not None else 'N/A'} | "
-        f"{tr(config, 'cpu_15m')}: {f'{cpu_15m:.1f}%' if cpu_15m is not None else 'N/A'}"
+        f"{_cpu_sample_label(tr(config, 'cpu_now'), cpu_now, cpu_cores_now)} | "
+        f"{_cpu_sample_label(tr(config, 'cpu_5m'), cpu_5m, cpu_cores_5m)} | "
+        f"{_cpu_sample_label(tr(config, 'cpu_15m'), cpu_15m, cpu_cores_15m)}"
     )
 
     module_rows = ""
@@ -353,7 +375,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
     ]
     keyword_solr_line = tr(config, "keyword_solr_none")
     if keyword_solr_items:
-        item = keyword_solr_items[0]
+        item = _pick_recent_activity(keyword_solr_items)
         keyword_solr_line = (
             f"{item.get('module', tr(config, 'none'))} | "
             f"{item.get('state', tr(config, 'none'))} | "
@@ -410,13 +432,59 @@ def _pick_recent_activity(mod_activity: list[dict[str, Any]]) -> dict[str, Any]:
         "finish": 5,
     }
 
-    def _score(item: dict[str, Any]) -> tuple[int, int]:
+    def _score(item: dict[str, Any]) -> tuple[int, int, float]:
         state = str(item.get("state", "")).lower()
         module = str(item.get("module", "")).strip().lower()
         ingest_penalty = 1 if module == "ingest" and state in {"start", "finish"} else 0
-        return (ingest_penalty, priority.get(state, 9))
+        ts = _parse_activity_ts(item.get("timestamp"))
+        freshness = -ts.timestamp() if ts else float("inf")
+        return (ingest_penalty, priority.get(state, 9), freshness)
 
     return min(mod_activity, key=_score)
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _format_optional_float(value: Any, *, suffix: str = "") -> str:
+    numeric = _coerce_float(value)
+    if numeric is None:
+        return "N/A"
+    if suffix == "s":
+        return f"{numeric:.3f}{suffix}"
+    return f"{numeric:.1f}{suffix}"
+
+
+def _parse_activity_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _activity_confidence_label(activity: dict[str, Any], fallback_ts: Any) -> str:
+    ts = _parse_activity_ts(activity.get("timestamp")) or _parse_activity_ts(fallback_ts)
+    if ts is None:
+        return "stale"
+    age_seconds = (datetime.now() - ts).total_seconds()
+    if age_seconds <= 300:
+        return "current"
+    if age_seconds <= 1800:
+        return "recent"
+    return "stale"
 
 
 def _build_attachments(metrics_samples: list[dict[str, Any]] | None) -> list[tuple[str, bytes, str]]:

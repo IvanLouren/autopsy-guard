@@ -87,6 +87,23 @@ class TestHangDetection:
 
         assert events == []
 
+    def test_reuses_cached_process_for_cpu_sampling(self, config: MonitorConfig) -> None:
+        """HangDetector should reuse one psutil.Process per PID across checks."""
+        detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
+
+        with patch("autopsyguard.detectors.hang_detector.find_autopsy_pid", return_value=1000), \
+             patch("autopsyguard.detectors.hang_detector.psutil") as mock_psutil:
+            proc = MagicMock()
+            proc.cpu_percent.return_value = 25.0
+            mock_psutil.Process.return_value = proc
+
+            with patch.object(HangDetector, "_check_log_signal", return_value=None), \
+                 patch.object(HangDetector, "_check_solr_signal", return_value=None):
+                detector.check()
+                detector.check()
+
+        assert mock_psutil.Process.call_count == 1
+
     def test_no_process_no_hang(self, config: MonitorConfig) -> None:
         """If Autopsy isn't running, no hang to report."""
         detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
@@ -137,3 +154,41 @@ class TestHangDetection:
         # Should NOT trigger because no ingest job is active
         assert events == []
         assert detector._hang_reported is False
+
+    def test_cpu_tree_sampling_includes_java_children(self, config: MonitorConfig) -> None:
+        detector = HangDetector(config, log_detector=_mock_log_detector(ingest_running=True))
+
+        with patch("autopsyguard.detectors.hang_detector.psutil") as mock_psutil:
+            root = MagicMock()
+            root.pid = 1000
+            root.children.return_value = []
+            root.name.return_value = "autopsy64.exe"
+            root.cmdline.return_value = ["autopsy64.exe"]
+
+            child = MagicMock()
+            child.pid = 2000
+            child.name.return_value = "java.exe"
+            child.cmdline.return_value = ["java.exe", "org.apache.solr.core.CoreContainer"]
+
+            root.children.return_value = [child]
+            root.cpu_percent.side_effect = [0.0, 4.0]
+            child.cpu_percent.side_effect = [0.0, 11.0]
+
+            def _proc_for_pid(pid: int):
+                if pid == 1000:
+                    return root
+                if pid == 2000:
+                    return child
+                raise Exception("unexpected pid")
+
+            mock_psutil.Process.side_effect = _proc_for_pid
+            mock_psutil.NoSuchProcess = Exception
+            mock_psutil.AccessDenied = PermissionError
+
+            detector._sample_cpu_tree(1000, root_proc=root)
+            cpu, sampled = detector._sample_cpu_tree(1000, root_proc=root)
+
+        assert sampled == [1000, 2000]
+        # In this direct helper test the root proc is not pre-primed via
+        # _check_cpu_signal, so the first non-blocking root sample can be 0.0.
+        assert cpu == pytest.approx(11.0)
