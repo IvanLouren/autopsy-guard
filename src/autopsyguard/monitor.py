@@ -43,6 +43,10 @@ _NONFATAL_SOLR_PING_LOG_PATTERN = re.compile(
     r"Unknown RequestHandler \(qt\):\s*/?search",
     re.IGNORECASE,
 )
+_NON_ACTIONABLE_VENDOR_NULL_PATTERN = re.compile(
+    r"vendorname\s*==\s*null",
+    re.IGNORECASE,
+)
 _INGEST_JOB_ID_PATTERN = re.compile(r"(?:ingest\s+)?job\s+id\s*=\s*(\d+)", re.IGNORECASE)
 _DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^,\)]+)", re.IGNORECASE)
 _OBJECT_ID_PATTERN = re.compile(r"object id\s*=\s*(\d+)", re.IGNORECASE)
@@ -746,6 +750,7 @@ class Monitor:
         low = text.lower()
         module = str(details.get("module") or self._extract_signature_module(text))
         signature = self._extract_signature_family(text)
+        source_file = str(details.get("file") or "").strip().lower()
         ingest_job_id = self._extract_first_match(_INGEST_JOB_ID_PATTERN, text) or str(
             details.get("ingest_job_id") or "unknown"
         )
@@ -763,7 +768,18 @@ class Monitor:
             "line": line or event.message,
             "module": module,
             "is_keyword": "keyword search" in low or "keywordsearch" in low,
+            "source_file": source_file,
         }
+
+    @staticmethod
+    def _is_report_only_log_signature(context: dict[str, str], text: str) -> bool:
+        low = text.lower()
+        if context.get("signature") != "illegal_argument":
+            return False
+        if not _NON_ACTIONABLE_VENDOR_NULL_PATTERN.search(low):
+            return False
+        source_file = str(context.get("source_file") or "")
+        return source_file.endswith("messages.log")
 
     @staticmethod
     def _extract_first_match(pattern: re.Pattern[str], text: str) -> str | None:
@@ -801,6 +817,7 @@ class Monitor:
 
             event_epoch = self._event_epoch(event, now)
             key = context["incident_key"]
+            is_report_only = self._is_report_only_log_signature(context, f"{event.message} {context.get('line','')}")
             existing = self._log_error_incidents.get(key)
             if existing is None:
                 existing = {
@@ -808,9 +825,16 @@ class Monitor:
                     "first_seen": event_epoch,
                     "last_seen": event_epoch,
                     "occurrence_count": 1,
+                    "report_only": bool(is_report_only),
                 }
                 self._log_error_incidents[key] = existing
                 self._record_module_error_summary(existing)
+                if is_report_only:
+                    logger.info(
+                        "Suppressing known non-actionable log warning from immediate alerts: %s",
+                        context["line"][:140],
+                    )
+                    continue
                 aggregated.append(
                     CrashEvent(
                         crash_type=CrashType.LOG_ERROR,
@@ -837,6 +861,8 @@ class Monitor:
                 existing["last_seen"] = event_epoch
                 existing["occurrence_count"] = int(existing.get("occurrence_count", 0)) + 1
                 self._record_module_error_summary(existing)
+                if is_report_only or bool(existing.get("report_only")):
+                    continue
         return aggregated
 
     def _keyword_context(self, event: CrashEvent) -> dict[str, str] | None:

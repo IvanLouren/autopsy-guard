@@ -455,3 +455,54 @@ def test_non_keyword_log_error_burst_is_aggregated(tmp_path: Path) -> None:
     # Repeated signature should be suppressed into existing incident bucket.
     repeat = monitor._aggregate_log_error_alerts([events[0]], now=now + 10.0)
     assert repeat == []
+
+
+def test_vendorname_null_messages_log_is_report_only(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 600.0
+    event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Log Error detected in messages.log: Caused by: java.lang.IllegalArgumentException: vendorName == null!",
+        details={
+            "file": "C:/Users/test/AppData/Roaming/autopsy/var/log/messages.log",
+            "line": "Caused by: java.lang.IllegalArgumentException: vendorName == null!",
+        },
+    )
+
+    aggregated = monitor._aggregate_log_error_alerts([event], now=now)
+    assert aggregated == []
+    summary = list(monitor._module_error_summary_since_report.values())
+    assert len(summary) == 1
+    assert summary[0]["signature"] == "illegal_argument"
+
+
+def test_handle_active_does_not_dispatch_vendorname_null_alert(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._state = MonitorState.ACTIVE
+    monitor._metrics_store.record_sample = lambda: None
+    monitor._log_detector._ingest_running = True
+    monitor._has_ingest_started_ever = True
+    monitor.run_once = lambda: [
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="Log Error detected in messages.log: Caused by: java.lang.IllegalArgumentException: vendorName == null!",
+            details={
+                "file": "C:/Users/test/AppData/Roaming/autopsy/var/log/messages.log",
+                "line": "Caused by: java.lang.IllegalArgumentException: vendorName == null!",
+            },
+        )
+    ]
+
+    sent: list[list[CrashEvent]] = []
+    monitor.notifier.send_alert = lambda payload: sent.append(payload) or True
+    monitor.whatsapp.send_alert = lambda *_args, **_kwargs: True
+    monitor.telegram.send_alert = lambda *_args, **_kwargs: True
+
+    with patch("autopsyguard.monitor.find_autopsy_pid", return_value=123):
+        monitor._handle_active()
+
+    assert sent == []
