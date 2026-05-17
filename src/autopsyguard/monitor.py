@@ -125,6 +125,9 @@ class Monitor:
         self._critical_reminder_seconds = 3600.0
         self._incident_resolve_quiet_seconds = max(300.0, self.config.poll_interval * 6.0)
         self._incident_state: dict[str, dict[str, object]] = {}
+        self._console_repeat_window_seconds = max(60.0, self.config.poll_interval * 12.0)
+        self._console_summary_idle_seconds = max(30.0, self.config.poll_interval * 6.0)
+        self._console_log_suppression: dict[str, dict[str, float | str | int]] = {}
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -384,8 +387,11 @@ class Monitor:
                 self._module_error_summary_since_report.clear()
                 self._period_events.clear()
 
+        self._flush_console_event_summaries(now=now)
+
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         if pid is None and not lock_exists:
+            self._flush_console_event_summaries(now=time.time(), force=True)
             # Flush any buffered correlation incident before shutdown.
             final_alerts = self._flush_pending_alerts(time.time(), force=True)
             final_alerts = self._filter_shutdown_noise_alerts(
@@ -1089,9 +1095,68 @@ class Monitor:
                 row["errors"] += 1
         return counters
 
-    @staticmethod
-    def _handle_event(event: CrashEvent) -> None:
-        """Log a detected event."""
+    def _should_throttle_console_event(self, event: CrashEvent) -> bool:
+        if event.crash_type != CrashType.LOG_ERROR:
+            return False
+        if event.severity != Severity.WARNING:
+            return False
+        return True
+
+    def _flush_console_event_summaries(self, *, now: float, force: bool = False) -> None:
+        if not self._console_log_suppression:
+            return
+        stale_cutoff = now - max(
+            self._console_summary_idle_seconds,
+            self._console_repeat_window_seconds,
+        )
+        stale_keys: list[str] = []
+        for signature, state in self._console_log_suppression.items():
+            suppressed = int(state.get("suppressed", 0))
+            last_seen = float(state.get("last_seen", 0.0))
+            if suppressed > 0 and (force or last_seen <= stale_cutoff):
+                latest_message = str(state.get("message") or "")
+                logger.warning(
+                    "🟡 LOG_ERROR_BURST: Suppressed %d repeated warning event(s) for %s. Latest: %s",
+                    suppressed,
+                    signature,
+                    latest_message,
+                )
+                state["suppressed"] = 0
+            if force or (last_seen <= stale_cutoff and int(state.get("suppressed", 0)) == 0):
+                stale_keys.append(signature)
+        for key in stale_keys:
+            self._console_log_suppression.pop(key, None)
+
+    def _handle_event(self, event: CrashEvent) -> None:
+        """Log detected events with console-side burst suppression for repeated warning log errors."""
+        now = time.time()
+        if self._should_throttle_console_event(event):
+            signature = self._event_incident_signature(event)
+            state = self._console_log_suppression.get(signature)
+            if state is None:
+                self._console_log_suppression[signature] = {
+                    "last_emit": now,
+                    "last_seen": now,
+                    "suppressed": 0,
+                    "message": event.message,
+                }
+            else:
+                last_emit = float(state.get("last_emit", 0.0))
+                state["last_seen"] = now
+                state["message"] = event.message
+                if (now - last_emit) < self._console_repeat_window_seconds:
+                    state["suppressed"] = int(state.get("suppressed", 0)) + 1
+                    return
+                suppressed = int(state.get("suppressed", 0))
+                if suppressed > 0:
+                    logger.warning(
+                        "🟡 LOG_ERROR_BURST: Suppressed %d repeated warning event(s) for %s.",
+                        suppressed,
+                        signature,
+                    )
+                    state["suppressed"] = 0
+                state["last_emit"] = now
+
         severity_icon = "🔴" if event.severity.name == "CRITICAL" else "🟡"
         logger.warning(
             "%s %s: %s", 

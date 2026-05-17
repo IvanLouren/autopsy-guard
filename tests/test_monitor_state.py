@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -506,3 +507,48 @@ def test_handle_active_does_not_dispatch_vendorname_null_alert(tmp_path: Path) -
         monitor._handle_active()
 
     assert sent == []
+
+
+def test_handle_event_suppresses_repeated_warning_log_errors_in_console(tmp_path: Path, caplog) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Log Error detected in autopsy.log.0: org.example.ParseException",
+        details={"line": "org.example.ParseException (job ID = 1, data source = Case.E01)"},
+    )
+
+    caplog.set_level(logging.WARNING, logger="autopsyguard.monitor")
+    with patch("autopsyguard.monitor.time.time", return_value=100.0):
+        monitor._handle_event(event)
+    with patch("autopsyguard.monitor.time.time", return_value=101.0):
+        monitor._handle_event(event)
+    with patch("autopsyguard.monitor.time.time", return_value=102.0):
+        monitor._handle_event(event)
+
+    log_error_lines = [r.message for r in caplog.records if "LOG_ERROR:" in r.message]
+    assert len(log_error_lines) == 1
+
+
+def test_console_log_error_burst_emits_summary_after_idle(tmp_path: Path, caplog) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Log Error detected in autopsy.log.0: org.example.ParseException",
+        details={"line": "org.example.ParseException (job ID = 1, data source = Case.E01)"},
+    )
+
+    caplog.set_level(logging.WARNING, logger="autopsyguard.monitor")
+    with patch("autopsyguard.monitor.time.time", return_value=200.0):
+        monitor._handle_event(event)
+    with patch("autopsyguard.monitor.time.time", return_value=201.0):
+        monitor._handle_event(event)
+
+    monitor._flush_console_event_summaries(now=400.0)
+
+    burst_lines = [r.message for r in caplog.records if "LOG_ERROR_BURST:" in r.message]
+    assert len(burst_lines) == 1
+    assert "Suppressed 1 repeated warning event(s)" in burst_lines[0]
