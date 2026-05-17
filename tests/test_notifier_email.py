@@ -597,6 +597,100 @@ def test_report_builder_grouped_errors_authoritative_when_present(tmp_path):
     assert "errors=0 | activity=601" in plain_text
 
 
+def test_report_builder_uses_period_counters_when_present(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [
+            {
+                "module_name": "Keyword Search",
+                "last_state": "active",
+                "last_seen": "2026-05-16 18:35:58",
+                "activity_events": 601,
+                "error_events": 0,
+                "error_count": 0,
+                "occurrence_count": 601,
+                "sample_last_line": "active line",
+                "confidence": "current",
+                "source": "log",
+                "ingest_job_id": "2",
+                "data_source": "Img.E01",
+            }
+        ],
+        "module_period_counters": {"keyword search": {"activity": 3, "errors": 0}},
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 341.6, "minus_5m": 503.9, "minus_15m": 332.4},
+    }
+    _, html_body, plain_text, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "errors=0 | activity=3" in html_body
+    assert "errors=0 | activity=3" in plain_text
+
+
+def test_report_builder_downgrades_confidence_when_log_stale_and_source_not_log(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {
+            "exists": True,
+            "size_bytes": 120,
+            "updated_at": "2026-05-16 18:00:00",
+            "line_count": 20,
+            "age_seconds": 3600,
+        },
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity_summary": [
+            {
+                "module_name": "Keyword Search",
+                "last_state": "active",
+                "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "activity_events": 1,
+                "error_events": 0,
+                "error_count": 0,
+                "occurrence_count": 1,
+                "sample_last_line": "Folder growth signal",
+                "confidence": "current",
+                "source": "hybrid",
+                "ingest_job_id": "N/A",
+                "data_source": "N/A",
+            }
+        ],
+        "module_errors_summary": [],
+        "solr": {"state": "up", "response_time_seconds": 0.02, "checked_at": "2026-05-16 18:35:46", "error": None},
+        "autopsy_cpu_timeline": {"current": 341.6, "minus_5m": 503.9, "minus_15m": 332.4},
+    }
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+    assert "confidence=recent" in html_body
+
+
 def test_report_builder_shows_external_memory_consumers_from_recent_events(tmp_path):
     case_dir = tmp_path / "Case"
     case_dir.mkdir()

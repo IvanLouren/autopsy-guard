@@ -43,7 +43,7 @@ _NONFATAL_SOLR_PING_LOG_PATTERN = re.compile(
     r"Unknown RequestHandler \(qt\):\s*/?search",
     re.IGNORECASE,
 )
-_INGEST_JOB_ID_PATTERN = re.compile(r"ingest job id\s*=\s*(\d+)", re.IGNORECASE)
+_INGEST_JOB_ID_PATTERN = re.compile(r"(?:ingest\s+)?job\s+id\s*=\s*(\d+)", re.IGNORECASE)
 _DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^,\)]+)", re.IGNORECASE)
 _OBJECT_ID_PATTERN = re.compile(r"object id\s*=\s*(\d+)", re.IGNORECASE)
 
@@ -113,7 +113,14 @@ class Monitor:
         self._post_ingest_resource_grace_until: float = 0.0
         self._keyword_incident_ttl_seconds = 1800.0
         self._keyword_incidents: dict[str, dict[str, object]] = {}
+        self._log_error_incident_ttl_seconds = 1800.0
+        self._log_error_incidents: dict[str, dict[str, object]] = {}
         self._module_error_summary_since_report: dict[str, dict[str, object]] = {}
+        self._period_events: list[CrashEvent] = []
+        self._warning_reminder_seconds = 3 * 3600.0
+        self._critical_reminder_seconds = 3600.0
+        self._incident_resolve_quiet_seconds = max(300.0, self.config.poll_interval * 6.0)
+        self._incident_state: dict[str, dict[str, object]] = {}
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -247,7 +254,9 @@ class Monitor:
             self._ingest_start_time = self._log_detector.ingest_start_time
             self._was_ingest_running = True
             self._keyword_incidents.clear()
+            self._log_error_incidents.clear()
             self._module_error_summary_since_report.clear()
+            self._period_events.clear()
 
             if not self._has_ingest_started_ever:
                 # Align the report timer exactly to the start of the ingest
@@ -281,6 +290,7 @@ class Monitor:
             lock_exists=lock_exists,
         )
         alert_events = self._filter_post_ingest_resource_alerts(alert_events, now=now)
+        alert_events = self._aggregate_log_error_alerts(alert_events, now=now)
         alert_events = self._aggregate_keyword_search_alerts(alert_events, now=now)
         ready_alerts = self._collect_alert_notifications(alert_events, now)
         ready_alerts = self._filter_post_ingest_resource_alerts(ready_alerts, now=now)
@@ -296,6 +306,7 @@ class Monitor:
             for event in events:
                 self._handle_event(event)
                 self._events_since_last_report += 1
+                self._period_events.append(event)
 
         # Check periodic reporting (Heartbeat)
         if self._has_ingest_started_ever:
@@ -339,6 +350,7 @@ class Monitor:
                     solr_metrics=solr_metrics,
                     cpu_snapshots=cpu_timeline,
                 )
+                telemetry["module_period_counters"] = self._build_module_period_counters(self._period_events)
                 self._inject_module_error_summary(telemetry)
                 status_mode = self._classify_runtime_status(telemetry=telemetry)
                 status_text = self._status_text_for_mode(status_mode)
@@ -366,6 +378,7 @@ class Monitor:
                 self._events_since_last_report = 0
                 self._report_count += 1
                 self._module_error_summary_since_report.clear()
+                self._period_events.clear()
 
         # Check if Autopsy shut down gracefully (process gone + lock removed)
         if pid is None and not lock_exists:
@@ -481,39 +494,153 @@ class Monitor:
         ready = self._flush_pending_alerts(now, force=False)
         return self._apply_alert_cooldown(ready, now)
 
+    @staticmethod
+    def _extract_signature_module(text: str) -> str:
+        low = text.lower()
+        if "keyword search" in low or "keywordsearch" in low:
+            return "Keyword Search"
+        if "solr" in low:
+            return "Solr"
+        if "recent activity" in low or "recentactivity" in low:
+            return "Recent Activity"
+        if "photorec" in low:
+            return "PhotoRec Carver"
+        if "embedded file extractor" in low:
+            return "Embedded File Extractor"
+        if "tika" in low:
+            return "Tika"
+        return "General"
+
+    @staticmethod
+    def _extract_signature_family(text: str) -> str:
+        low = text.lower()
+        checks = (
+            ("stackoverflowerror", "stack_overflow"),
+            ("codermalfunctionerror", "coder_malfunction"),
+            ("arrayindexoutofboundsexception", "array_index_oob"),
+            ("saxparseexception", "sax_parse"),
+            ("tikaexception", "tika_exception"),
+            ("sevenzipexception", "seven_zip"),
+            ("truncated zip file", "truncated_zip"),
+            ("eofexception", "eof"),
+            ("filenotfoundexception", "file_not_found"),
+            ("illegalargumentexception", "illegal_argument"),
+            ("zipexception", "zip_exception"),
+        )
+        for token, label in checks:
+            if token in low:
+                return label
+        return "generic_log_error"
+
+    def _event_incident_signature(self, event: CrashEvent) -> str:
+        details = event.details or {}
+        log_line = str(details.get("line") or details.get("log_line") or "")
+        payload = f"{event.message} {log_line}".strip()
+        if event.crash_type == CrashType.HIGH_RESOURCE_USAGE:
+            low = payload.lower()
+            subtype = "cpu"
+            if "memory" in low:
+                subtype = "memory"
+            elif "disk" in low:
+                subtype = "disk"
+            return f"HIGH_RESOURCE_USAGE|{subtype}"
+        if event.crash_type == CrashType.LOG_ERROR:
+            module = str(details.get("module") or self._extract_signature_module(payload))
+            family = self._extract_signature_family(payload)
+            job_id = (
+                str(details.get("ingest_job_id") or "").strip()
+                or self._extract_first_match(_INGEST_JOB_ID_PATTERN, payload)
+                or "N/A"
+            )
+            data_source = (
+                str(details.get("data_source") or "").strip()
+                or self._extract_first_match(_DATA_SOURCE_PATTERN, payload)
+                or "N/A"
+            )
+            return f"LOG_ERROR|{module.lower()}|{family}|job={job_id}|src={data_source.lower()}"
+        if event.crash_type == CrashType.CORRELATED_INCIDENT:
+            event_types = event.details.get("event_types") or []
+            type_part = ",".join(sorted(str(x).upper() for x in event_types))
+            return f"CORRELATED|{type_part or 'unknown'}"
+        return f"{event.crash_type.name}|{event.severity.name}"
+
     def _alert_batch_signature(self, events: list[CrashEvent]) -> str:
         if not events:
             return ""
-        if len(events) == 1 and events[0].crash_type == CrashType.CORRELATED_INCIDENT:
-            event_types = events[0].details.get("event_types") or []
-            type_part = ",".join(sorted(str(x) for x in event_types))
-            sev = events[0].severity.name
-            return f"{sev}|CORRELATED|{type_part}"
+        if len(events) == 1:
+            return self._event_incident_signature(events[0])
+        parts = sorted({self._event_incident_signature(e) for e in events})
         sev = "CRITICAL" if any(e.severity == Severity.CRITICAL for e in events) else "WARNING"
-        type_part = ",".join(sorted(e.crash_type.name for e in events))
-        return f"{sev}|{type_part}"
+        return f"{sev}|BATCH|{'|'.join(parts)}"
+
+    def _refresh_incident_states(self, active_signatures: set[str], now: float) -> None:
+        for signature, state in self._incident_state.items():
+            if signature in active_signatures:
+                continue
+            if str(state.get("status") or "") == "RESOLVED":
+                continue
+            last_seen = float(state.get("last_seen", 0.0))
+            if (now - last_seen) >= self._incident_resolve_quiet_seconds:
+                state["status"] = "RESOLVED"
+                state["resolved_at"] = now
+
+        stale_cutoff = now - max(
+            self._warning_reminder_seconds,
+            self._critical_reminder_seconds,
+            self._incident_resolve_quiet_seconds,
+        ) * 6.0
+        stale = [k for k, v in self._incident_state.items() if float(v.get("last_seen", 0.0)) < stale_cutoff]
+        for key in stale:
+            self._incident_state.pop(key, None)
 
     def _apply_alert_cooldown(self, events: list[CrashEvent], now: float) -> list[CrashEvent]:
         if not events:
+            self._refresh_incident_states(set(), now)
             return []
-        signature = self._alert_batch_signature(events)
-        if not signature:
-            return events
-        last_sent = self._last_alert_signature_at.get(signature)
-        if last_sent is not None and (now - last_sent) < self._alert_cooldown_seconds:
-            logger.info(
-                "Suppressing duplicate alert signature within cooldown (%ss): %s",
-                int(self._alert_cooldown_seconds),
-                signature,
+
+        active_signatures = {self._event_incident_signature(ev) for ev in events}
+        self._refresh_incident_states(active_signatures, now)
+
+        emitted: list[CrashEvent] = []
+        for event in events:
+            signature = self._event_incident_signature(event)
+            state = self._incident_state.get(signature)
+            reminder_seconds = (
+                self._critical_reminder_seconds
+                if event.severity == Severity.CRITICAL
+                else self._warning_reminder_seconds
             )
-            return []
-        self._last_alert_signature_at[signature] = now
-        # Prune stale entries.
-        stale_cutoff = now - (self._alert_cooldown_seconds * 3.0)
-        stale_keys = [k for k, ts in self._last_alert_signature_at.items() if ts < stale_cutoff]
-        for key in stale_keys:
-            self._last_alert_signature_at.pop(key, None)
-        return events
+
+            if state is None or str(state.get("status") or "") == "RESOLVED":
+                self._incident_state[signature] = {
+                    "status": "OPEN",
+                    "opened_at": now,
+                    "last_seen": now,
+                    "last_notified": now,
+                    "severity": event.severity.name,
+                }
+                emitted.append(event)
+                continue
+
+            previous_severity = str(state.get("severity") or event.severity.name)
+            state["last_seen"] = now
+            state["status"] = "ONGOING"
+
+            if previous_severity != event.severity.name:
+                state["severity"] = event.severity.name
+                state["last_notified"] = now
+                emitted.append(event)
+                continue
+
+            last_notified = float(state.get("last_notified", 0.0))
+            if (now - last_notified) >= reminder_seconds:
+                state["last_notified"] = now
+                emitted.append(event)
+                continue
+
+            logger.info("Suppressing ongoing incident alert: %s", signature)
+
+        return emitted
 
     @staticmethod
     def _is_shutdown_noise_event(event: CrashEvent) -> bool:
@@ -610,6 +737,34 @@ class Monitor:
         except Exception:
             return None
 
+    def _parse_log_error_context(self, event: CrashEvent) -> dict[str, str] | None:
+        if event.crash_type != CrashType.LOG_ERROR:
+            return None
+        details = event.details or {}
+        line = str(details.get("line") or details.get("log_line") or "")
+        text = f"{event.message} {line}".strip()
+        low = text.lower()
+        module = str(details.get("module") or self._extract_signature_module(text))
+        signature = self._extract_signature_family(text)
+        ingest_job_id = self._extract_first_match(_INGEST_JOB_ID_PATTERN, text) or str(
+            details.get("ingest_job_id") or "unknown"
+        )
+        data_source = self._extract_first_match(_DATA_SOURCE_PATTERN, text) or str(
+            details.get("data_source") or "unknown"
+        )
+        return {
+            "incident_key": (
+                f"logerr|module={module.lower()}|sig={signature}|"
+                f"job={ingest_job_id or 'unknown'}|src={data_source or 'unknown'}"
+            ),
+            "signature": signature,
+            "ingest_job_id": ingest_job_id or "unknown",
+            "data_source": data_source or "unknown",
+            "line": line or event.message,
+            "module": module,
+            "is_keyword": "keyword search" in low or "keywordsearch" in low,
+        }
+
     @staticmethod
     def _extract_first_match(pattern: re.Pattern[str], text: str) -> str | None:
         match = pattern.search(text)
@@ -617,6 +772,72 @@ class Monitor:
             return None
         value = (match.group(1) or "").strip()
         return value or None
+
+    def _prune_log_error_incidents(self, now: float) -> None:
+        cutoff = now - self._log_error_incident_ttl_seconds
+        stale = [
+            key
+            for key, value in self._log_error_incidents.items()
+            if float(value.get("last_seen", 0.0)) < cutoff
+        ]
+        for key in stale:
+            self._log_error_incidents.pop(key, None)
+
+    def _aggregate_log_error_alerts(self, events: list[CrashEvent], *, now: float) -> list[CrashEvent]:
+        if not events:
+            return []
+        self._prune_log_error_incidents(now)
+        aggregated: list[CrashEvent] = []
+        for event in events:
+            context = self._parse_log_error_context(event)
+            if context is None:
+                aggregated.append(event)
+                continue
+            # Keyword Search has a dedicated aggregator that merges special
+            # stack-trace families into a single incident summary.
+            if context.get("is_keyword"):
+                aggregated.append(event)
+                continue
+
+            event_epoch = self._event_epoch(event, now)
+            key = context["incident_key"]
+            existing = self._log_error_incidents.get(key)
+            if existing is None:
+                existing = {
+                    **context,
+                    "first_seen": event_epoch,
+                    "last_seen": event_epoch,
+                    "occurrence_count": 1,
+                }
+                self._log_error_incidents[key] = existing
+                self._record_module_error_summary(existing)
+                aggregated.append(
+                    CrashEvent(
+                        crash_type=CrashType.LOG_ERROR,
+                        severity=event.severity,
+                        message=(
+                            f"{context['module']} log error burst detected "
+                            f"(signature={context['signature']}, job={context['ingest_job_id']}, "
+                            f"source={context['data_source']}). Repeated lines are aggregated."
+                        ),
+                        details={
+                            "module": context["module"],
+                            "aggregated_incident": True,
+                            "occurrence_count": 1,
+                            "first_seen": self._ts_label(event_epoch),
+                            "last_seen": self._ts_label(event_epoch),
+                            "signature": context["signature"],
+                            "ingest_job_id": context["ingest_job_id"],
+                            "data_source": context["data_source"],
+                            "line": context["line"],
+                        },
+                    )
+                )
+            else:
+                existing["last_seen"] = event_epoch
+                existing["occurrence_count"] = int(existing.get("occurrence_count", 0)) + 1
+                self._record_module_error_summary(existing)
+        return aggregated
 
     def _keyword_context(self, event: CrashEvent) -> dict[str, str] | None:
         if event.crash_type != CrashType.LOG_ERROR:
@@ -651,7 +872,7 @@ class Monitor:
         object_id = self._extract_first_match(_OBJECT_ID_PATTERN, haystack)
         incident_key = (
             f"keyword|job={ingest_job_id or 'unknown'}|"
-            f"src={data_source or 'unknown'}"
+            f"src={data_source or 'unknown'}|sig={signature}"
         )
         return {
             "incident_key": incident_key,
@@ -818,6 +1039,29 @@ class Monitor:
                 remaining,
             )
         return kept
+
+    def _event_module_identity(self, event: CrashEvent) -> str | None:
+        details = event.details or {}
+        module = str(details.get("module") or "").strip()
+        if module:
+            return module
+        line = str(details.get("line") or details.get("log_line") or "")
+        payload = f"{event.message} {line}".strip()
+        guessed = self._extract_signature_module(payload)
+        return guessed if guessed != "General" else None
+
+    def _build_module_period_counters(self, events: list[CrashEvent]) -> dict[str, dict[str, int]]:
+        counters: dict[str, dict[str, int]] = {}
+        for event in events:
+            module = self._event_module_identity(event)
+            if not module:
+                continue
+            key = module.strip().lower()
+            row = counters.setdefault(key, {"activity": 0, "errors": 0})
+            row["activity"] += 1
+            if event.crash_type == CrashType.LOG_ERROR:
+                row["errors"] += 1
+        return counters
 
     @staticmethod
     def _handle_event(event: CrashEvent) -> None:

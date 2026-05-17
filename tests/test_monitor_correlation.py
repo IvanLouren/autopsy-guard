@@ -68,7 +68,7 @@ def test_alerts_in_different_windows_are_not_merged(config) -> None:
 
 def test_duplicate_signature_is_suppressed_within_cooldown(config) -> None:
     monitor = Monitor(config)
-    monitor._alert_cooldown_seconds = 120.0
+    monitor._critical_reminder_seconds = 120.0
 
     event = _ev(CrashType.SOLR_CRASH, Severity.CRITICAL, "Solr refused connection")
     first = monitor._collect_alert_notifications([event], now=500.0)
@@ -77,6 +77,6 @@ def test_duplicate_signature_is_suppressed_within_cooldown(config) -> None:
     duplicate = monitor._collect_alert_notifications([event], now=560.0)
     assert duplicate == []
 
-    after_cooldown = monitor._collect_alert_notifications([event], now=650.0)
-    assert len(after_cooldown) == 1
+    after_reminder = monitor._collect_alert_notifications([event], now=650.0)
+    assert len(after_reminder) == 1
 

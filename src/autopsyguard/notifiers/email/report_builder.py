@@ -310,6 +310,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             for item in mod_activity
         ]
     module_errors_summary = telemetry.get("module_errors_summary", []) or []
+    module_period_counters = telemetry.get("module_period_counters") or {}
     grouped_error_map: dict[str, int] = {}
     for item in module_errors_summary:
         try:
@@ -339,6 +340,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         ]
     )
     log_updated_at = log.get("updated_at") or tr(config, "none")
+    log_age_seconds = _coerce_float(log.get("age_seconds"))
     now_dt = datetime.now()
 
     def _activity_ts(item: dict[str, Any]) -> str:
@@ -347,12 +349,24 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             return str(ts)
         return str(log_updated_at)
 
-    module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
+    module_confidence = _activity_confidence_label(
+        latest_activity,
+        log_updated_at,
+        log_age_seconds=log_age_seconds,
+    )
     module_age = _age_label(_activity_ts(latest_activity), now_dt)
-    raw_module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+    raw_module_errors = _period_error_count(
+        module_period_counters,
+        module_name=str(latest_activity.get("module") or ""),
+        fallback=int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0),
+    )
     module_key = str(latest_activity.get("module") or "").strip().lower()
     module_errors = grouped_error_map.get(module_key, 0) if grouped_errors_authoritative else raw_module_errors
-    module_activity_events = int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0)
+    module_activity_events = _period_activity_count(
+        module_period_counters,
+        module_name=str(latest_activity.get("module") or ""),
+        fallback=int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0),
+    )
     latest_module_line = _format_activity_line(
         activity=latest_activity,
         ts=_activity_ts(latest_activity),
@@ -472,12 +486,24 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
                 for i in keyword_solr_items
             ]
         )
-        activity_events = int(item.get("activity_events") or item.get("occurrence_count") or 0)
-        raw_error_events = int(item.get("error_count") or item.get("error_events") or 0)
+        activity_events = _period_activity_count(
+            module_period_counters,
+            module_name=str(item.get("module") or ""),
+            fallback=int(item.get("activity_events") or item.get("occurrence_count") or 0),
+        )
+        raw_error_events = _period_error_count(
+            module_period_counters,
+            module_name=str(item.get("module") or ""),
+            fallback=int(item.get("error_count") or item.get("error_events") or 0),
+        )
         keyword_key = str(item.get("module") or "").strip().lower()
         error_events = grouped_error_map.get(keyword_key, 0) if grouped_errors_authoritative else raw_error_events
         keyword_age = _age_label(_activity_ts(item), now_dt)
-        keyword_confidence = _activity_confidence_label(item, log_updated_at)
+        keyword_confidence = _activity_confidence_label(
+            item,
+            log_updated_at,
+            log_age_seconds=log_age_seconds,
+        )
         if (
             str(item.get("module") or "").strip().lower() == str(latest_activity.get("module") or "").strip().lower()
             and str(item.get("state") or "").strip().lower() == str(latest_activity.get("state") or "").strip().lower()
@@ -609,16 +635,63 @@ def _parse_activity_ts(value: Any) -> datetime | None:
     return None
 
 
-def _activity_confidence_label(activity: dict[str, Any], fallback_ts: Any) -> str:
+def _activity_confidence_label(
+    activity: dict[str, Any],
+    fallback_ts: Any,
+    *,
+    log_age_seconds: float | None = None,
+) -> str:
     ts = _parse_activity_ts(activity.get("timestamp")) or _parse_activity_ts(fallback_ts)
     if ts is None:
         return "stale"
     age_seconds = (datetime.now() - ts).total_seconds()
+    source = str(activity.get("source") or "log").strip().lower()
+    if source != "log" and log_age_seconds is not None and log_age_seconds > 1800:
+        # Folder/hybrid freshness should not claim "current" if case log
+        # evidence itself is stale for this interval.
+        if age_seconds <= 300:
+            return "recent"
     if age_seconds <= 300:
         return "current"
     if age_seconds <= 1800:
         return "recent"
     return "stale"
+
+
+def _period_activity_count(
+    counters: Any,
+    *,
+    module_name: str,
+    fallback: int,
+) -> int:
+    if not isinstance(counters, dict):
+        return fallback
+    key = module_name.strip().lower()
+    item = counters.get(key)
+    if not isinstance(item, dict):
+        return fallback
+    try:
+        return int(item.get("activity", fallback))
+    except Exception:
+        return fallback
+
+
+def _period_error_count(
+    counters: Any,
+    *,
+    module_name: str,
+    fallback: int,
+) -> int:
+    if not isinstance(counters, dict):
+        return fallback
+    key = module_name.strip().lower()
+    item = counters.get(key)
+    if not isinstance(item, dict):
+        return fallback
+    try:
+        return int(item.get("errors", fallback))
+    except Exception:
+        return fallback
 
 
 def _age_label(value: Any, now_dt: datetime) -> str:
@@ -726,6 +799,8 @@ def _build_plain_text(
             ]
         now_dt = datetime.now()
         log_updated_at = log.get("updated_at") or tr(config, "none")
+        log_age_seconds = _coerce_float(log.get("age_seconds"))
+        module_period_counters = telemetry.get("module_period_counters") or {}
         latest_activity = _pick_recent_activity(
             [
                 {
@@ -744,7 +819,11 @@ def _build_plain_text(
                 for item in module_activity_summary
             ]
         )
-        module_confidence = _activity_confidence_label(latest_activity, log_updated_at)
+        module_confidence = _activity_confidence_label(
+            latest_activity,
+            log_updated_at,
+            log_age_seconds=log_age_seconds,
+        )
         module_age = _age_label(latest_activity.get("timestamp"), now_dt)
         module_errors_summary = telemetry.get("module_errors_summary") or []
         grouped_error_map: dict[str, int] = {}
@@ -757,10 +836,18 @@ def _build_plain_text(
             except Exception:
                 continue
         grouped_errors_authoritative = "module_errors_summary" in telemetry
-        raw_module_errors = int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0)
+        raw_module_errors = _period_error_count(
+            module_period_counters,
+            module_name=str(latest_activity.get("module") or ""),
+            fallback=int(latest_activity.get("error_count") or latest_activity.get("error_events") or 0),
+        )
         module_key = str(latest_activity.get("module") or "").strip().lower()
         module_errors = grouped_error_map.get(module_key, 0) if grouped_errors_authoritative else raw_module_errors
-        module_activity_events = int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0)
+        module_activity_events = _period_activity_count(
+            module_period_counters,
+            module_name=str(latest_activity.get("module") or ""),
+            fallback=int(latest_activity.get("activity_events") or latest_activity.get("occurrence_count") or 0),
+        )
         latest_module_line = _format_activity_line(
             activity=latest_activity,
             ts=str(latest_activity.get("timestamp") or log_updated_at),
@@ -795,11 +882,23 @@ def _build_plain_text(
                     for i in keyword_solr_items
                 ]
             )
-            keyword_activity_events = int(item.get("activity_events") or item.get("occurrence_count") or 0)
-            raw_keyword_errors = int(item.get("error_count") or item.get("error_events") or 0)
+            keyword_activity_events = _period_activity_count(
+                module_period_counters,
+                module_name=str(item.get("module") or ""),
+                fallback=int(item.get("activity_events") or item.get("occurrence_count") or 0),
+            )
+            raw_keyword_errors = _period_error_count(
+                module_period_counters,
+                module_name=str(item.get("module") or ""),
+                fallback=int(item.get("error_count") or item.get("error_events") or 0),
+            )
             keyword_key = str(item.get("module") or "").strip().lower()
             keyword_errors = grouped_error_map.get(keyword_key, 0) if grouped_errors_authoritative else raw_keyword_errors
-            keyword_confidence = _activity_confidence_label(item, log_updated_at)
+            keyword_confidence = _activity_confidence_label(
+                item,
+                log_updated_at,
+                log_age_seconds=log_age_seconds,
+            )
             keyword_age = _age_label(item.get("timestamp"), now_dt)
             if (
                 str(item.get("module") or "").strip().lower() == str(latest_activity.get("module") or "").strip().lower()

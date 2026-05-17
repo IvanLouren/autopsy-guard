@@ -53,7 +53,7 @@ _MODULE_NAME_ALIASES: dict[str, str] = {
 
 _INGEST_START_PATTERN = re.compile(r"starting ingest job", re.IGNORECASE)
 _INGEST_FINISH_PATTERN = re.compile(r"finished all ingest tasks for ingest job", re.IGNORECASE)
-_INGEST_JOB_ID_PATTERN = re.compile(r"ingest job id\s*=\s*(\d+)", re.IGNORECASE)
+_INGEST_JOB_ID_PATTERN = re.compile(r"(?:ingest\s+)?job\s+id\s*=\s*(\d+)", re.IGNORECASE)
 _DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^\),]+)", re.IGNORECASE)
 
 
@@ -295,6 +295,8 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
     current_context = "unscoped"
     ingest_session = 0
     last_module_by_context: dict[str, str] = {}
+    active_job_id = "na"
+    active_data_source = "na"
 
     for raw, ts_ctx in _annotate_lines_with_timestamps(lines):
         line = raw.strip()
@@ -307,10 +309,14 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
 
         data_source = _extract_first(_DATA_SOURCE_PATTERN, line)
         job_id = _extract_first(_INGEST_JOB_ID_PATTERN, line)
+        if job_id:
+            active_job_id = job_id
+        if data_source:
+            active_data_source = data_source
 
         if _INGEST_START_PATTERN.search(low):
             ingest_session += 1
-            current_context = f"s{ingest_session}|j={job_id or 'na'}|d={data_source or 'na'}"
+            current_context = f"s{ingest_session}|j={job_id or active_job_id or 'na'}|d={data_source or active_data_source or 'na'}"
             current_job, current_ds = _context_fields(current_context)
             activities.append(
                 {
@@ -326,8 +332,8 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
             continue
         if _INGEST_FINISH_PATTERN.search(low):
             current_job, current_ds = _context_fields(current_context)
-            merged_job = job_id or (current_job if current_job != "N/A" else "na")
-            merged_ds = data_source or (current_ds if current_ds != "N/A" else "na")
+            merged_job = job_id or active_job_id or (current_job if current_job != "N/A" else "na")
+            merged_ds = data_source or active_data_source or (current_ds if current_ds != "N/A" else "na")
             activities.append(
                 {
                     "module": "Ingest",
@@ -355,6 +361,10 @@ def _extract_module_activity_raw(lines: list[str]) -> list[dict[str, str]]:
         module_name = _canonical_module_name(module_name)
         last_module_by_context[current_context] = module_name
         context_job, context_ds = _context_fields(current_context)
+        if context_job == "N/A" and active_job_id and active_job_id != "na":
+            context_job = active_job_id
+        if context_ds == "N/A" and active_data_source and active_data_source != "na":
+            context_ds = active_data_source
         activities.append(
             {
                 "module": module_name,
@@ -568,6 +578,17 @@ def _merge_folder_activity_fallback(
     now_ts: float,
 ) -> list[dict[str, Any]]:
     merged = list(summary)
+    default_job = "N/A"
+    default_data_source = "N/A"
+    for item in merged:
+        candidate_job = str(item.get("ingest_job_id") or "").strip()
+        candidate_source = str(item.get("data_source") or "").strip()
+        if default_job == "N/A" and candidate_job and candidate_job != "N/A":
+            default_job = candidate_job
+        if default_data_source == "N/A" and candidate_source and candidate_source != "N/A":
+            default_data_source = candidate_source
+        if default_job != "N/A" and default_data_source != "N/A":
+            break
     index: dict[str, dict[str, Any]] = {
         str(item.get("module_name") or item.get("module") or "").strip().lower(): item
         for item in merged
@@ -605,8 +626,8 @@ def _merge_folder_activity_fallback(
                     "confidence": _confidence_from_epoch(latest_ts, now_ts=now_ts),
                     "source": "folder",
                     "context": "unscoped",
-                    "ingest_job_id": "N/A",
-                    "data_source": "N/A",
+                    "ingest_job_id": default_job,
+                    "data_source": default_data_source,
                 }
             )
             continue
@@ -658,6 +679,7 @@ def collect_case_telemetry(
         "size_bytes": int(log_st.st_size) if log_st else None,
         "updated_at": _fmt_ts(log_st.st_mtime if log_st else None),
         "line_count": _count_lines(log_path),
+        "age_seconds": (time.time() - float(log_st.st_mtime)) if log_st else None,
     }
 
     case_size = _dir_size_bytes(case_dir)

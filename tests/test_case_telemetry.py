@@ -253,6 +253,35 @@ def test_collect_case_telemetry_reads_rotated_case_logs_for_summary(tmp_path: Pa
     assert int(recent.get("activity_events") or 0) >= 2
 
 
+def test_collect_case_telemetry_extracts_plain_job_id_pattern(tmp_path: Path) -> None:
+    case = tmp_path / "CaseJob"
+    case.mkdir()
+    (case / "CaseJob.aut").write_text("<autopsy/>", encoding="utf-8")
+    log_dir = case / "Log"
+    log_dir.mkdir()
+    (log_dir / "autopsy.log.0").write_text(
+        "\n".join(
+            [
+                "2026-05-16 10:00:00 INFO: Starting ingest job in file streaming mode (data source = Image.E01, job ID = 2)",
+                "2026-05-16 10:01:00 INFO: Recent Activity analysis of Image.E01 starting",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = MonitorConfig(case_dir=case)
+    telemetry = collect_case_telemetry(
+        config=cfg,
+        solr_status=None,
+        solr_metrics=None,
+        cpu_snapshots={0.0: None, 300.0: None, 900.0: None},
+    )
+    recent = next((x for x in telemetry["module_activity"] if x.get("module") == "Recent Activity"), None)
+    assert recent is not None
+    assert recent.get("ingest_job_id") == "2"
+    assert recent.get("data_source") == "Image.E01"
+
+
 def test_collect_case_telemetry_keyword_errors_are_aggregated_in_summary(tmp_path: Path) -> None:
     case = tmp_path / "CaseKey"
     case.mkdir()

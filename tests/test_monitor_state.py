@@ -408,3 +408,50 @@ def test_inject_module_error_summary_sets_empty_key_when_no_incidents(tmp_path: 
     monitor._inject_module_error_summary(telemetry)
 
     assert telemetry["module_errors_summary"] == []
+
+
+def test_warning_incident_uses_long_reminder_cadence(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._correlation_window_seconds = 0.0
+    monitor._warning_reminder_seconds = 180.0
+    event = CrashEvent(
+        crash_type=CrashType.HIGH_RESOURCE_USAGE,
+        severity=Severity.WARNING,
+        message="Autopsy sustained CPU at 380%",
+    )
+    assert len(monitor._collect_alert_notifications([event], now=100.0)) == 1
+    assert monitor._collect_alert_notifications([event], now=200.0) == []
+    assert len(monitor._collect_alert_notifications([event], now=281.0)) == 1
+
+
+def test_non_keyword_log_error_burst_is_aggregated(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 500.0
+    events = [
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="Log Error detected in autopsy.log.0: org.apache.tika.exception.TikaException: XML parse error",
+            details={
+                "line": "org.apache.tika.exception.TikaException: XML parse error (data source = Image.E01, job ID = 3)"
+            },
+        ),
+        CrashEvent(
+            crash_type=CrashType.LOG_ERROR,
+            severity=Severity.WARNING,
+            message="Log Error detected in autopsy.log.0: org.xml.sax.SAXParseException",
+            details={
+                "line": "org.xml.sax.SAXParseException; lineNumber: 46; columnNumber: 8; Content is not allowed"
+            },
+        ),
+    ]
+
+    aggregated = monitor._aggregate_log_error_alerts(events, now=now)
+    assert len(aggregated) == 2
+    assert all(e.details.get("aggregated_incident") is True for e in aggregated)
+
+    # Repeated signature should be suppressed into existing incident bucket.
+    repeat = monitor._aggregate_log_error_alerts([events[0]], now=now + 10.0)
+    assert repeat == []
