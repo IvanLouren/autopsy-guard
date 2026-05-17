@@ -145,6 +145,22 @@ class WhatsAppNotifier(BaseNotifier):
             return False
         return self._send_message(f"✅ *AutopsyGuard {tr(self.config, 'startup_subject')}*\n{tr(self.config, 'startup_text')}")
 
+    def send_shutdown_message(self, stats: dict[str, Any]) -> bool:
+        """Send a session summary when Autopsy shuts down gracefully."""
+        if not self._enabled:
+            return False
+        lines = [
+            f"🏁 *AutopsyGuard {tr(self.config, 'shutdown_subject')}*",
+            tr(self.config, "shutdown_text"),
+            "",
+            f"⏱️ {tr(self.config, 'shutdown_session_duration')}: {stats.get('uptime', 'N/A')}",
+            f"📊 {tr(self.config, 'shutdown_total_events')}: {stats.get('total_events', 0)}",
+            f"🔴 {tr(self.config, 'shutdown_critical')}: {stats.get('critical_count', 0)}",
+            f"🟡 {tr(self.config, 'shutdown_warnings')}: {stats.get('warning_count', 0)}",
+            f"📧 {tr(self.config, 'shutdown_reports_sent')}: {stats.get('reports_sent', 0)}",
+        ]
+        return self._send_message("\n".join(lines))
+
     # ------------------------------------------------------------------
     # Internal: HTTP dispatch (runs in background thread)
     # ------------------------------------------------------------------

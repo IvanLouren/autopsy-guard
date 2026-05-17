@@ -76,3 +76,11 @@ class BaseNotifier(abc.ABC):
     @abc.abstractmethod
     def send_startup_message(self) -> bool:
         """Send a brief notification that the monitor has started."""
+
+    @abc.abstractmethod
+    def send_shutdown_message(self, stats: dict[str, Any]) -> bool:
+        """Send a summary notification when Autopsy shuts down gracefully.
+
+        ``stats`` contains session statistics such as total_events,
+        critical_count, warning_count, reports_sent, case_name, etc.
+        """

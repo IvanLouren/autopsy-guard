@@ -109,6 +109,18 @@ _MESSAGES: dict[str, str] = {
     "plain_uptime": "Uptime",
     "html_fallback": "Your email client does not support HTML. Please use a modern client.",
     "autopsy_pid_label": "Autopsy PID",
+    "shutdown_subject": "Session Ended",
+    "shutdown_header_title": "Session Complete",
+    "shutdown_header_subtitle": "Autopsy has shut down gracefully",
+    "shutdown_title": "Monitoring Session Ended",
+    "shutdown_text": "Autopsy exited normally. Here is a summary of the monitoring session.",
+    "shutdown_total_events": "Total Events Detected",
+    "shutdown_critical": "Critical Events",
+    "shutdown_warnings": "Warning Events",
+    "shutdown_reports_sent": "Reports Sent",
+    "shutdown_session_duration": "Session Duration",
+    "shutdown_case_size": "Final Case Size",
+    "shutdown_db_size": "Final DB Size (autopsy.db)",
 }
 
 

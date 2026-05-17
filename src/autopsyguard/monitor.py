@@ -426,10 +426,69 @@ class Monitor:
             # Graceful shutdown: process exited and lock file was cleaned up
             self._state = MonitorState.FINISHED
             logger.info("Autopsy finished — case complete")
+
+            # Collect session stats and notify all channels
+            self._send_shutdown_notifications()
         elif pid is None and lock_exists:
             # Process gone but lock file remains — crash already detected
             # by ProcessDetector; stay active in case Autopsy restarts
             pass
+
+    def _send_shutdown_notifications(self) -> None:
+        """Collect session stats and send shutdown summary to all channels."""
+        import os
+        from pathlib import Path
+
+        uptime = self.notifier.get_uptime()
+
+        # Count events by severity across the entire session
+        all_events = self._period_events
+        total = len(all_events)
+        critical = sum(1 for e in all_events if e.severity == Severity.CRITICAL)
+        warnings = sum(1 for e in all_events if e.severity == Severity.WARNING)
+
+        # Case folder size
+        case_dir = self.config.case_dir
+        try:
+            case_size_bytes = sum(
+                f.stat().st_size
+                for f in Path(case_dir).rglob("*")
+                if f.is_file()
+            )
+            case_size = self._bytes_to_human(case_size_bytes)
+        except OSError:
+            case_size = "N/A"
+
+        # autopsy.db size
+        db_path = case_dir / "autopsy.db"
+        try:
+            db_size = self._bytes_to_human(db_path.stat().st_size) if db_path.exists() else "N/A"
+        except OSError:
+            db_size = "N/A"
+
+        stats = {
+            "uptime": uptime,
+            "total_events": total,
+            "critical_count": critical,
+            "warning_count": warnings,
+            "reports_sent": self._report_count,
+            "case_size": case_size,
+            "db_size": db_size,
+        }
+
+        self.notifier.send_shutdown_message(stats)
+        self.whatsapp.send_shutdown_message(stats)
+        self.telegram.send_shutdown_message(stats)
+
+    @staticmethod
+    def _bytes_to_human(v: int | float) -> str:
+        """Convert bytes to a human-readable string."""
+        value = float(v)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                return f"{value:.1f}{unit}"
+            value /= 1024.0
+        return f"{value:.1f}TB"
 
     @staticmethod
     def _alert_event_key(event: CrashEvent) -> str:

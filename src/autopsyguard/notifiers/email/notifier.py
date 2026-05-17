@@ -261,6 +261,84 @@ class EmailNotifier(BaseNotifier):
         plain_text = f"✅ {tr(self.config, 'startup_subject')}\n{tr(self.config, 'startup_text')}"
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
+    def send_shutdown_message(self, stats: dict[str, Any]) -> bool:
+        """Send a session summary when Autopsy shuts down gracefully."""
+        if not self._enabled:
+            return False
+
+        case_label = get_case_label(self.config)
+        subject = f"🏁 [AutopsyGuard] {tr(self.config, 'shutdown_subject')} - {case_label}"
+
+        def _stat_row(icon: str, label: str, value: str) -> str:
+            return f"""
+            <tr>
+                <td style="padding:10px 16px; border-bottom:1px solid #f3f4f6;">
+                    <span style="font-size:14px;">{icon}</span>
+                    <span style="color:#6b7280; font-size:13px; margin-left:8px;">{label}</span>
+                </td>
+                <td align="right" style="padding:10px 16px; border-bottom:1px solid #f3f4f6;">
+                    <span style="color:#111827; font-size:13px; font-weight:600;">{value}</span>
+                </td>
+            </tr>"""
+
+        total = stats.get("total_events", 0)
+        critical = stats.get("critical_count", 0)
+        warnings = stats.get("warning_count", 0)
+        reports = stats.get("reports_sent", 0)
+        uptime = stats.get("uptime", "N/A")
+        case_size = stats.get("case_size", "N/A")
+        db_size = stats.get("db_size", "N/A")
+
+        rows = (
+            _stat_row("⏱️", tr(self.config, "shutdown_session_duration"), uptime)
+            + _stat_row("📊", tr(self.config, "shutdown_total_events"), str(total))
+            + _stat_row("🔴", tr(self.config, "shutdown_critical"), str(critical))
+            + _stat_row("🟡", tr(self.config, "shutdown_warnings"), str(warnings))
+            + _stat_row("📧", tr(self.config, "shutdown_reports_sent"), str(reports))
+            + _stat_row("🗄️", tr(self.config, "shutdown_case_size"), case_size)
+            + _stat_row("🗃️", tr(self.config, "shutdown_db_size"), db_size)
+        )
+
+        body_content = f"""
+        <div style="margin-bottom:24px; text-align:center;">
+            <div style="font-size:48px; margin-bottom:16px;">🏁</div>
+            <h2 style="color:#111827; margin:0 0 8px 0;">{tr(self.config, 'shutdown_title')}</h2>
+            <p style="color:#4b5563; font-size:16px; margin:0;">{tr(self.config, 'shutdown_text')}</p>
+        </div>
+        <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                {rows}
+            </table>
+        </div>
+        """
+
+        html_body = BASE_TEMPLATE.format(
+            header_color_start="#6366f1",
+            header_color_end="#4338ca",
+            header_icon="🏁",
+            header_title=tr(self.config, "shutdown_header_title"),
+            header_subtitle=tr(self.config, "shutdown_header_subtitle"),
+            timestamp=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            case_name=f"📁 {case_label}",
+            body_content=body_content,
+            footer_system=tr(self.config, "footer_system"),
+            auto_email_note=tr(self.config, "auto_email"),
+        )
+
+        plain_lines = [
+            f"🏁 {tr(self.config, 'shutdown_subject')} - {case_label}",
+            tr(self.config, "shutdown_text"),
+            "",
+            f"{tr(self.config, 'shutdown_session_duration')}: {uptime}",
+            f"{tr(self.config, 'shutdown_total_events')}: {total}",
+            f"{tr(self.config, 'shutdown_critical')}: {critical}",
+            f"{tr(self.config, 'shutdown_warnings')}: {warnings}",
+            f"{tr(self.config, 'shutdown_reports_sent')}: {reports}",
+            f"{tr(self.config, 'shutdown_case_size')}: {case_size}",
+            f"{tr(self.config, 'shutdown_db_size')}: {db_size}",
+        ]
+        return self._dispatch_email(subject, html_body, plain_text="\n".join(plain_lines))
+
     # ------------------------------------------------------------------
     # Event history (used by report builder for recent-events section)
     # ------------------------------------------------------------------
