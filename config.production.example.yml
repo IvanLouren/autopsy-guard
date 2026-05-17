@@ -1,115 +1,130 @@
 # =============================================================================
-# AutopsyGuard Configuration
-# Environment: Production
+# AutopsyGuard - Production Example Configuration
 # =============================================================================
-# PURPOSE: Conservative thresholds calibrated for real forensic casework.
-# Autopsy ingest can legitimately saturate CPU for hours and write hundreds of
-# GB to Solr. Thresholds must distinguish genuine crashes from heavy processing.
+# Audience:
+# - Operators running real cases (long ingest sessions, large evidence sets).
 #
-# Usage:
-#   copy config.production.example.yml config.yml
-#   uv run autopsyguard
+# Philosophy:
+# - Prefer low-noise, high-signal monitoring.
+# - Keep warnings meaningful during sustained ingest load.
+# - Use Gmail App Password for email (never your main Gmail password).
 #
-# BEFORE RUNNING — set credentials as environment variables:
-#   Windows: $Env:AUTOPSYGUARD_SMTP_PASSWORD = "your-app-password"
-#   Linux/macOS: export AUTOPSYGUARD_SMTP_PASSWORD="your-app-password"
+# Quick start:
+# 1) Copy this file to config.yml
+# 2) Edit case path + notification recipients
+# 3) Set secrets as environment variables (recommended)
+# 4) Open case in Autopsy first, then run AutopsyGuard, then start ingest
+#
+# Secrets (recommended):
+#   Windows PowerShell:
+#     $Env:AUTOPSYGUARD_SMTP_USER="your.account@gmail.com"
+#     $Env:AUTOPSYGUARD_SMTP_PASSWORD="16-char-app-password"
+#     $Env:AUTOPSYGUARD_WHATSAPP_APIKEY="your-callmebot-key"
+#
+#   Linux/macOS:
+#     export AUTOPSYGUARD_SMTP_USER="your.account@gmail.com"
+#     export AUTOPSYGUARD_SMTP_PASSWORD="16-char-app-password"
+#     export AUTOPSYGUARD_WHATSAPP_APIKEY="your-callmebot-key"
+#
+# Notes:
+# - All configurable keys are listed below (none omitted).
+# - cpu_warning_percent: null enables auto-scaling by logical cores.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. Target Directories
+# 1) Target Directories
 # -----------------------------------------------------------------------------
-# Path to the Autopsy case directory (must contain .aut file)
-case_dir: "C:/Cases/Evidence-2025-001"
-
-# Optional: Path to Autopsy installation (helps locate crash logs)
+case_dir: "C:/Cases/2026-001-ExampleCase"
 autopsy_install_dir: "C:/Program Files/Autopsy-4.22.1"
 
 # -----------------------------------------------------------------------------
-# 2. Polling & Hang Detection
+# 2) Polling + Hang Detection
 # -----------------------------------------------------------------------------
-# Polling interval in seconds (30s is responsive but low overhead)
-poll_interval: 30.0
-
-# Hang detection thresholds
-# 900s = 15 min. Covers long legitimate quiet phases (hashing, export).
+poll_interval: 10.0
 hang_cpu_threshold: 1.0
 hang_timeout: 900.0
-hang_confirmation_duration: 180.0
-log_stale_timeout: 1800.0
+hang_confirmation_duration: 90.0
+log_stale_timeout: 900.0
+
+# Solr behavior used by hang/health logic
+solr_ping_timeout: 5.0
+solr_ping_slow_threshold: 3.0
+solr_ping_slow_duration: 60.0
+solr_unresponsive_duration: 30.0
 
 # -----------------------------------------------------------------------------
-# 3. Resource Warning Thresholds
+# 3) Resource Warning Thresholds
 # -----------------------------------------------------------------------------
-# Alert if resource usage exceeds these limits
-cpu_warning_percent: 95.0
-cpu_per_core_warning_percent: 88.0
-# 900s = 15 min sustained heavy CPU
-cpu_warning_duration: 900.0
+# Set null to auto-calculate by logical cores (recommended for production).
+# Current logic computes approximately 80% of total logical capacity.
+cpu_warning_percent: null
 
-memory_warning_percent: 88.0
-disk_min_free_gb: 20.0
+# Secondary guard based on per-core average utilization.
+cpu_per_core_warning_percent: 90.0
+
+# Must be sustained for this duration before warning.
+cpu_warning_duration: 600.0
+
+memory_warning_percent: 92.0
+disk_min_free_gb: 2.0
 
 # -----------------------------------------------------------------------------
-# 4. Solr Service Monitoring
+# 4) Solr Detector Thresholds
 # -----------------------------------------------------------------------------
-# Default Solr port for Autopsy 4.22.1
 solr_port: 23232
-solr_timeout_seconds: 10.0
-solr_ping_timeout: 8.0
-solr_ping_slow_threshold: 4.0
-solr_ping_slow_duration: 120.0
-solr_unresponsive_duration: 60.0
-solr_slow_threshold_seconds: 3.0
-solr_slow_count_threshold: 5
-
+solr_timeout_seconds: 5.0
+solr_slow_threshold_seconds: 4.0
+solr_slow_count_threshold: 4
 solr_heap_usage_warning: 85.0
 solr_heap_usage_critical: 95.0
 solr_cpu_warning: 90.0
 
 # -----------------------------------------------------------------------------
-# 5. Log Error Signatures
+# 5) Log Error Patterns
 # -----------------------------------------------------------------------------
-# Triggers a warning if these case-insensitive strings appear in the logs.
-# 'Exception' is deliberately excluded here to reduce noise from benign traces.
+# Case-insensitive substrings that trigger LOG_ERROR detections.
+# Keep this focused in production; too broad patterns create alert noise.
 error_patterns:
   - "java.lang.OutOfMemoryError"
-  - "StackOverflowError"
-  - "FATAL"
   - "SEVERE"
-  - "IngestJobStartException"
-  - "TskCoreException"
-  - "TskDataException"
-  - "org.sqlite.SQLiteException"
-  - "org.postgresql.util.PSQLException"
-  - "SolrServerException"
-  - "org.apache.solr.common.SolrException"
-  - "java.lang.NullPointerException"
-  - "java.io.IOException"
+  - "Exception"
+  - "FATAL"
+  - "StackOverflowError"
 
 # -----------------------------------------------------------------------------
-# 6. Notifications & Reporting
+# 6) Email Notifications (Gmail App Password mode)
 # -----------------------------------------------------------------------------
-# Frequency of status heartbeat emails
-report_interval_hours: 12.0
-
-# Email Settings
+# Runtime currently enforces Gmail STARTTLS profile when email is enabled.
 smtp_host: "smtp.gmail.com"
 smtp_port: 587
-smtp_use_ssl: false  # false = STARTTLS (correct for Gmail)
+smtp_use_ssl: false
 smtp_async: true
-smtp_user: ""        # Provide via AUTOPSYGUARD_SMTP_USER
-smtp_password: ""    # Provide via AUTOPSYGUARD_SMTP_PASSWORD
-email_sender: "autopsyguard@forensics.yourdomain.com"
-email_recipient: "forensic-team@yourdomain.com"
-email_case_label: "Evidence Case 2025-001"
-language: "auto"         # auto | pt | en
-case_name_source: "real" # real | hash (used when email_case_label is empty)
 
-# WhatsApp Notifications (via CallMeBot)
+# Keep these empty in file; supply via environment variables.
+smtp_user: ""
+smtp_password: ""
+
+email_sender: "autopsyguard@gmail.com"
+email_recipient: "forensics-team@example.com"
+
+# Optional explicit label shown in subjects/body.
+# Leave empty to derive from case folder/autopsy case name policy.
+email_case_label: ""
+case_name_source: "real"  # allowed: real | hash
+
+# Heartbeat report interval (hours)
+report_interval_hours: 12.0
+
+# -----------------------------------------------------------------------------
+# 7) WhatsApp (CallMeBot)
+# -----------------------------------------------------------------------------
 whatsapp_enabled: false
-whatsapp_phone: ""        # e.g. "+351912345678"
-whatsapp_apikey: ""       # Provide via AUTOPSYGUARD_WHATSAPP_APIKEY
+whatsapp_phone: ""      # example: "+351912345678"
+whatsapp_apikey: ""     # recommended via AUTOPSYGUARD_WHATSAPP_APIKEY
 
-# Telegram Notifications (via CallMeBot)
+# -----------------------------------------------------------------------------
+# 8) Telegram (CallMeBot)
+# -----------------------------------------------------------------------------
 telegram_enabled: false
-telegram_user: ""         # e.g. "@myusername"
+telegram_user: ""       # example: "@incident_channel"
+

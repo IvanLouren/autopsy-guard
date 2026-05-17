@@ -1,66 +1,70 @@
 # =============================================================================
-# AutopsyGuard Configuration
-# Environment: Development
+# AutopsyGuard - Development Example Configuration
 # =============================================================================
-# PURPOSE: Optimized for local testing and active development.
-# Thresholds are low and polling is fast to provide immediate feedback.
+# Audience:
+# - Developers and testers validating behavior quickly on local machines.
 #
-# Usage:
-#   copy config.development.example.yml config.yml
-#   uv run autopsyguard
+# Philosophy:
+# - Faster polling and shorter timers for quick feedback.
+# - Keep defaults realistic but easier to trigger during testing.
+#
+# Quick start:
+# 1) Copy this file to config.yml
+# 2) Set case_dir to a local test case
+# 3) If testing notifications, configure Gmail App Password credentials
+# 4) Open case in Autopsy first, then run AutopsyGuard, then start ingest
+#
+# Notes:
+# - All configurable keys are listed below (none omitted).
+# - cpu_warning_percent is explicitly set in this dev profile to trigger earlier.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 1. Target Directories
+# 1) Target Directories
 # -----------------------------------------------------------------------------
-# Path to the Autopsy case directory (must contain .aut file)
 case_dir: "./example_case"
-
-# Optional: Path to Autopsy installation (helps locate crash logs)
-# autopsy_install_dir: "C:/Program Files/Autopsy-4.22.1"
+autopsy_install_dir: ""   # optional; empty means disabled
 
 # -----------------------------------------------------------------------------
-# 2. Polling & Hang Detection
+# 2) Polling + Hang Detection
 # -----------------------------------------------------------------------------
-# Polling interval in seconds (fast for development)
 poll_interval: 5.0
-
-# Hang detection thresholds (lower for quick testing)
 hang_cpu_threshold: 1.0
-hang_timeout: 120.0
-hang_confirmation_duration: 30.0
+hang_timeout: 180.0
+hang_confirmation_duration: 45.0
 log_stale_timeout: 300.0
 
+# Solr behavior used by hang/health logic
+solr_ping_timeout: 3.0
+solr_ping_slow_threshold: 2.0
+solr_ping_slow_duration: 30.0
+solr_unresponsive_duration: 15.0
+
 # -----------------------------------------------------------------------------
-# 3. Resource Warning Thresholds
+# 3) Resource Warning Thresholds
 # -----------------------------------------------------------------------------
-# Alert if resource usage exceeds these limits
-cpu_warning_percent: 95.0
+# Dev profile: lower than production so behavior can be tested quickly.
+cpu_warning_percent: 250.0
 cpu_per_core_warning_percent: 90.0
-cpu_warning_duration: 60.0
+cpu_warning_duration: 120.0
 memory_warning_percent: 90.0
 disk_min_free_gb: 1.0
 
 # -----------------------------------------------------------------------------
-# 4. Solr Service Monitoring
+# 4) Solr Detector Thresholds
 # -----------------------------------------------------------------------------
 solr_port: 23232
 solr_timeout_seconds: 5.0
-solr_ping_timeout: 3.0
-solr_ping_slow_threshold: 3.0
-solr_ping_slow_duration: 30.0
-solr_unresponsive_duration: 15.0
 solr_slow_threshold_seconds: 2.0
 solr_slow_count_threshold: 3
-
 solr_heap_usage_warning: 85.0
 solr_heap_usage_critical: 95.0
 solr_cpu_warning: 90.0
 
 # -----------------------------------------------------------------------------
-# 5. Log Error Signatures
+# 5) Log Error Patterns
 # -----------------------------------------------------------------------------
-# Triggers a warning if these case-insensitive strings appear in the logs
+# Dev profile keeps broad matching for visibility.
 error_patterns:
   - "java.lang.OutOfMemoryError"
   - "SEVERE"
@@ -69,29 +73,38 @@ error_patterns:
   - "StackOverflowError"
 
 # -----------------------------------------------------------------------------
-# 6. Notifications & Reporting
+# 6) Email Notifications (Gmail App Password mode)
 # -----------------------------------------------------------------------------
-# Frequency of status heartbeat emails
-report_interval_hours: 0.5
-
-# Email Settings (Gmail App Password only)
+# Runtime enforces Gmail STARTTLS profile when email is enabled.
 smtp_host: "smtp.gmail.com"
 smtp_port: 587
-smtp_use_ssl: false  # false = STARTTLS (required for Gmail)
+smtp_use_ssl: false
 smtp_async: true
+
+# Recommended: provide via environment variables
+#   AUTOPSYGUARD_SMTP_USER
+#   AUTOPSYGUARD_SMTP_PASSWORD
 smtp_user: ""
 smtp_password: ""
+
 email_sender: "autopsyguard@gmail.com"
-email_recipient: "your-team@example.com"
-email_case_label: "Dev Test Case"
-language: "auto"        # auto | pt | en
-case_name_source: "real" # real | hash (used when email_case_label is empty)
+email_recipient: ""       # leave empty to disable email in local testing
+email_case_label: "Development Test Case"
+case_name_source: "real"  # allowed: real | hash
 
-# WhatsApp Notifications (via CallMeBot)
+# Heartbeat report interval (hours)
+report_interval_hours: 0.5
+
+# -----------------------------------------------------------------------------
+# 7) WhatsApp (CallMeBot)
+# -----------------------------------------------------------------------------
 whatsapp_enabled: false
-whatsapp_phone: ""  # e.g. "+351912345678"
-whatsapp_apikey: "" # your CallMeBot API key
+whatsapp_phone: ""
+whatsapp_apikey: ""
 
-# Telegram Notifications (via CallMeBot)
+# -----------------------------------------------------------------------------
+# 8) Telegram (CallMeBot)
+# -----------------------------------------------------------------------------
 telegram_enabled: false
-telegram_user: ""   # e.g. "@myusername"
+telegram_user: ""
+
