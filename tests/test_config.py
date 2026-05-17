@@ -37,13 +37,14 @@ def test_from_sources_loads_yaml_values(tmp_path: Path) -> None:
     assert config.error_patterns == ["FATAL", "Exception"]
 
 
-def test_monitor_config_balanced_baseline_defaults(tmp_path: Path) -> None:
+def test_monitor_config_balanced_baseline_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     case_dir = tmp_path / "CaseA"
     case_dir.mkdir()
+    monkeypatch.setattr("autopsyguard.config.os.cpu_count", lambda: 12)
 
     config = MonitorConfig(case_dir=case_dir)
 
-    assert config.cpu_warning_percent == 350.0
+    assert config.cpu_warning_percent == 960.0
     assert config.cpu_warning_duration == 600.0
     assert config.memory_warning_percent == 92.0
     assert config.disk_min_free_gb == 2.0
@@ -152,6 +153,27 @@ def test_from_sources_allows_multicore_process_cpu_threshold_over_100(tmp_path: 
     assert config.cpu_warning_percent == 250.0
 
 
+def test_from_sources_autoscales_cpu_warning_percent_when_not_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "CaseA").mkdir()
+    monkeypatch.setattr("autopsyguard.config.os.cpu_count", lambda: 8)
+
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = MonitorConfig.from_sources(yaml_path=cfg)
+    assert config.cpu_warning_percent == 640.0
+
+
 def test_from_sources_rejects_per_core_cpu_threshold_over_100(tmp_path: Path) -> None:
     (tmp_path / "CaseA").mkdir()
 
@@ -168,6 +190,31 @@ def test_from_sources_rejects_per_core_cpu_threshold_over_100(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="cpu_per_core_warning_percent"):
         MonitorConfig.from_sources(yaml_path=cfg)
+
+
+def test_from_sources_warns_when_cpu_threshold_is_too_low_for_core_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    (tmp_path / "CaseA").mkdir()
+    monkeypatch.setattr("autopsyguard.config.os.cpu_count", lambda: 12)
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "case_dir: ./CaseA",
+                "cpu_warning_percent: 95.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING"):
+        config = MonitorConfig.from_sources(yaml_path=cfg)
+
+    assert config.cpu_warning_percent == 95.0
+    assert any("cpu_warning_percent" in rec.message for rec in caplog.records)
 
 
 def test_from_sources_loads_telegram_settings(tmp_path: Path) -> None:

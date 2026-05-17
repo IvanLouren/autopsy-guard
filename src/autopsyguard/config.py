@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 import os
+import logging
 
 import yaml
 from dotenv import load_dotenv
@@ -14,6 +15,21 @@ from autopsyguard.platform_utils import (
     get_autopsy_log_dir,
     get_autopsy_user_dir,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _logical_cpu_count() -> int:
+    try:
+        count = int(os.cpu_count() or 1)
+    except Exception:
+        return 1
+    return max(1, count)
+
+
+def _autoscaled_cpu_warning_percent(logical_cores: int | None = None) -> float:
+    cores = logical_cores if logical_cores is not None else _logical_cpu_count()
+    return float(cores * 100.0 * 0.8)
 
 
 @dataclass
@@ -46,7 +62,7 @@ class MonitorConfig:
     log_stale_timeout: float = 900.0  # 15 minutes
 
     # --- Resource thresholds ---
-    cpu_warning_percent: float = 350.0
+    cpu_warning_percent: float | None = None
     # Per-core CPU percent threshold (e.g., 90.0 means a single core at 90% will trigger)
     cpu_per_core_warning_percent: float = 90.0
     cpu_warning_duration: float = 600.0  # sustained for 10 min
@@ -100,6 +116,11 @@ class MonitorConfig:
         "FATAL",
         "StackOverflowError",
     ])
+    _cpu_warning_percent_user_set: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.cpu_warning_percent is None:
+            self.cpu_warning_percent = _autoscaled_cpu_warning_percent()
 
     @property
     def user_dir(self) -> Path:
@@ -161,12 +182,15 @@ class MonitorConfig:
         values: dict[str, Any] = {}
         if yaml_path is not None:
             values.update(_load_yaml_config(yaml_path))
+        user_set_cpu_warning = "cpu_warning_percent" in values
 
         # Apply environment-based overrides for secrets and sensitive fields
         values = _apply_env_overrides(values)
 
         if overrides:
             values.update({k: v for k, v in overrides.items() if v is not None})
+            if "cpu_warning_percent" in overrides and overrides.get("cpu_warning_percent") is not None:
+                user_set_cpu_warning = True
 
         if "case_dir" not in values:
             raise ValueError(
@@ -194,6 +218,7 @@ class MonitorConfig:
                 raise ValueError("'error_patterns' must be a list of strings")
 
         config = cls(**values)
+        config._cpu_warning_percent_user_set = user_set_cpu_warning
 
         # Validate syntactic and semantic (non-filesystem) aspects of the config
         _validate_config_types(config)
@@ -327,8 +352,20 @@ def _validate_config_types(config: MonitorConfig) -> None:
         if not (0 <= value <= 100):
             raise ValueError(f"Invalid {field_name}: {value} (must be 0-100)")
 
+    if config.cpu_warning_percent is None:
+        raise ValueError("Invalid cpu_warning_percent: None")
     if config.cpu_warning_percent < 0:
         raise ValueError(f"Invalid cpu_warning_percent: {config.cpu_warning_percent} (must be >= 0)")
+    logical_cores = _logical_cpu_count()
+    low_cpu_floor = logical_cores * 100.0 * 0.5
+    if config.cpu_warning_percent < low_cpu_floor:
+        logger.warning(
+            "Configured cpu_warning_percent %.1f is low for %d logical cores "
+            "(recommended sustained threshold >= %.0f%%). This may cause alert noise.",
+            config.cpu_warning_percent,
+            logical_cores,
+            _autoscaled_cpu_warning_percent(logical_cores),
+        )
 
     # Validate timeout values
     timeout_fields = [
