@@ -11,6 +11,7 @@ from typing import Any
 
 from autopsyguard.config import MonitorConfig
 from autopsyguard.platform_utils import get_case_log_file
+from autopsyguard.utils.case_metadata import read_autopsy_case_display_name
 from autopsyguard.utils.messages import tr
 
 
@@ -659,7 +660,10 @@ def collect_case_telemetry(
 ) -> dict[str, Any]:
     """Collect case/log/module/Solr metadata for heartbeat report blocks."""
     case_dir = config.case_dir
-    case_name = config.email_case_label.strip() if config.email_case_label else case_dir.name
+    if config.email_case_label.strip():
+        case_name = config.email_case_label.strip()
+    else:
+        case_name = read_autopsy_case_display_name(case_dir) or case_dir.name
 
     db_path = case_dir / "autopsy.db"
     db_st = _safe_stat(db_path)

@@ -13,6 +13,7 @@ from typing import Any
 import psutil
 
 from autopsyguard.config import MonitorConfig
+from autopsyguard.utils.case_metadata import read_autopsy_case_display_name
 from autopsyguard.models import CrashEvent, Severity
 
 
@@ -173,16 +174,19 @@ STATUS_CARD = """
 # ---------------------------------------------------------------------------
 
 def get_case_label(config: MonitorConfig) -> str:
-    """Return an anonymised, human-friendly case label for emails.
+    """Return a human-friendly case label for emails.
 
-    Uses ``config.email_case_label`` when set; otherwise defaults to the
-    actual case directory name.
+    Uses ``config.email_case_label`` when set; otherwise reads the Autopsy
+    case name from ``*.aut`` (DisplayName / Name), then the directory name.
     """
     if getattr(config, "email_case_label", None):
-        return config.email_case_label
+        return config.email_case_label.strip()
     source = (getattr(config, "case_name_source", "real") or "real").strip().lower()
     if source == "real":
         try:
+            from_aut = read_autopsy_case_display_name(config.case_dir)
+            if from_aut:
+                return from_aut
             return config.case_dir.name
         except Exception:
             return "Case"
