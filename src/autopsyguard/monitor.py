@@ -1517,35 +1517,105 @@ class Monitor:
             event.message
         )
 
+    @staticmethod
+    def _parse_report_timestamp(value: object) -> float | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(text[:19], fmt).timestamp()
+            except Exception:
+                continue
+        return None
+
+    def _has_recent_module_folder_activity(
+        self,
+        module_folders: object,
+        *,
+        now_ts: float | None = None,
+        max_age_seconds: float = 1800.0,
+    ) -> bool:
+        if not isinstance(module_folders, list):
+            return False
+        now = now_ts if now_ts is not None else time.time()
+        markers = ("keyword", "solr", "photorec", "carver", "search")
+        for folder in module_folders:
+            if not isinstance(folder, dict):
+                continue
+            name = str(folder.get("name") or "").lower()
+            if not any(marker in name for marker in markers):
+                continue
+            updated_ts = self._parse_report_timestamp(folder.get("updated_at"))
+            if updated_ts is None:
+                continue
+            if (now - updated_ts) <= max_age_seconds:
+                return True
+        return False
+
+    def _has_forensic_background_signals(self, telemetry: dict[str, object]) -> bool:
+        """Detect Keyword Search / Solr style work without an active ingest job."""
+        module_activity = telemetry.get("module_activity") or []
+        if isinstance(module_activity, list) and module_activity:
+            return True
+
+        summary = telemetry.get("module_activity_summary") or []
+        if isinstance(summary, list):
+            for item in summary:
+                if not isinstance(item, dict):
+                    continue
+                module_name = str(item.get("module_name") or item.get("module") or "").lower()
+                if any(token in module_name for token in ("keyword", "solr", "photorec", "carver")):
+                    return True
+
+        if self._has_recent_module_folder_activity(telemetry.get("module_folders")):
+            return True
+
+        solr = telemetry.get("solr") or {}
+        if not isinstance(solr, dict):
+            return False
+        if str(solr.get("state", "")).lower() != "up":
+            return False
+
+        try:
+            if solr.get("response_time_seconds") is not None and float(solr["response_time_seconds"]) >= 0.0:
+                return True
+        except Exception:
+            pass
+        try:
+            if float(solr.get("heap_usage_percent") or 0.0) >= 15.0:
+                return True
+        except Exception:
+            pass
+        try:
+            if float(solr.get("cpu_percent") or 0.0) >= 5.0:
+                return True
+        except Exception:
+            pass
+        return False
+
     def _classify_runtime_status(self, telemetry: dict[str, object]) -> str:
         """Classify runtime state for periodic human-facing reports."""
         if self._log_detector.ingest_running:
             return "PROCESSING"
+
+        if self._has_forensic_background_signals(telemetry):
+            return "ACTIVE_NON_INGEST"
 
         cpu_now = None
         try:
             cpu_now = (telemetry.get("autopsy_cpu_timeline") or {}).get("current")
         except Exception:
             cpu_now = None
-        module_activity = telemetry.get("module_activity") or []
-        solr = telemetry.get("solr") or {}
-        solr_up = str(solr.get("state", "")).lower() == "up"
-        solr_rt = solr.get("response_time_seconds")
 
-        if module_activity:
-            return "ACTIVE_NON_INGEST"
+        cpu_threshold = max(2.0, float(self.config.hang_cpu_threshold))
         if cpu_now is not None:
             try:
-                if float(cpu_now) >= max(5.0, self.config.hang_cpu_threshold):
+                if float(cpu_now) >= cpu_threshold:
                     return "ACTIVE_NON_INGEST"
             except Exception:
                 pass
-        if solr_up and solr_rt is not None:
-            try:
-                if float(solr_rt) > 0.0:
-                    return "ACTIVE_NON_INGEST"
-            except Exception:
-                pass
+
         return "IDLE"
 
     def _status_text_for_mode(self, mode: str) -> str:

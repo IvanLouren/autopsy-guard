@@ -115,6 +115,44 @@ def test_classify_runtime_status_active_non_ingest_for_keyword_activity(tmp_path
     assert monitor._classify_runtime_status(telemetry) == "ACTIVE_NON_INGEST"
 
 
+def test_classify_runtime_status_active_for_recent_keyword_folder(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+
+    telemetry = {
+        "autopsy_cpu_timeline": {"current": 1.0},
+        "module_activity": [],
+        "module_folders": [
+            {
+                "name": "keywordsearch",
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        ],
+        "solr": {"state": "unknown", "response_time_seconds": None},
+    }
+    assert monitor._classify_runtime_status(telemetry) == "ACTIVE_NON_INGEST"
+
+
+def test_classify_runtime_status_active_for_solr_metrics_without_ingest(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._ingest_running = False
+
+    telemetry = {
+        "autopsy_cpu_timeline": {"current": 1.0},
+        "module_activity": [],
+        "module_folders": [],
+        "solr": {
+            "state": "up",
+            "response_time_seconds": 0.15,
+            "heap_usage_percent": 42.0,
+            "cpu_percent": 8.0,
+        },
+    }
+    assert monitor._classify_runtime_status(telemetry) == "ACTIVE_NON_INGEST"
+
+
 def test_classify_runtime_status_idle_when_no_activity(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     monitor = Monitor(cfg)

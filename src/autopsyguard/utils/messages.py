@@ -7,7 +7,7 @@ from typing import Any
 
 _MESSAGES: dict[str, str] = {
     "status_processing": "Autopsy is actively processing ingest modules.",
-    "status_active_non_ingest": "Autopsy is active (no ingest), with background activity detected.",
+    "status_active_non_ingest": "Autopsy is active without an ingest job (e.g. Keyword Search or Solr indexing).",
     "status_idle": "Autopsy is idle (no ingest and low activity).",
     "report_subject": "Status Report",
     "report_header_title": "Status Report",
