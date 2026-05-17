@@ -388,6 +388,55 @@ def test_report_builder_solr_na_values_render_without_invalid_units(tmp_path):
     assert "N/As" not in html_body
 
 
+def test_report_builder_renders_active_solr_outage_context(tmp_path):
+    case_dir = tmp_path / "Case"
+    case_dir.mkdir()
+    (case_dir / "Case.aut").write_text("<autopsy/>", encoding="utf-8")
+    cfg = MonitorConfig(case_dir=case_dir)
+    telemetry = {
+        "autopsy_db": {"exists": True, "size_bytes": 10, "updated_at": "2026-05-16 17:18:53"},
+        "autopsy_log": {"exists": True, "size_bytes": 120, "updated_at": "2026-05-16 18:35:42", "line_count": 20},
+        "case_size_bytes": 1024,
+        "module_folders": [],
+        "module_activity": [],
+        "solr": {
+            "state": "down",
+            "response_time_seconds": 1.2,
+            "checked_at": "2026-05-16 18:36:00",
+            "error": "Connection refused",
+            "heap_usage_percent": 12.1,
+            "cpu_percent": 14.5,
+        },
+        "solr_outage_incident": {
+            "incident_id": "solr-outage-12",
+            "incident_status": "OPEN",
+            "first_seen": "2026-05-16 18:31:00",
+            "last_seen": "2026-05-16 18:35:59",
+            "outage_duration_seconds": 300,
+            "retry_attempt_count": 12,
+            "batch_failure_count": 4,
+            "derivative_suppressed_count": 21,
+        },
+        "autopsy_cpu_timeline": {"current": 50.0, "minus_5m": 49.0, "minus_15m": 48.0},
+    }
+    _, html_body, _, _, _ = build_report_email(
+        config=cfg,
+        system_status="OK",
+        events_last_period=0,
+        uptime="1m 0s",
+        recent_events=[],
+        metrics_samples=[{"ts": 1.0, "cpu_percent": 10.0, "memory_percent": 20.0, "memory_used_bytes": 1, "memory_total_bytes": 2, "disk_free_bytes": 3, "disk_total_bytes": 4}],
+        autopsy_pid=None,
+        telemetry=telemetry,
+    )
+
+    assert "incident=OPEN" in html_body
+    assert "duration=300s" in html_body
+    assert "retries=12" in html_body
+    assert "batch_failures=4" in html_body
+    assert "suppressed_derivatives=21" in html_body
+
+
 def test_report_builder_renders_module_error_summary_block(tmp_path):
     case_dir = tmp_path / "Case"
     case_dir.mkdir()

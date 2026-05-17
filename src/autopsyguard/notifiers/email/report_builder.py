@@ -354,6 +354,10 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         log_updated_at,
         log_age_seconds=log_age_seconds,
     )
+    module_confidence_reason = _activity_confidence_reason(
+        latest_activity,
+        log_age_seconds=log_age_seconds,
+    )
     module_age = _age_label(_activity_ts(latest_activity), now_dt)
     raw_module_errors = _period_error_count(
         module_period_counters,
@@ -372,6 +376,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         ts=_activity_ts(latest_activity),
         age=module_age,
         confidence=module_confidence,
+        confidence_reason=module_confidence_reason,
         errors=module_errors,
         activity_count=module_activity_events,
     )
@@ -428,6 +433,15 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         f"heap={solr_heap} | cpu={solr_cpu} | "
         f"{tr(config, 'checked_at')}={solr_checked_at} | {error_label}={solr_error}"
     )
+    outage = telemetry.get("solr_outage_incident") or {}
+    if isinstance(outage, dict) and str(outage.get("incident_status") or "").upper() == "OPEN":
+        solr_line += (
+            " | "
+            f"incident=OPEN | duration={int(outage.get('outage_duration_seconds', 0))}s | "
+            f"retries={int(outage.get('retry_attempt_count', 0))} | "
+            f"batch_failures={int(outage.get('batch_failure_count', 0))} | "
+            f"suppressed_derivatives={int(outage.get('derivative_suppressed_count', 0))}"
+        )
     if context:
         solr_line += f" | {context}"
 
@@ -504,6 +518,10 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
             log_updated_at,
             log_age_seconds=log_age_seconds,
         )
+        keyword_confidence_reason = _activity_confidence_reason(
+            item,
+            log_age_seconds=log_age_seconds,
+        )
         if (
             str(item.get("module") or "").strip().lower() == str(latest_activity.get("module") or "").strip().lower()
             and str(item.get("state") or "").strip().lower() == str(latest_activity.get("state") or "").strip().lower()
@@ -521,6 +539,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
                 ts=_activity_ts(item),
                 age=keyword_age,
                 confidence=keyword_confidence,
+                confidence_reason=keyword_confidence_reason,
                 errors=error_events,
                 activity_count=activity_events,
             )
@@ -658,6 +677,29 @@ def _activity_confidence_label(
     return "stale"
 
 
+def _activity_confidence_reason(
+    activity: dict[str, Any],
+    *,
+    log_age_seconds: float | None = None,
+) -> str | None:
+    source = str(activity.get("source") or "log").strip().lower()
+    if source == "log":
+        return None
+    if log_age_seconds is None:
+        return f"source={source}"
+    if log_age_seconds <= 0:
+        return f"source={source}"
+    if log_age_seconds < 60:
+        age_label = f"{int(log_age_seconds)}s"
+    elif log_age_seconds < 3600:
+        age_label = f"{int(log_age_seconds // 60)}m"
+    elif log_age_seconds < 86400:
+        age_label = f"{int(log_age_seconds // 3600)}h"
+    else:
+        age_label = f"{int(log_age_seconds // 86400)}d"
+    return f"source={source}, log_stale={age_label}"
+
+
 def _period_activity_count(
     counters: Any,
     *,
@@ -714,18 +756,22 @@ def _format_activity_line(
     ts: str,
     age: str,
     confidence: str,
+    confidence_reason: str | None,
     errors: int,
     activity_count: int,
 ) -> str:
     source = str(activity.get("source") or "log")
     ingest_job_id = str(activity.get("ingest_job_id") or "N/A")
     data_source = str(activity.get("data_source") or "N/A")
+    confidence_field = confidence
+    if confidence_reason:
+        confidence_field = f"{confidence} ({confidence_reason})"
     return (
         f"{activity.get('module', 'N/A')} | "
         f"{activity.get('state', 'N/A')} | "
         f"{ts} | {age} | "
         f"source={source} | job={ingest_job_id} | data_source={data_source} | "
-        f"confidence={confidence} | errors={errors} | activity={activity_count}"
+        f"confidence={confidence_field} | errors={errors} | activity={activity_count}"
     )
 
 
@@ -824,6 +870,10 @@ def _build_plain_text(
             log_updated_at,
             log_age_seconds=log_age_seconds,
         )
+        module_confidence_reason = _activity_confidence_reason(
+            latest_activity,
+            log_age_seconds=log_age_seconds,
+        )
         module_age = _age_label(latest_activity.get("timestamp"), now_dt)
         module_errors_summary = telemetry.get("module_errors_summary") or []
         grouped_error_map: dict[str, int] = {}
@@ -853,6 +903,7 @@ def _build_plain_text(
             ts=str(latest_activity.get("timestamp") or log_updated_at),
             age=module_age,
             confidence=module_confidence,
+            confidence_reason=module_confidence_reason,
             errors=module_errors,
             activity_count=module_activity_events,
         )
@@ -899,6 +950,10 @@ def _build_plain_text(
                 log_updated_at,
                 log_age_seconds=log_age_seconds,
             )
+            keyword_confidence_reason = _activity_confidence_reason(
+                item,
+                log_age_seconds=log_age_seconds,
+            )
             keyword_age = _age_label(item.get("timestamp"), now_dt)
             if (
                 str(item.get("module") or "").strip().lower() == str(latest_activity.get("module") or "").strip().lower()
@@ -917,6 +972,7 @@ def _build_plain_text(
                     ts=str(item.get("timestamp") or log_updated_at),
                     age=keyword_age,
                     confidence=keyword_confidence,
+                    confidence_reason=keyword_confidence_reason,
                     errors=keyword_errors,
                     activity_count=keyword_activity_events,
                 )

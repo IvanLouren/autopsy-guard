@@ -40,6 +40,8 @@ _INGEST_START_PATTERN = re.compile(r"Starting ingest job", re.IGNORECASE)
 _INGEST_FINISH_PATTERN = re.compile(
     r"Finished all ingest tasks for ingest job", re.IGNORECASE,
 )
+_INGEST_JOB_ID_PATTERN = re.compile(r"(?:ingest\s+)?job\s+id\s*=\s*(\d+)", re.IGNORECASE)
+_DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^,\)]+)", re.IGNORECASE)
 
 
 class LogDetector(BaseDetector):
@@ -61,6 +63,8 @@ class LogDetector(BaseDetector):
         # Ingest state tracking — updated by parsing the Autopsy log
         self._ingest_running = False
         self._ingest_start_time: float | None = None
+        self._active_ingest_job_id: str | None = None
+        self._active_data_source: str | None = None
         # Compile pattern list from built-in constants and operator-configured patterns
         self._patterns: list[tuple[re.Pattern, CrashType, Severity]] = [
             (_OOM_PATTERN, CrashType.OUT_OF_MEMORY, Severity.CRITICAL),
@@ -95,6 +99,16 @@ class LogDetector(BaseDetector):
         Returns ``None`` if no ingest job is currently running.
         """
         return self._ingest_start_time
+
+    @property
+    def active_ingest_job_id(self) -> str | None:
+        """Most recently observed ingest job id in the log stream."""
+        return self._active_ingest_job_id
+
+    @property
+    def active_data_source(self) -> str | None:
+        """Most recently observed data source in the log stream."""
+        return self._active_data_source
 
     def check(self) -> list[CrashEvent]:
         log_files = self._get_log_files()
@@ -247,6 +261,14 @@ class LogDetector(BaseDetector):
 
     def _update_ingest_state(self, line: str) -> None:
         """Track ingest start/finish from Autopsy log lines."""
+        job_match = _INGEST_JOB_ID_PATTERN.search(line)
+        if job_match and (job_match.group(1) or "").strip():
+            self._active_ingest_job_id = (job_match.group(1) or "").strip()
+
+        ds_match = _DATA_SOURCE_PATTERN.search(line)
+        if ds_match and (ds_match.group(1) or "").strip():
+            self._active_data_source = (ds_match.group(1) or "").strip()
+
         if _INGEST_START_PATTERN.search(line):
             if not self._ingest_running:
                 logger.info("📥 Ingest job started (detected from Autopsy log)")

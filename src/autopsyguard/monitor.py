@@ -50,6 +50,7 @@ _NON_ACTIONABLE_VENDOR_NULL_PATTERN = re.compile(
 _INGEST_JOB_ID_PATTERN = re.compile(r"(?:ingest\s+)?job\s+id\s*=\s*(\d+)", re.IGNORECASE)
 _DATA_SOURCE_PATTERN = re.compile(r"data source\s*=\s*([^,\)]+)", re.IGNORECASE)
 _OBJECT_ID_PATTERN = re.compile(r"object id\s*=\s*(\d+)", re.IGNORECASE)
+_UNKNOWN_CONTEXT_TOKENS = {"", "n/a", "na", "unknown", "none"}
 
 
 class MonitorState(enum.Enum):
@@ -128,6 +129,16 @@ class Monitor:
         self._console_repeat_window_seconds = max(60.0, self.config.poll_interval * 12.0)
         self._console_summary_idle_seconds = max(30.0, self.config.poll_interval * 6.0)
         self._console_log_suppression: dict[str, dict[str, float | str | int]] = {}
+        self._context_fallback_state: dict[str, str | float] = {
+            "ingest_job_id": "unknown",
+            "data_source": "unknown",
+            "last_seen": 0.0,
+        }
+        self._module_context_anchors: dict[str, dict[str, str | float]] = {}
+        self._module_context_anchor_ttl_seconds = 300.0
+        self._solr_outage_incident: dict[str, object] | None = None
+        self._solr_outage_resolve_quiet_seconds = 120.0
+        self._incident_sequence = 0
         # Crash types that should bypass the correlation delay and alert
         # immediately after detection.
         self._priority_alert_types: set[CrashType] = {
@@ -302,6 +313,10 @@ class Monitor:
         ready_alerts = self._collect_alert_notifications(alert_events, now)
         ready_alerts = self._filter_post_ingest_resource_alerts(ready_alerts, now=now)
         ready_alerts = self._filter_nonfatal_solr_ping_alerts(ready_alerts)
+        ready_alerts = self._apply_solr_outage_policy(ready_alerts, now=now)
+        recovery_alert = self._maybe_build_solr_outage_recovery_alert(now=now)
+        if recovery_alert is not None:
+            ready_alerts.append(recovery_alert)
         if ready_alerts and self._has_ingest_started_ever:
             self.notifier.send_alert(ready_alerts)
             self.whatsapp.send_alert(ready_alerts)
@@ -357,6 +372,7 @@ class Monitor:
                     solr_metrics=solr_metrics,
                     cpu_snapshots=cpu_timeline,
                 )
+                telemetry["solr_outage_incident"] = self._solr_outage_telemetry_snapshot(now=now)
                 telemetry["module_period_counters"] = self._build_module_period_counters(self._period_events)
                 self._inject_module_error_summary(telemetry)
                 status_mode = self._classify_runtime_status(telemetry=telemetry)
@@ -542,6 +558,96 @@ class Monitor:
                 return label
         return "generic_log_error"
 
+    @staticmethod
+    def _normalize_context_value(value: object) -> str | None:
+        raw = str(value or "").strip()
+        if raw.lower() in _UNKNOWN_CONTEXT_TOKENS:
+            return None
+        return raw
+
+    @staticmethod
+    def _context_scope_key(ingest_job_id: str, data_source: str) -> str:
+        return f"job={ingest_job_id.lower()}|src={data_source.lower()}"
+
+    def _active_ingest_context(self) -> tuple[str | None, str | None]:
+        job_id = self._normalize_context_value(getattr(self._log_detector, "active_ingest_job_id", None))
+        data_source = self._normalize_context_value(getattr(self._log_detector, "active_data_source", None))
+        return job_id, data_source
+
+    def _remember_context(self, ingest_job_id: str, data_source: str, *, now: float) -> None:
+        if self._normalize_context_value(ingest_job_id) is not None:
+            self._context_fallback_state["ingest_job_id"] = ingest_job_id
+        if self._normalize_context_value(data_source) is not None:
+            self._context_fallback_state["data_source"] = data_source
+        self._context_fallback_state["last_seen"] = now
+
+    def _resolve_context(
+        self,
+        *,
+        line_text: str,
+        details: dict[str, object],
+        now: float,
+    ) -> tuple[str, str]:
+        # precedence: explicit line context > event details > active ingest context > last-open incident context
+        line_job = self._normalize_context_value(self._extract_first_match(_INGEST_JOB_ID_PATTERN, line_text))
+        line_source = self._normalize_context_value(self._extract_first_match(_DATA_SOURCE_PATTERN, line_text))
+        detail_job = self._normalize_context_value(details.get("ingest_job_id"))
+        detail_source = self._normalize_context_value(details.get("data_source"))
+        active_job, active_source = self._active_ingest_context()
+        fallback_job = self._normalize_context_value(self._context_fallback_state.get("ingest_job_id"))
+        fallback_source = self._normalize_context_value(self._context_fallback_state.get("data_source"))
+
+        ingest_job_id = line_job or detail_job or active_job or fallback_job or "unknown"
+        data_source = line_source or detail_source or active_source or fallback_source or "unknown"
+        if ingest_job_id != "unknown" or data_source != "unknown":
+            self._remember_context(ingest_job_id, data_source, now=now)
+        return ingest_job_id, data_source
+
+    def _anchor_module_for_context(
+        self,
+        *,
+        ingest_job_id: str,
+        data_source: str,
+        module: str,
+        now: float,
+    ) -> None:
+        if not module or module.lower() == "general":
+            return
+        key = self._context_scope_key(ingest_job_id, data_source)
+        self._module_context_anchors[key] = {"module": module, "last_seen": now}
+
+    def _module_from_recent_anchor(
+        self,
+        *,
+        ingest_job_id: str,
+        data_source: str,
+        now: float,
+    ) -> str | None:
+        key = self._context_scope_key(ingest_job_id, data_source)
+        anchor = self._module_context_anchors.get(key)
+        if not anchor:
+            return None
+        if (now - float(anchor.get("last_seen", 0.0))) > self._module_context_anchor_ttl_seconds:
+            return None
+        module = str(anchor.get("module") or "").strip()
+        return module or None
+
+    @staticmethod
+    def _module_from_signature_family(signature: str, text: str) -> str | None:
+        low = text.lower()
+        if signature in {"tika_exception", "sax_parse"}:
+            return "Tika"
+        if (
+            "unable to send document batch to solr" in low
+            or "server refused connection" in low
+            or "http host connect exception" in low
+            or "connectexception: connection refused" in low
+        ):
+            return "Solr"
+        if "keywordsearchmoduleexception" in low or "could not add batched documents to index" in low:
+            return "Keyword Search"
+        return None
+
     def _event_incident_signature(self, event: CrashEvent) -> str:
         details = event.details or {}
         log_line = str(details.get("line") or details.get("log_line") or "")
@@ -568,6 +674,12 @@ class Monitor:
                 or "N/A"
             )
             return f"LOG_ERROR|{module.lower()}|{family}|job={job_id}|src={data_source.lower()}"
+        if event.crash_type == CrashType.SOLR_CRASH:
+            incident_status = str(details.get("incident_status") or "").strip().upper()
+            incident_id = str(details.get("incident_id") or "").strip() or "none"
+            if incident_status:
+                return f"SOLR_CRASH|{incident_status}|{incident_id}"
+            return f"SOLR_CRASH|{event.severity.name}"
         if event.crash_type == CrashType.CORRELATED_INCIDENT:
             event_types = event.details.get("event_types") or []
             type_part = ",".join(sorted(str(x).upper() for x in event_types))
@@ -732,6 +844,207 @@ class Monitor:
         return kept
 
     @staticmethod
+    def _is_confirmed_solr_outage_event(event: CrashEvent) -> bool:
+        if event.crash_type != CrashType.SOLR_CRASH:
+            return False
+        if event.severity == Severity.CRITICAL:
+            return True
+        low = event.message.lower()
+        if "not responding on port" in low:
+            return True
+        details = event.details or {}
+        try:
+            failures = int(details.get("failures_in_window", 0))
+        except Exception:
+            failures = 0
+        return failures > 0
+
+    @staticmethod
+    def _is_solr_derivative_event(event: CrashEvent) -> bool:
+        if event.crash_type != CrashType.LOG_ERROR:
+            return False
+        details = event.details or {}
+        line = str(details.get("line") or details.get("log_line") or "")
+        text = f"{event.message} {line}".lower()
+        tokens = (
+            "unable to send document batch to solr",
+            "could not add batched documents to index",
+            "keywordsearchmoduleexception",
+            "server refused connection",
+            "connectexception: connection refused",
+            "httphostconnectexception",
+            "solrserverexception",
+        )
+        return any(token in text for token in tokens)
+
+    def _next_incident_id(self, prefix: str) -> str:
+        self._incident_sequence += 1
+        return f"{prefix}-{self._incident_sequence}"
+
+    def _annotate_solr_incident_details(
+        self,
+        event: CrashEvent,
+        *,
+        incident: dict[str, object],
+        status: str,
+        now: float,
+    ) -> None:
+        details = dict(event.details or {})
+        outage_duration = max(0.0, now - float(incident.get("first_seen", now)))
+        details["incident_id"] = str(incident.get("incident_id"))
+        details["parent_incident_id"] = str(incident.get("incident_id"))
+        details["incident_status"] = status
+        details["outage_duration_seconds"] = int(outage_duration)
+        details["derivative_suppressed_count"] = int(incident.get("derivative_suppressed_count", 0))
+        details["retry_attempt_count"] = int(incident.get("retry_attempt_count", 0))
+        details["batch_failure_count"] = int(incident.get("batch_failure_count", 0))
+        details["first_seen"] = self._ts_label(float(incident.get("first_seen", now)))
+        details["last_seen"] = self._ts_label(float(incident.get("last_seen", now)))
+        details["ingest_job_id"] = str(incident.get("ingest_job_id", "unknown"))
+        details["data_source"] = str(incident.get("data_source", "unknown"))
+        event.details = details
+
+    def _update_solr_outage_derivative_counters(
+        self,
+        incident: dict[str, object],
+        event: CrashEvent,
+        *,
+        now: float,
+    ) -> None:
+        details = event.details or {}
+        occ = 1
+        try:
+            occ = max(1, int(details.get("occurrence_count", 1)))
+        except Exception:
+            occ = 1
+        incident["last_seen"] = now
+        incident["derivative_suppressed_count"] = int(incident.get("derivative_suppressed_count", 0)) + occ
+        text = f"{event.message} {details.get('line') or details.get('log_line') or ''}".lower()
+        if "re-trying" in text:
+            incident["retry_attempt_count"] = int(incident.get("retry_attempt_count", 0)) + occ
+        if "all re-try attempts failed" in text or "could not add batched documents to index" in text:
+            incident["batch_failure_count"] = int(incident.get("batch_failure_count", 0)) + occ
+
+    def _resolve_context_from_event(self, event: CrashEvent, *, now: float) -> tuple[str, str]:
+        details = event.details or {}
+        line = str(details.get("line") or details.get("log_line") or "")
+        text = f"{event.message} {line}".strip()
+        return self._resolve_context(line_text=text, details=details, now=now)
+
+    def _apply_solr_outage_policy(self, events: list[CrashEvent], *, now: float) -> list[CrashEvent]:
+        if not events:
+            return []
+
+        kept: list[CrashEvent] = []
+        outage = self._solr_outage_incident
+        open_event: CrashEvent | None = None
+        for event in events:
+            if not self._is_confirmed_solr_outage_event(event):
+                continue
+            if open_event is None:
+                open_event = event
+            elif event.severity == Severity.CRITICAL and open_event.severity != Severity.CRITICAL:
+                open_event = event
+
+        if open_event is not None:
+            ingest_job_id, data_source = self._resolve_context_from_event(open_event, now=now)
+            if outage is None or str(outage.get("status") or "") == "RESOLVED":
+                outage = {
+                    "incident_id": self._next_incident_id("solr-outage"),
+                    "status": "OPEN",
+                    "first_seen": now,
+                    "last_seen": now,
+                    "ingest_job_id": ingest_job_id,
+                    "data_source": data_source,
+                    "retry_attempt_count": 0,
+                    "batch_failure_count": 0,
+                    "derivative_suppressed_count": 0,
+                }
+                self._solr_outage_incident = outage
+            else:
+                outage["status"] = "OPEN"
+                outage["last_seen"] = now
+                if self._normalize_context_value(outage.get("ingest_job_id")) is None and ingest_job_id != "unknown":
+                    outage["ingest_job_id"] = ingest_job_id
+                if self._normalize_context_value(outage.get("data_source")) is None and data_source != "unknown":
+                    outage["data_source"] = data_source
+            self._remember_context(ingest_job_id, data_source, now=now)
+            self._annotate_solr_incident_details(open_event, incident=outage, status="OPEN", now=now)
+
+        for event in events:
+            if event is open_event:
+                kept.append(event)
+                continue
+            if self._is_confirmed_solr_outage_event(event):
+                continue
+
+            if outage is not None and str(outage.get("status") or "") == "OPEN" and self._is_solr_derivative_event(event):
+                self._update_solr_outage_derivative_counters(outage, event, now=now)
+                logger.info(
+                    "Suppressing derivative Solr/Keyword warning while outage incident %s is open.",
+                    str(outage.get("incident_id")),
+                )
+                continue
+            kept.append(event)
+
+        return kept
+
+    def _solr_currently_healthy(self) -> bool:
+        try:
+            status = self._solr_cache.get_status()
+        except Exception:
+            return False
+        return bool(status and getattr(status, "is_up", False))
+
+    def _maybe_build_solr_outage_recovery_alert(self, *, now: float) -> CrashEvent | None:
+        outage = self._solr_outage_incident
+        if outage is None:
+            return None
+        if str(outage.get("status") or "") != "OPEN":
+            return None
+        if not self._solr_currently_healthy():
+            return None
+        last_seen = float(outage.get("last_seen", 0.0))
+        if (now - last_seen) < self._solr_outage_resolve_quiet_seconds:
+            return None
+
+        outage["status"] = "RESOLVED"
+        outage["resolved_at"] = now
+        duration = max(0.0, now - float(outage.get("first_seen", now)))
+        event = CrashEvent(
+            crash_type=CrashType.SOLR_CRASH,
+            severity=Severity.WARNING,
+            message="Solr outage recovered; service is reachable again.",
+            details={},
+        )
+        self._annotate_solr_incident_details(event, incident=outage, status="RESOLVED", now=now)
+        event.details["outage_duration_seconds"] = int(duration)
+        return event
+
+    def _solr_outage_telemetry_snapshot(self, *, now: float) -> dict[str, object] | None:
+        outage = self._solr_outage_incident
+        if outage is None:
+            return None
+        first_seen = float(outage.get("first_seen", now))
+        last_seen = float(outage.get("last_seen", now))
+        status = str(outage.get("status") or "UNKNOWN").upper()
+        snapshot: dict[str, object] = {
+            "incident_id": str(outage.get("incident_id") or ""),
+            "incident_status": status,
+            "first_seen": self._ts_label(first_seen),
+            "last_seen": self._ts_label(last_seen),
+            "outage_duration_seconds": int(max(0.0, now - first_seen)),
+            "retry_attempt_count": int(outage.get("retry_attempt_count", 0)),
+            "batch_failure_count": int(outage.get("batch_failure_count", 0)),
+            "derivative_suppressed_count": int(outage.get("derivative_suppressed_count", 0)),
+            "ingest_job_id": str(outage.get("ingest_job_id", "unknown")),
+            "data_source": str(outage.get("data_source", "unknown")),
+        }
+        if "resolved_at" in outage:
+            snapshot["resolved_at"] = self._ts_label(float(outage.get("resolved_at", now)))
+        return snapshot
+
+    @staticmethod
     def _event_epoch(event: CrashEvent, now: float) -> float:
         try:
             return float(event.timestamp.timestamp())
@@ -754,15 +1067,33 @@ class Monitor:
         line = str(details.get("line") or details.get("log_line") or "")
         text = f"{event.message} {line}".strip()
         low = text.lower()
-        module = str(details.get("module") or self._extract_signature_module(text))
         signature = self._extract_signature_family(text)
+        now = self._event_epoch(event, time.time())
+        ingest_job_id, data_source = self._resolve_context(
+            line_text=text,
+            details=details,
+            now=now,
+        )
+        module = str(details.get("module") or self._extract_signature_module(text))
+        if module.lower() == "general":
+            inferred = self._module_from_signature_family(signature, text)
+            if inferred:
+                module = inferred
+            else:
+                anchored = self._module_from_recent_anchor(
+                    ingest_job_id=ingest_job_id,
+                    data_source=data_source,
+                    now=now,
+                )
+                if anchored:
+                    module = anchored
+        self._anchor_module_for_context(
+            ingest_job_id=ingest_job_id,
+            data_source=data_source,
+            module=module,
+            now=now,
+        )
         source_file = str(details.get("file") or "").strip().lower()
-        ingest_job_id = self._extract_first_match(_INGEST_JOB_ID_PATTERN, text) or str(
-            details.get("ingest_job_id") or "unknown"
-        )
-        data_source = self._extract_first_match(_DATA_SOURCE_PATTERN, text) or str(
-            details.get("data_source") or "unknown"
-        )
         return {
             "incident_key": (
                 f"logerr|module={module.lower()}|sig={signature}|"
@@ -899,18 +1230,34 @@ class Monitor:
         else:
             signature = "keyword_error"
 
-        ingest_job_id = self._extract_first_match(_INGEST_JOB_ID_PATTERN, haystack)
-        data_source = self._extract_first_match(_DATA_SOURCE_PATTERN, haystack)
+        burst_family = signature
+        # These stack-trace lines are part of one logical Keyword Search
+        # ingest-failure burst and should stay in a single incident thread.
+        if signature in {"analysis_error", "codermalfunctionerror", "arrayindexoutofboundsexception"}:
+            burst_family = "keyword_ingest_exception_burst"
+
+        event_epoch = self._event_epoch(event, time.time())
+        ingest_job_id, data_source = self._resolve_context(
+            line_text=haystack,
+            details=details,
+            now=event_epoch,
+        )
+        self._anchor_module_for_context(
+            ingest_job_id=ingest_job_id,
+            data_source=data_source,
+            module="Keyword Search",
+            now=event_epoch,
+        )
         object_id = self._extract_first_match(_OBJECT_ID_PATTERN, haystack)
         incident_key = (
-            f"keyword|job={ingest_job_id or 'unknown'}|"
-            f"src={data_source or 'unknown'}|sig={signature}"
+            f"keyword|job={ingest_job_id}|src={data_source}|sig={burst_family}"
         )
         return {
             "incident_key": incident_key,
             "signature": signature,
-            "ingest_job_id": ingest_job_id or "unknown",
-            "data_source": data_source or "unknown",
+            "signature_family": burst_family,
+            "ingest_job_id": ingest_job_id,
+            "data_source": data_source,
             "object_id": object_id or "unknown",
             "line": line or event.message,
             "module": "Keyword Search",
@@ -1096,11 +1443,9 @@ class Monitor:
         return counters
 
     def _should_throttle_console_event(self, event: CrashEvent) -> bool:
-        if event.crash_type != CrashType.LOG_ERROR:
-            return False
         if event.severity != Severity.WARNING:
             return False
-        return True
+        return event.crash_type in {CrashType.LOG_ERROR, CrashType.SOLR_CRASH}
 
     def _flush_console_event_summaries(self, *, now: float, force: bool = False) -> None:
         if not self._console_log_suppression:
@@ -1113,10 +1458,13 @@ class Monitor:
         for signature, state in self._console_log_suppression.items():
             suppressed = int(state.get("suppressed", 0))
             last_seen = float(state.get("last_seen", 0.0))
+            crash_type = str(state.get("crash_type") or "LOG_ERROR")
+            burst_tag = "LOG_ERROR_BURST" if crash_type == "LOG_ERROR" else "SOLR_CRASH_BURST"
             if suppressed > 0 and (force or last_seen <= stale_cutoff):
                 latest_message = str(state.get("message") or "")
                 logger.warning(
-                    "🟡 LOG_ERROR_BURST: Suppressed %d repeated warning event(s) for %s. Latest: %s",
+                    "🟡 %s: Suppressed %d repeated warning event(s) for %s. Latest: %s",
+                    burst_tag,
                     suppressed,
                     signature,
                     latest_message,
@@ -1139,6 +1487,7 @@ class Monitor:
                     "last_seen": now,
                     "suppressed": 0,
                     "message": event.message,
+                    "crash_type": event.crash_type.name,
                 }
             else:
                 last_emit = float(state.get("last_emit", 0.0))
@@ -1148,9 +1497,12 @@ class Monitor:
                     state["suppressed"] = int(state.get("suppressed", 0)) + 1
                     return
                 suppressed = int(state.get("suppressed", 0))
+                crash_type = str(state.get("crash_type") or event.crash_type.name)
+                burst_tag = "LOG_ERROR_BURST" if crash_type == "LOG_ERROR" else "SOLR_CRASH_BURST"
                 if suppressed > 0:
                     logger.warning(
-                        "🟡 LOG_ERROR_BURST: Suppressed %d repeated warning event(s) for %s.",
+                        "🟡 %s: Suppressed %d repeated warning event(s) for %s.",
+                        burst_tag,
                         suppressed,
                         signature,
                     )

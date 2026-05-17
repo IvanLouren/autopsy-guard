@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -338,6 +339,115 @@ def test_keyword_error_burst_is_aggregated_into_single_alert(tmp_path: Path) -> 
     assert int(summary[0]["occurrence_count"]) == 3
 
 
+def test_keyword_context_inherits_active_ingest_context(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._log_detector._active_ingest_job_id = "9"
+    monitor._log_detector._active_data_source = "Case.E01"
+
+    event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Exception detected in autopsy.log.0",
+        details={"line": "java.nio.charset.CoderMalfunctionError: java.lang.ArrayIndexOutOfBoundsException"},
+    )
+
+    context = monitor._keyword_context(event)
+    assert context is not None
+    assert context["ingest_job_id"] == "9"
+    assert context["data_source"] == "Case.E01"
+
+
+def test_log_error_context_uses_recent_module_anchor(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 1000.0
+
+    anchored_event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="SEVERE error in autopsy.log.0",
+        details={
+            "line": "SEVERE: Keyword Search experienced an error during analysis while processing file foo.dll (data source = image.E01, ingest job ID = 7)"
+        },
+    )
+    anchored_event.timestamp = datetime.fromtimestamp(now)
+    first_context = monitor._parse_log_error_context(anchored_event)
+    assert first_context is not None
+    assert first_context["module"] == "Keyword Search"
+
+    generic_event = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Exception detected in autopsy.log.0",
+        details={"line": "java.lang.IllegalStateException: parser failed"},
+    )
+    generic_event.timestamp = datetime.fromtimestamp(now + 5.0)
+    second_context = monitor._parse_log_error_context(generic_event)
+    assert second_context is not None
+    assert second_context["module"] == "Keyword Search"
+    assert second_context["ingest_job_id"] == "7"
+    assert second_context["data_source"] == "image.E01"
+
+
+def test_solr_outage_policy_suppresses_derivative_alerts(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    now = 2000.0
+
+    outage = CrashEvent(
+        crash_type=CrashType.SOLR_CRASH,
+        severity=Severity.CRITICAL,
+        message="Solr not responding on port 23232",
+    )
+    derivative = CrashEvent(
+        crash_type=CrashType.LOG_ERROR,
+        severity=Severity.WARNING,
+        message="Keyword Search could not add batched documents to index",
+        details={"line": "Unable to send document batch to Solr (ingest job ID = 3, data source = Img.E01)"},
+    )
+
+    kept = monitor._apply_solr_outage_policy([outage, derivative], now=now)
+    assert len(kept) == 1
+    assert kept[0].crash_type == CrashType.SOLR_CRASH
+    assert kept[0].details.get("incident_status") == "OPEN"
+
+    kept_again = monitor._apply_solr_outage_policy([derivative], now=now + 10.0)
+    assert kept_again == []
+    assert monitor._solr_outage_incident is not None
+    assert int(monitor._solr_outage_incident.get("derivative_suppressed_count", 0)) >= 2
+
+
+def test_solr_outage_recovery_alert_emitted_once(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    monitor._solr_outage_incident = {
+        "incident_id": "solr-outage-1",
+        "status": "OPEN",
+        "first_seen": 100.0,
+        "last_seen": 110.0,
+        "ingest_job_id": "3",
+        "data_source": "Img.E01",
+        "retry_attempt_count": 4,
+        "batch_failure_count": 2,
+        "derivative_suppressed_count": 7,
+    }
+    monitor._solr_cache.get_status = lambda: SolrStatus(
+        is_up=True,
+        response_time=0.1,
+        checked_at=1.0,
+        error=None,
+    )
+
+    event = monitor._maybe_build_solr_outage_recovery_alert(now=260.0)
+    assert event is not None
+    assert event.crash_type == CrashType.SOLR_CRASH
+    assert event.details.get("incident_status") == "RESOLVED"
+
+    second = monitor._maybe_build_solr_outage_recovery_alert(now=300.0)
+    assert second is None
+
+
 def test_post_ingest_resource_alerts_suppressed_inside_grace_window(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     monitor = Monitor(cfg)
@@ -552,3 +662,28 @@ def test_console_log_error_burst_emits_summary_after_idle(tmp_path: Path, caplog
     burst_lines = [r.message for r in caplog.records if "LOG_ERROR_BURST:" in r.message]
     assert len(burst_lines) == 1
     assert "Suppressed 1 repeated warning event(s)" in burst_lines[0]
+
+
+def test_handle_event_suppresses_repeated_solr_crash_warnings_in_console(tmp_path: Path, caplog) -> None:
+    cfg = make_config(tmp_path)
+    monitor = Monitor(cfg)
+    event = CrashEvent(
+        crash_type=CrashType.SOLR_CRASH,
+        severity=Severity.WARNING,
+        message="Child Java process disappeared",
+    )
+
+    caplog.set_level(logging.WARNING, logger="autopsyguard.monitor")
+    with patch("autopsyguard.monitor.time.time", return_value=500.0):
+        monitor._handle_event(event)
+    with patch("autopsyguard.monitor.time.time", return_value=501.0):
+        monitor._handle_event(event)
+    with patch("autopsyguard.monitor.time.time", return_value=502.0):
+        monitor._handle_event(event)
+
+    solr_lines = [r.message for r in caplog.records if "SOLR_CRASH:" in r.message]
+    assert len(solr_lines) == 1
+
+    monitor._flush_console_event_summaries(now=700.0)
+    burst_lines = [r.message for r in caplog.records if "SOLR_CRASH_BURST:" in r.message]
+    assert len(burst_lines) == 1
