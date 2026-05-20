@@ -573,7 +573,7 @@ def _build_telemetry_sections(config: MonitorConfig, telemetry: dict[str, Any]) 
         + _row("🧭 " + tr(config, "module_recent_title"), latest_module_line)
         + _row("🔎 " + tr(config, "keyword_solr_title"), keyword_solr_line)
         + _row("🧯 " + tr(config, "module_errors_summary_title"), module_errors_line)
-        + _row("🧠 External Memory Consumers", external_mem_line)
+        + _row("🧠 Other Processes", external_mem_line)
         + _row("🔬 " + tr(config, "solr_title"), solr_line)
         + _row("🖥️ " + tr(config, "cpu_history_title"), cpu_line)
     )
@@ -993,13 +993,13 @@ def _build_plain_text(
                 )
         external_mem_line = str(telemetry.get("external_memory_top_consumers") or "").strip()
         if external_mem_line:
-            lines.append(f"External Memory Consumers: {external_mem_line}")
+            lines.append(f"Other Processes: {external_mem_line}")
         else:
             state = str(telemetry.get("external_memory_consumers_state") or "").strip().lower()
             if state == "not_triggered":
-                lines.append("External Memory Consumers: Not triggered this period")
+                lines.append("Other Processes: Not triggered this period")
             else:
-                lines.append("External Memory Consumers: Unavailable")
+                lines.append("Other Processes: Unavailable")
         modules = telemetry.get("module_folders") or []
         if modules:
             lines.append(f"{tr(config, 'modules_title')}:")

@@ -777,9 +777,9 @@ def test_report_builder_shows_external_memory_consumers_from_recent_events(tmp_p
         autopsy_pid=None,
         telemetry=telemetry,
     )
-    assert "External Memory Consumers" in html_body
+    assert "Other Processes" in html_body
     assert "java.exe (PID 18748, 2.5 GB)" in html_body
-    assert "External Memory Consumers: java.exe (PID 18748, 2.5 GB)" in plain_text
+    assert "Other Processes: java.exe (PID 18748, 2.5 GB)" in plain_text
 
 
 def test_report_builder_external_memory_consumers_not_triggered_label(tmp_path):
@@ -807,9 +807,9 @@ def test_report_builder_external_memory_consumers_not_triggered_label(tmp_path):
         autopsy_pid=None,
         telemetry=telemetry,
     )
-    assert "External Memory Consumers" in html_body
+    assert "Other Processes" in html_body
     assert "Not triggered this period" in html_body
-    assert "External Memory Consumers: Not triggered this period" in plain_text
+    assert "Other Processes: Not triggered this period" in plain_text
 
 
 def test_report_builder_external_memory_consumers_unavailable_label(tmp_path):
@@ -838,9 +838,9 @@ def test_report_builder_external_memory_consumers_unavailable_label(tmp_path):
         autopsy_pid=None,
         telemetry=telemetry,
     )
-    assert "External Memory Consumers" in html_body
+    assert "Other Processes" in html_body
     assert "Unavailable" in html_body
-    assert "External Memory Consumers: Unavailable" in plain_text
+    assert "Other Processes: Unavailable" in plain_text
 
 
 def test_report_builder_recent_events_header_shows_display_count(tmp_path):
