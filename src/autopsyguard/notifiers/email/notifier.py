@@ -239,11 +239,50 @@ class EmailNotifier(BaseNotifier):
 
         case_label = get_case_label(self.config)
         subject = f"✅ [AutopsyGuard] {tr(self.config, 'startup_subject')} - {case_label}"
+        
+        metrics = get_system_metrics(self.config.case_dir)
+        autopsy_pid = _get_autopsy_pid()
+        metrics_html = self._build_alert_metrics_bar(metrics, autopsy_pid)
+        
+        def _conf_row(icon: str, label: str, value: str) -> str:
+            return f"""
+            <tr>
+                <td style="padding:8px 16px; border-bottom:1px solid #f3f4f6;">
+                    <span style="font-size:14px;">{icon}</span>
+                    <span style="color:#6b7280; font-size:12px; margin-left:8px;">{label}</span>
+                </td>
+                <td align="right" style="padding:8px 16px; border-bottom:1px solid #f3f4f6;">
+                    <span style="color:#111827; font-size:12px; font-weight:600;">{value}</span>
+                </td>
+            </tr>"""
+
+        channels = ["Email"]
+        if getattr(self.config, "whatsapp_phone", None) or getattr(self.config, "whatsapp_apikey", None):
+            channels.append("WhatsApp")
+        if getattr(self.config, "telegram_chat_id", None) or getattr(self.config, "telegram_bot_token", None):
+            channels.append("Telegram")
+
+        config_rows = (
+            _conf_row("⏱️", tr(self.config, "poll_interval"), f"{self.config.poll_interval}s")
+            + _conf_row("⏳", tr(self.config, "hang_timeout"), f"{self.config.hang_timeout}s")
+            + _conf_row("📊", "Report Interval", f"{self.config.report_interval_hours}h")
+            + _conf_row("📡", "Active Channels", ", ".join(channels))
+        )
+        
         body_content = f"""
         <div style="margin-bottom:24px; text-align:center;">
             <div style="font-size:48px; margin-bottom:16px;">🚀</div>
             <h2 style="color:#111827; margin:0 0 8px 0;">{tr(self.config, 'startup_title')}</h2>
             <p style="color:#4b5563; font-size:16px; margin:0;">{tr(self.config, 'startup_text')}</p>
+        </div>
+        {metrics_html}
+        <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:20px;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr><td colspan="2" style="background-color:#f9fafb; padding:12px 16px; border-bottom:1px solid #e5e7eb;">
+                    <strong style="color:#374151; font-size:13px; text-transform:uppercase; letter-spacing:1px;">⚙️ Monitoring Configuration</strong>
+                </td></tr>
+                {config_rows}
+            </table>
         </div>
         """
         html_body = BASE_TEMPLATE.format(
@@ -258,7 +297,7 @@ class EmailNotifier(BaseNotifier):
             footer_system=tr(self.config, "footer_system"),
             auto_email_note=tr(self.config, "auto_email"),
         )
-        plain_text = f"✅ {tr(self.config, 'startup_subject')}\n{tr(self.config, 'startup_text')}"
+        plain_text = f"✅ {tr(self.config, 'startup_subject')}\n{tr(self.config, 'startup_text')}\nAutopsy PID: {autopsy_pid or 'N/A'} | CPU: {metrics.get('cpu_percent', 0.0):.1f}% | RAM: {metrics.get('memory_percent', 0.0):.1f}%\nPolling: {self.config.poll_interval}s | Hang: {self.config.hang_timeout}s | Reports: {self.config.report_interval_hours}h | Channels: {', '.join(channels)}"
         return self._dispatch_email(subject, html_body, plain_text=plain_text)
 
     def send_shutdown_message(self, stats: dict[str, Any]) -> bool:
