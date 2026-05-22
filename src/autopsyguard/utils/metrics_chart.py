@@ -41,7 +41,10 @@ def render_system_chart_png(
     # Autopsy RSS (optional)
     rss_values = [sample.get("autopsy_rss_bytes") for sample in samples]
     has_rss = any(value is not None for value in rss_values)
-    rss_gb = [(v / (1024 ** 3)) if v is not None else math.nan for v in rss_values]
+    rss_gb_raw = [(v / (1024 ** 3)) if v is not None else math.nan for v in rss_values]
+    # Smooth RSS the same way we smooth CPU/memory to avoid noisy plots
+    rss_finite = [v if not math.isnan(v) else 0.0 for v in rss_gb_raw]
+    rss_gb = _moving_average(rss_finite, smooth_w)
 
     # Compute disk I/O rates (bytes/sec) from cumulative counters
     read_bytes = [sample.get("disk_read_bytes") for sample in samples]
@@ -51,11 +54,13 @@ def render_system_chart_png(
     for i in range(1, len(samples)):
         dt = max(1e-6, times[i] - times[i - 1])
         try:
-            read_bps[i] = ( (read_bytes[i] or 0) - (read_bytes[i - 1] or 0) ) / dt
+            delta = (read_bytes[i] or 0) - (read_bytes[i - 1] or 0)
+            read_bps[i] = max(0.0, delta) / dt
         except Exception:
             read_bps[i] = 0.0
         try:
-            write_bps[i] = ( (write_bytes[i] or 0) - (write_bytes[i - 1] or 0) ) / dt
+            delta = (write_bytes[i] or 0) - (write_bytes[i - 1] or 0)
+            write_bps[i] = max(0.0, delta) / dt
         except Exception:
             write_bps[i] = 0.0
     # Convert to MB/s
@@ -72,11 +77,13 @@ def render_system_chart_png(
         for i in range(1, len(samples)):
             dt = max(1e-6, times[i] - times[i - 1])
             try:
-                ap_read_bps[i] = ( (ap_read_bytes[i] or 0) - (ap_read_bytes[i - 1] or 0) ) / dt
+                delta = (ap_read_bytes[i] or 0) - (ap_read_bytes[i - 1] or 0)
+                ap_read_bps[i] = max(0.0, delta) / dt
             except Exception:
                 ap_read_bps[i] = 0.0
             try:
-                ap_write_bps[i] = ( (ap_write_bytes[i] or 0) - (ap_write_bytes[i - 1] or 0) ) / dt
+                delta = (ap_write_bytes[i] or 0) - (ap_write_bytes[i - 1] or 0)
+                ap_write_bps[i] = max(0.0, delta) / dt
             except Exception:
                 ap_write_bps[i] = 0.0
     ap_read_mbps = [v / (1024 ** 2) for v in ap_read_bps]
@@ -161,7 +168,8 @@ def render_system_chart_png(
                               linestyle="--", alpha=0.5, label="Alert window")
         lines.append(alert_legend)
         labels.append(alert_legend.get_label())
-    ax_top.legend(lines, labels, loc="upper right", fontsize=8)
+    ax_top.legend(lines, labels, loc="upper right", fontsize=7,
+                  framealpha=0.9, edgecolor="#cccccc")
     ax_top.set_xlabel("Minutes since last email")
 
     # Bottom: Disk I/O MB/s (system = solid, Autopsy = dashed)
@@ -199,7 +207,8 @@ def render_system_chart_png(
     ax_bot.set_ylabel("MB/s")
     ax_bot.set_xlabel("Minutes since last email")
     ax_bot.grid(True, alpha=0.15)
-    ax_bot.legend(loc="upper right", fontsize=7)
+    ax_bot.legend(loc="upper right", fontsize=6,
+                  framealpha=0.9, edgecolor="#cccccc")
 
     fig.tight_layout()
     buf = io.BytesIO()
