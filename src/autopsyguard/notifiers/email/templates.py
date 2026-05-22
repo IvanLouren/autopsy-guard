@@ -231,7 +231,7 @@ def format_details(details: dict[str, Any] | None) -> str:
         return ""
 
     priority_keys = [
-        "log_line", "log_file", "pid", "exit_code", "error",
+        "log_line", "log_file", "file", "line_number", "pid", "exit_code", "error",
         "cpu_percent", "cores_used", "cpu_per_core_percent", "cpu_count",
         "memory_percent", "duration_seconds", "duration", "crash_summary",
     ]
@@ -252,6 +252,8 @@ def format_details(details: dict[str, Any] | None) -> str:
         "core_name": "📦 Core",
         "timeout_seconds": "⏰ Timeout",
         "elapsed": "⏱️ Elapsed",
+        "file": "📁 File",
+        "line_number": "#️⃣ Line",
     }
 
     def _fmt(k: str, v: Any) -> str:

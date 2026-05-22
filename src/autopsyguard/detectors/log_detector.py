@@ -60,6 +60,8 @@ class LogDetector(BaseDetector):
         self._recent_duplicate_window = 300.0  # seconds
         # Map of source -> {line_hash -> last_seen_timestamp}
         self._recent_lines: dict[Path, dict[str, float]] = {}
+        # Track cumulative line count per file for line-number reporting
+        self._line_counts: dict[Path, int] = {}
         # Ingest state tracking — updated by parsing the Autopsy log
         self._ingest_running = False
         self._ingest_start_time: float | None = None
@@ -189,31 +191,50 @@ class LogDetector(BaseDetector):
         if new_content:
             # Save positions after reading
             self._log_tracker.save_positions()
+
+            # Get the line count before this batch (lines already processed)
+            if path not in self._line_counts:
+                try:
+                    last_pos = self._log_tracker.get_position(path)
+                    # We subtract the length of the new content to get the offset before this read
+                    start_pos = max(0, last_pos - len(new_content.encode('utf-8')))
+                    if start_pos > 0:
+                        with path.open("rb") as f:
+                            content_before = f.read(start_pos)
+                            self._line_counts[path] = len(content_before.splitlines())
+                    else:
+                        self._line_counts[path] = 0
+                except OSError:
+                    self._line_counts[path] = 0
+
+            base_line = self._line_counts[path]
             
-            for line in new_content.splitlines():
+            for idx, line in enumerate(new_content.splitlines(), start=1):
+                line_number = base_line + idx
                 # --- Ingest state tracking (before error classification) ---
                 self._update_ingest_state(line)
 
                 if self._is_recent_duplicate(line, path):
                     continue
-                event = self._classify_line(line, path)
+                event = self._classify_line(line, path, line_number=line_number)
                 if event is not None:
                     events.append(event)
 
+            # Update cumulative line count
+            self._line_counts[path] = base_line + len(new_content.splitlines())
+
         return events
 
-    def _classify_line(self, line: str, source: Path) -> CrashEvent | None:
+    def _classify_line(self, line: str, source: Path, *, line_number: int = 0) -> CrashEvent | None:
         """Check a single log line against known error patterns."""
         # Check against configured patterns first
         for pat, ctype, sev in self._patterns:
             if pat.search(line):
-                # Include the matching line in the message so tests can assert
-                # on the presence of specific exception identifiers (e.g. OutOfMemoryError).
                 return CrashEvent(
                     crash_type=ctype,
                     severity=sev,
                     message=f"{ctype.name.replace('_',' ').title()} detected in {source.name}: {line.strip()}",
-                    details={"file": str(source), "line": line.strip()},
+                    details={"file": str(source), "line": line.strip(), "line_number": line_number},
                 )
 
         # SEVERE — warning
@@ -222,17 +243,16 @@ class LogDetector(BaseDetector):
                 crash_type=CrashType.LOG_ERROR,
                 severity=Severity.WARNING,
                 message=f"SEVERE error in {source.name}",
-                details={"file": str(source), "line": line.strip()},
+                details={"file": str(source), "line": line.strip(), "line_number": line_number},
             )
 
         # Generic exception (but not just the word in a comment/import)
-        # Look for lines that look like a Java exception being thrown
         if re.search(r"Exception[:\s]", line) and not line.strip().startswith("//"):
             return CrashEvent(
                 crash_type=CrashType.LOG_ERROR,
                 severity=Severity.WARNING,
                 message=f"Exception detected in {source.name}",
-                details={"file": str(source), "line": line.strip()},
+                details={"file": str(source), "line": line.strip(), "line_number": line_number},
             )
 
         return None

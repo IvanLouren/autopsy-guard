@@ -517,6 +517,10 @@ class Monitor:
         event_types = sorted({e.crash_type.name for e in events})
         summary = " -> ".join(event_types)
         severity = Severity.CRITICAL if critical_count > 0 else Severity.WARNING
+        
+        # Extract the first available log file to ensure the email notifier can attach it
+        file_path = next((e.details.get("file") for e in events if e.details and e.details.get("file")), None)
+
         return CrashEvent(
             crash_type=CrashType.CORRELATED_INCIDENT,
             severity=severity,
@@ -535,6 +539,7 @@ class Monitor:
                     }
                     for e in events
                 ],
+                "file": file_path,
             },
         )
 
@@ -1250,6 +1255,8 @@ class Monitor:
                             "ingest_job_id": context["ingest_job_id"],
                             "data_source": context["data_source"],
                             "line": context["line"],
+                            "file": event.details.get("file"),
+                            "line_number": event.details.get("line_number"),
                         },
                     )
                 )
@@ -1320,6 +1327,8 @@ class Monitor:
             "object_id": object_id or "unknown",
             "line": line or event.message,
             "module": "Keyword Search",
+            "file": details.get("file"),
+            "line_number": details.get("line_number"),
         }
 
     def _record_module_error_summary(self, incident: dict[str, object]) -> None:
@@ -1410,6 +1419,8 @@ class Monitor:
                         "data_source": context["data_source"],
                         "object_id": context["object_id"],
                         "line": context["line"],
+                        "file": context.get("file"),
+                        "line_number": context.get("line_number"),
                     },
                 )
                 aggregated.append(summary_event)

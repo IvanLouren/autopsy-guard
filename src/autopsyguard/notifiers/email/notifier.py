@@ -7,6 +7,7 @@ Handles immediate alert emails and delegates periodic report composition to
 
 from __future__ import annotations
 
+import gzip
 import logging
 import smtplib
 import threading
@@ -158,7 +159,24 @@ class EmailNotifier(BaseNotifier):
         plain_lines += ["", tr(self.config, "metric_note_multicore")]
         plain_text = "\n".join(plain_lines)
 
-        return self._dispatch_email(subject, html_body, plain_text=plain_text)
+        # Collect unique log files referenced in events and gzip them as attachments
+        attachments: list[tuple[str, bytes, str]] = []
+        seen_files: set[str] = set()
+        for ev in events:
+            fpath = (ev.details or {}).get("file")
+            if fpath and fpath not in seen_files:
+                seen_files.add(fpath)
+                try:
+                    from pathlib import Path as _P
+                    raw = _P(fpath).read_bytes()
+                    compressed = gzip.compress(raw)
+                    fname = _P(fpath).name + ".gz"
+                    attachments.append((fname, compressed, "application/gzip"))
+                except Exception:
+                    pass
+
+        return self._dispatch_email(subject, html_body, plain_text=plain_text,
+                                    attachments=attachments if attachments else None)
 
     def send_report(
         self,
