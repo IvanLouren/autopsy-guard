@@ -167,8 +167,20 @@ class EmailNotifier(BaseNotifier):
             if fpath and fpath not in seen_files:
                 seen_files.add(fpath)
                 try:
+                    import os
                     from pathlib import Path as _P
-                    raw = _P(fpath).read_bytes()
+                    max_bytes = 2 * 1024 * 1024  # 2MB maximum per attachment
+                    
+                    with open(fpath, "rb") as f:
+                        f.seek(0, os.SEEK_END)
+                        file_size = f.tell()
+                        start_pos = max(0, file_size - max_bytes)
+                        f.seek(start_pos, os.SEEK_SET)
+                        raw = f.read(max_bytes)
+                        
+                        if start_pos > 0:
+                            raw = b"[TRUNCATED BY AUTOPSYGUARD - PREVIOUS LOG ENTRIES OMITTED DUE TO SIZE]\n\n" + raw
+
                     compressed = gzip.compress(raw)
                     fname = _P(fpath).name + ".gz"
                     attachments.append((fname, compressed, "application/gzip"))
