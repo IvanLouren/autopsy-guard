@@ -43,6 +43,9 @@ class LogFileTracker:
         self._file_offsets: dict[Path, int] = {}
         self._state_file = state_file
         
+    # Maximum bytes to read per poll cycle to avoid blocking the main thread
+    _MAX_READ_BYTES = 1 * 1024 * 1024  # 1MB
+
     def read_new_content(self, log_file: Path) -> str:
         """Read new content from log file since last read.
         
@@ -56,6 +59,8 @@ class LogFileTracker:
             - Automatically handles file rotation (when size < last_pos, resets to start)
             - Updates internal position tracker
             - Uses utf-8 encoding with error replacement for non-UTF8 content
+            - Reads at most 1MB per call to avoid blocking; remainder is
+              picked up on the next poll cycle.
         """
         if not log_file.exists() or not log_file.is_file():
             return ""
@@ -71,7 +76,16 @@ class LogFileTracker:
                 
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 f.seek(last_pos)
-                new_content = f.read()
+                new_content = f.read(self._MAX_READ_BYTES)
+                
+                # If we hit the cap and didn't reach EOF, rewind to the last
+                # complete line so we never split a log entry in half.
+                if len(new_content) >= self._MAX_READ_BYTES:
+                    last_nl = new_content.rfind("\n")
+                    if last_nl != -1:
+                        new_content = new_content[:last_nl + 1]
+                        f.seek(last_pos + len(new_content.encode("utf-8", errors="replace")))
+                
                 self._file_offsets[log_file] = f.tell()
                 
             return new_content
