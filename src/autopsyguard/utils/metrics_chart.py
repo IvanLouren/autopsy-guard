@@ -168,8 +168,12 @@ def render_system_chart_png(
                               linestyle="--", alpha=0.5, label="Alert window")
         lines.append(alert_legend)
         labels.append(alert_legend.get_label())
-    ax_top.legend(lines, labels, loc="upper right", fontsize=7,
-                  framealpha=0.9, edgecolor="#cccccc")
+        
+    # Draw legend on the top-most layer so twinx lines don't overlap it
+    legend_ax = ax_rss if has_rss else ax_top
+    leg = legend_ax.legend(lines, labels, loc="upper right", fontsize=7,
+                           framealpha=0.9, edgecolor="#cccccc")
+    leg.set_zorder(100)
     ax_top.set_xlabel("Minutes since last email")
 
     # Bottom: Disk I/O MB/s (system = solid, Autopsy = dashed)
