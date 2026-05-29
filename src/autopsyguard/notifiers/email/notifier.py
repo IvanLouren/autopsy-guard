@@ -292,8 +292,18 @@ class EmailNotifier(BaseNotifier):
         if getattr(self.config, "telegram_chat_id", None) or getattr(self.config, "telegram_bot_token", None):
             channels.append("Telegram")
 
+        import os
+        import socket
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = "Unknown"
+
         config_rows = (
-            _conf_row("⏱️", tr(self.config, "poll_interval"), f"{self.config.poll_interval}s")
+            _conf_row("📁", "Case Directory", str(self.config.case_dir))
+            + _conf_row("📂", "AutopsyGuard CWD", os.getcwd())
+            + _conf_row("💻", "Hostname", hostname)
+            + _conf_row("⏱️", tr(self.config, "poll_interval"), f"{self.config.poll_interval}s")
             + _conf_row("⏳", tr(self.config, "hang_timeout"), f"{self.config.hang_timeout}s")
             + _conf_row("📊", "Report Interval", f"{self.config.report_interval_hours}h")
             + _conf_row("📡", "Active Channels", ", ".join(channels))
@@ -468,6 +478,29 @@ class EmailNotifier(BaseNotifier):
     # SMTP dispatch (unchanged logic)
     # ------------------------------------------------------------------
 
+    def _get_next_sequence_number(self) -> int:
+        import os
+        from pathlib import Path
+        try:
+            state_dir = Path(self.config.case_dir) / ".autopsy_guard"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            seq_file = state_dir / "email_seq.txt"
+            seq = 1
+            if seq_file.exists():
+                try:
+                    seq = int(seq_file.read_text(encoding="utf-8").strip()) + 1
+                except ValueError:
+                    pass
+            seq_file.write_text(str(seq), encoding="utf-8")
+            return seq
+        except Exception:
+            # Fallback to in-memory counter if state dir is not writable
+            if not hasattr(self, "_fallback_seq"):
+                self._fallback_seq = 1
+            else:
+                self._fallback_seq += 1
+            return self._fallback_seq
+
     def _dispatch_email(
         self,
         subject: str,
@@ -478,6 +511,12 @@ class EmailNotifier(BaseNotifier):
         plain_text: str | None = None,
     ) -> bool:
         """Construct the MIME message and talk to the SMTP server."""
+        
+        seq = self._get_next_sequence_number()
+        seq_str = f"#{seq:03d}"
+        if not subject.startswith(seq_str):
+            subject = f"{seq_str} {subject}"
+
         from email.message import EmailMessage
 
         msg = EmailMessage()
