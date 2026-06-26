@@ -287,9 +287,9 @@ class EmailNotifier(BaseNotifier):
             </tr>"""
 
         channels = ["Email"]
-        if getattr(self.config, "whatsapp_phone", None) or getattr(self.config, "whatsapp_apikey", None):
+        if getattr(self.config, "whatsapp_enabled", False):
             channels.append("WhatsApp")
-        if getattr(self.config, "telegram_chat_id", None) or getattr(self.config, "telegram_bot_token", None):
+        if getattr(self.config, "telegram_enabled", False):
             channels.append("Telegram")
 
         import os
